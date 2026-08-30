@@ -4,10 +4,6 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 compass_root=$(cd "$script_dir/.." && pwd)
 target_dir=${CARGO_TARGET_DIR:-$compass_root/target}
-case "$target_dir" in
-  /*) ;;
-  *) target_dir="$compass_root/$target_dir" ;;
-esac
 output_dir=${COMPASS_STORE_QUALIFICATION_OUTPUT:-$target_dir/compass-store-release-qualification-$(date -u +%Y%m%dT%H%M%SZ)}
 sizes=${COMPASS_STORE_QUALIFICATION_SIZES:-"32 128 512"}
 measure="$script_dir/measure_process.py"

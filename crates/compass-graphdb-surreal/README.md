@@ -18,7 +18,7 @@ Database Service restriction, Change Date 2030-01-01, and Apache-2.0 Change
 License. Surreal-enabled binaries, libraries, containers, and archives must
 preserve the applicable SurrealDB license and notices and must not be described
 as exclusively OSI-open-source. See
-[`docs/implementation/surrealdb-license-assessment.md`](../../docs/implementation/surrealdb-license-assessment.md)
+[`docs/future/surrealdb-license-decision.md`](../../docs/future/surrealdb-license-decision.md)
 and the exact tagged license fixture under
 [`scripts/fixtures/surreal-persistent-probes/`](../../scripts/fixtures/surreal-persistent-probes/).
 

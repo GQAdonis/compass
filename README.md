@@ -409,7 +409,138 @@ compass query --cql \
 
 Read the [language contract](docs/COMPASSQL.md) and [support matrix](docs/COMPASSQL_SUPPORT.md) for syntax, limits, and machine-readable output.
 
-## Choose the smallest mode that answers the question
+### Travel through graph history
+
+```bash
+compass history enable --code-only
+compass history build main
+compass history build HEAD --profile-from main
+compass query "authentication" --at HEAD~20
+compass diff main HEAD
+compass diff main HEAD --format html --output semantic-diff.html
+```
+
+Historical builds use exact Git commits and immutable extraction
+fingerprints. Current and historical graphs can be queried, compared, and
+exported without putting generated graph data into Git. Semantic diff leads
+with likely breaks, behavior changes, affected callers/modules, and test
+evidence; use `--all` to expand routine symbol churn.
+Default text output reports any findings beyond its display budget; use
+`--limit N` to raise that budget or `--all` for exhaustive output.
+HTML output is a self-contained interactive reviewer report with semantic
+findings, an enhanced unified/split source diff, and a changed-subgraph view
+with exhaustive node/edge delta lists. The source view is rendered by the
+pinned `@pierre/diffs` library and retains the exact Git patch as an offline
+fallback. HTML output requires an explicit `--output` path.
+
+Read the [versioned history guide](docs/guides/versioned-history.md) and
+[storage design](docs/design/storage-and-history.md).
+
+### Connect a coding assistant
+
+```bash
+compass install
+compass update .
+compass agent doctor --platform codex
+```
+
+Inside a Git repository, Compass detects installed coding agents and configures
+them at the repository root. Codex, Gemini CLI, OpenCode, Copilot, and generic
+Agent Skills clients share the portable `.agents/skills/compass` umbrella plus
+focused sibling skills for navigation, debugging, change impact, architecture,
+index maintenance, and MCP setup. The umbrella remains the canonical fallback.
+Claude Code, Kiro, and Cline use the same collection in their native skill
+roots. Use repeatable `--platform` flags when you want explicit selection:
+
+```bash
+compass install --platform codex
+compass install --platform codex --platform claude
+compass install --all --dry-run
+compass install --user --format json
+```
+
+Use `compass agent list` to inspect the full registry, `compass agent export`
+and `compass agent validate` for deterministic, checksum-verified native Codex,
+Claude, and OpenCode packages (or a generic seven-skill bundle), and
+`compass agent mcp-config` to render credential-free native Codex, Claude,
+OpenCode, or generic Agent Skills MCP configuration. The namespaced
+`compass agent install` form delegates to `compass install` unchanged.
+Run a graph build before project-scoped doctor checks; user-scoped checks skip
+graph presence and freshness. Project diagnostics honor `COMPASS_OUT` and the
+current immutable output snapshot. The doctor, export, validation-platform,
+and MCP-config commands support the four platforms with native MCP schemas:
+`agents`, `claude`, `codex`, and `opencode`.
+
+The three native exports are generated from the repository's single
+`distribution.toml` inventory. Codex exports include plugin and local
+marketplace manifests, Claude exports include the required marketplace
+manifest, and OpenCode exports include a thin TypeScript/npm plugin that
+delegates graph behavior to the `compass` binary.
+
+Check `Selected` in the command output. If it lists only `agents`, Compass did
+not detect a host-specific adapter. An explicit `--platform` selection bypasses
+detection. Start a new assistant session after installation. In Codex, review
+and trust the hook under `/hooks`; in Gemini CLI, run `/skills reload`.
+
+The umbrella skill teaches the complete Compass workflow. Six additive focused
+skills let compatible clients activate a smaller task boundary without
+changing explicit `/compass` requests or broad multi-operation fallback.
+The umbrella skill teaches assistants to keep `compass watch` in a second terminal (or
+use `compass update .` as a reported fallback), run a focused query first, and
+open only cited source. For first-session or broad orientation it reads only
+the bounded Agent Orientation at the start of `GRAPH_REPORT.md`, then queries.
+It inspects direction, ambiguity, graph completeness, domain truncation, and
+pagination; ambiguous seeds are retried by exact node ID. Installation does
+not build a graph.
+
+```text
+focused task ───────────────> focused query
+first/broad orientation ────> bounded Agent Orientation ──> focused query
+                                      |
+                                      v
+                 inspect completion and the smallest cited source set
+```
+
+See [Assistant setup](docs/guides/assistant-setup.md) for supported platforms,
+scope, strict mode, upgrades, and uninstall.
+
+### Inspect program behavior with evidence
+
+Native `init`, `update`, `extract`, and `watch` builds publish the structural graph by
+default. Pass `--program` when a scenario needs `program.json`, the optional
+language-neutral Program IR containing functions, conservative basic blocks,
+operations, call candidates, capability coverage, provenance, and derived
+summaries; `--program-artifact` also enables it. The offline-first pipeline
+combines Tree-sitter syntax evidence for Rust and TypeScript-family languages
+with any SCIP indexes already on disk. Compass does not invoke an indexer,
+compiler, language server, model, or network service to build this artifact.
+
+Schema `http://crab.build/compass/v1` reports each capability as `complete`,
+`partial`, `indeterminate`, or `failed`, with machine-readable reasons for
+every non-complete state. Unresolved calls are retained as uncertainty and are
+never treated as proof that no downstream target exists.
+
+Inspect or query the current artifact without custom JSON scripts:
+
+```bash
+compass program summary
+compass program coverage
+compass program functions --language rust --name build
+compass program show <symbol-id>
+compass program callers <symbol-id>
+compass program explain-call src/lib.rs:240
+compass program query \
+  "MATCH (f) WHERE f.kind = 'program_function' RETURN f LIMIT 20"
+```
+
+Supply additional offline evidence with repeatable
+`--program-artifact path/to/index.scip` options. Decoded indexes are cached by
+artifact digest, while freshness and normalization are invalidated per indexed
+document.
+
+## Structural and semantic modes
+
+Choose the smallest mode that answers your question:
 
 | Command | Network behavior | Best use |
 | --- | --- | --- |

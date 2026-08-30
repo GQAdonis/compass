@@ -10,11 +10,11 @@ route selects this adapter yet.
 The crate's default feature set includes projection planning but no SurrealDB
 dependency. Three explicit features select embedded engines:
 
-| Feature | Purpose | Evidence |
+| Feature | Purpose | C-014 evidence |
 | --- | --- | --- |
 | `mem` | Deterministic ephemeral integration qualification | Full schema, round-trip, idempotence, interrupted staging, reactivation, native-query, and scale-differential coverage |
-| `surrealkv` | Persistent embedded SurrealKV | Constructor/SDK compile gate plus retained semantic and recovery probe evidence |
-| `rocksdb` | Persistent embedded RocksDB | Constructor/SDK compile gate plus retained semantic and recovery probe evidence |
+| `surrealkv` | Persistent embedded SurrealKV | Constructor/SDK compile gate; persistent semantic and recovery evidence is retained by C-012 |
+| `rocksdb` | Persistent embedded RocksDB | Constructor/SDK compile gate; persistent semantic and recovery evidence is retained by C-012 |
 
 All profiles resolve exactly SurrealDB 3.2.4 with default SDK features disabled.
 The repository gate `scripts/check_surreal_feature_isolation.sh` proves that
@@ -41,9 +41,9 @@ Every engine client owns finite `ProjectionLimits`. The default ceilings are
 1,000,000 nodes, 2,500,000 relations, and the canonical `GraphDocument` reader's
 1 GiB serialized-byte bound (distinct from the store publication cap configured
 by `COMPASS_MAX_GRAPH_BYTES`). These are independent ceilings: the byte limit may
-bind before either count limit for payload-rich graphs. The scale integration
-suite measures ratified qualification corpora rather than assuming all three
-ceilings are jointly attainable. Activation validates the limits before claiming or writing
+bind before either count limit for payload-rich graphs. C-015 measures the
+ratified qualification corpora rather than assuming all three ceilings are
+jointly attainable. Activation validates the limits before claiming or writing
 the generation. Reads validate manifest counts and bytes before record queries,
 apply query-side row limits, and compare the returned counts and serialized
 bytes with the immutable manifest before returning a plan. Callers may choose
@@ -110,7 +110,7 @@ SurrealDB 3.2.4 and its core use Business Source License 1.1 before conversion.
 The accepted artifact-profile decision, exact license digest, Database Service
 restriction, Change Date, Change License, notice requirements, and downstream
 redistribution conditions are recorded in
-[`surrealdb-license-assessment.md`](surrealdb-license-assessment.md).
+[`surrealdb-license-decision.md`](../future/surrealdb-license-decision.md).
 Enabling a Cargo feature contains default-build impact; it does not remove
 license obligations from a Surreal-enabled binary, library, container, or
 archive.

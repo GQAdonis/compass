@@ -212,6 +212,28 @@ fn loaded_graph_learning_overlay_marks_current_missing_and_unfingerprinted_sourc
 }
 
 #[test]
+fn loaded_graph_directed_builds_relationship_query_indexes() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = directory.path().join("graph.json");
+    fs::write(
+        &graph,
+        r#"{"directed":true,"multigraph":true,"graph":{},"nodes":[{"id":"a"},{"id":"b"}],"links":[{"source":"a","target":"b","relation":"calls"}]}"#,
+    )?;
+
+    let loaded = LoadedGraph::load_directed(&graph)?;
+    let source = loaded.graph.node_index("a").ok_or("missing source node")?;
+    assert_eq!(
+        loaded
+            .graph
+            .query_index()
+            .outgoing_with_type(source, "CALLS")
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[test]
 fn build_pipeline_reports_missing_and_empty_roots_and_accepts_file_only_sources()
 -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
@@ -472,6 +494,7 @@ fn incremental_mixed_origin_edges_use_fresh_ast_relationship_sites() -> Result<(
     )?;
 
     let mut options = BuildOptions::new(root.to_path_buf());
+    options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
     options.inference_level = compass_graph::InferenceLevel::Max;
@@ -542,6 +565,7 @@ fn incremental_deleted_mixed_occurrence_keeps_only_revalidated_semantic_evidence
         semantic_owned_edge_extraction(Path::new("main.rs"), initial_source, "calls")?;
 
     let mut options = BuildOptions::new(root.to_path_buf());
+    options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
     options.inference_level = compass_graph::InferenceLevel::Max;
@@ -615,6 +639,7 @@ fn incremental_deleted_mixed_occurrence_keeps_only_revalidated_semantic_evidence
         evidence.origin == compass_model::provenance::EvidenceOrigin::Heuristic
     }));
     let mut clean_options = BuildOptions::new(root.to_path_buf());
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     clean_options.output_root = Some(root.join("clean-deletion-out"));
     clean_options.no_cluster = true;
     clean_options.no_viz = true;
@@ -644,6 +669,7 @@ fn incremental_deleted_remapped_mixed_occurrence_rebinds_trusted_semantic_residu
         semantic_owned_edge_extraction(Path::new("main.rs"), initial_source, "calls")?;
 
     let mut options = BuildOptions::new(root.to_path_buf());
+    options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
     options.inference_level = compass_graph::InferenceLevel::Max;
@@ -756,6 +782,7 @@ fn incremental_deleted_remapped_mixed_occurrence_rebinds_trusted_semantic_residu
     assert_eq!(trusted.target, canonical_target);
 
     let mut clean_options = BuildOptions::new(root.to_path_buf());
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     clean_options.output_root = Some(root.join("clean-deletion-remap-out"));
     clean_options.no_cluster = true;
     clean_options.no_viz = true;
@@ -790,6 +817,7 @@ fn incremental_mixed_occurrence_cardinality_matches_exact_sites_and_preserves_re
     assert_eq!(initial_semantic.edges.len(), 3);
 
     let mut options = BuildOptions::new(root.to_path_buf());
+    options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
     options.inference_level = compass_graph::InferenceLevel::Max;
@@ -961,6 +989,7 @@ fn incremental_mixed_occurrence_cardinality_matches_exact_sites_and_preserves_re
     );
 
     let mut clean_options = BuildOptions::new(root.to_path_buf());
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     clean_options.output_root = Some(root.join("clean-cardinality-out"));
     clean_options.no_cluster = true;
     clean_options.no_viz = true;
@@ -990,6 +1019,7 @@ fn incremental_mixed_origin_alias_edges_use_canonical_fresh_relationship_sites()
     assert_eq!(initial_semantic.edges.len(), 1);
 
     let mut options = BuildOptions::new(root.to_path_buf());
+    options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
     options.inference_level = compass_graph::InferenceLevel::Max;
@@ -1037,6 +1067,7 @@ fn incremental_mixed_origin_alias_edges_use_canonical_fresh_relationship_sites()
     let final_semantic = semantic_method_alias_extraction(Path::new("main.rs"), final_source)?;
     assert_eq!(final_semantic.edges.len(), 1);
     let mut clean_options = BuildOptions::new(root.to_path_buf());
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     clean_options.output_root = Some(root.join("clean-out"));
     clean_options.no_cluster = true;
     clean_options.no_viz = true;
@@ -1063,6 +1094,7 @@ fn refreshed_mixed_edge_drops_stale_incremental_endpoint_remap_evidence()
     assert_eq!(initial_semantic.edges.len(), 1);
 
     let mut options = BuildOptions::new(root.to_path_buf());
+    options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
     options.inference_level = compass_graph::InferenceLevel::Max;
@@ -1133,6 +1165,7 @@ fn refreshed_mixed_edge_drops_stale_incremental_endpoint_remap_evidence()
 
     let final_semantic = semantic_edge_extraction(Path::new("main.rs"), final_source, "calls")?;
     let mut clean_options = BuildOptions::new(root.to_path_buf());
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     clean_options.output_root = Some(root.join("clean-remap-out"));
     clean_options.no_cluster = true;
     clean_options.no_viz = true;
@@ -1227,6 +1260,7 @@ fn incremental_ast_endpoint_remap_retains_exact_typed_rewrite_evidence()
         ..Extraction::default()
     };
     let mut options = BuildOptions::new(root.to_path_buf());
+    options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
     options.inference_level = compass_graph::InferenceLevel::Max;

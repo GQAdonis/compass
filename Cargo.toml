@@ -20,6 +20,7 @@ members = [
     "crates/compass-model",
     "crates/compass-ocr",
     "crates/compass-output",
+    "crates/compass-partition",
     "crates/compass-postgres",
     "crates/compass-pr-intelligence",
     "crates/compass-prs",
@@ -90,7 +91,7 @@ realfft = "3.5.0"
 regex = "1"
 semver = "1"
 self-replace = "1.5"
-rmcp = { version = "2.2.0", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "=3.1.4", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
 surrealdb = { version = "=3.2.4", default-features = false }
 rubato = "0.16.2"
 flate2 = "1.1.9"
@@ -126,7 +127,9 @@ ureq = { version = "3.3.0", default-features = false, features = ["json", "rustl
 wait-timeout = "0.2.1"
 zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 axum = "0.8.8"
+http-body-util = "0.1.3"
 tower-http = { version = "0.6.8", features = ["limit"] }
+compass-partition = { path = "crates/compass-partition", version = "0.3.23" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -142,6 +145,30 @@ codegen-units = 1
 lto = "thin"
 panic = "abort"
 strip = "symbols"
+
+# Phase-first development favors one compact, coordinated build after the
+# implementation is complete. Preserve line-level backtraces while avoiding
+# full dependency debug info and incremental artifact growth.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+codegen-units = 256
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+codegen-units = 256
+
+[profile.test.package."*"]
+debug = false
+
+[profile.debugging]
+inherits = "dev"
+debug = "full"
+incremental = true
 
 [patch.crates-io]
 gemm-common = { path = "vendor/gemm-common" }

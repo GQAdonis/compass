@@ -24,6 +24,6 @@ pub use lexical_index::{LexicalIndex, LexicalPosting, LexicalTermFrequency};
 pub use query_index::{QueryIndex, SchemaFingerprint, cypher_node_label, cypher_relationship_type};
 pub use validation::{
     CodeGraphValidationError, CodeGraphValidationReport, ExtractionValidationError,
-    RecordValidationErrors, assert_valid_extraction, validate_code_graph,
-    validate_code_graph_records, validate_extraction,
+    RecordValidationErrors, assert_valid_extraction, validate_build_metadata_identity,
+    validate_code_graph, validate_code_graph_records, validate_extraction,
 };

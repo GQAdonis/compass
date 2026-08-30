@@ -6,8 +6,8 @@ QUALIFY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/compass-code-graph-v1.XXXXXX")"
 trap 'chmod -R u+w "$QUALIFY_TMP" 2>/dev/null || true; rm -rf -- "$QUALIFY_TMP"' EXIT
 
 # Qualification intentionally exercises large repositories. Set CARGO_TARGET_DIR
-# before running if build artifacts should live somewhere other than this
-# checkout's target directory.
+# before running if you want those build artifacts somewhere other than the
+# checkout's own target directory.
 PARSER_ROOT="${TSLP_PARSER_SOURCE_DIR:-$QUALIFY_ROOT/target/parser-sources}"
 
 usage() {
@@ -238,18 +238,9 @@ python3 scripts/check_code_graph_v1_coverage.py \
   --corpus-manifest "$CORPUS_MANIFEST"
 
 echo "[code-graph-v1] enforce in-process scale ceilings"
-cargo test --locked -p compass-core --lib \
-  resolver_source_text_enforces_the_pre_read_byte_limit
-cargo test --locked -p compass-query --lib \
-  bounded_matching_scales_with_response_budget_on_500k_edges
-cargo test --locked -p compass-resolve --lib \
-  ambiguous_terminal_lookup_is_bounded_by_candidate_budget
-cargo test --locked -p compass-core --test pipeline_scale \
-  cold_and_warm_in_process_builds_stay_within_enterprise_ceiling
-cargo test --locked -p compass-query --test code_query_scale \
-  enterprise_queries_stay_within_in_process_ceiling
-cargo test --locked -p compass-resolve --test framework_resolution_scale \
-  shared_production_framework_resolution_stays_within_enterprise_ceiling
+cargo test --locked -p compass-core --test pipeline_scale
+cargo test --locked -p compass-query --test code_query_scale
+cargo test --locked -p compass-resolve --test framework_resolution_scale
 
 mkdir -p "$CORPUS/fixtures/code-graph"
 cp -R "$QUALIFY_ROOT/fixtures/code-graph/." "$CORPUS/fixtures/code-graph/"

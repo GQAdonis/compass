@@ -1042,7 +1042,11 @@ fn route_attributes(resolved: &ResolvedRoute) -> Map<String, Value> {
         )
         .unwrap_or(Value::Null),
     );
-    add_evidence_attributes(&mut attributes, route, resolved.state, &resolved.candidates);
+    let fact_state = match route.origin {
+        RawFrameworkOrigin::Ast | RawFrameworkOrigin::Config => ResolutionState::Exact,
+        RawFrameworkOrigin::Convention | RawFrameworkOrigin::Heuristic => resolved.state,
+    };
+    add_evidence_attributes(&mut attributes, route, fact_state, &[]);
     // The route declaration itself is an exact, source-backed fact even when
     // its handler target is unresolved. Keep the node visible at the default
     // low inference level; target uncertainty is represented by `resolution`

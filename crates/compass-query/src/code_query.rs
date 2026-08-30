@@ -9,7 +9,7 @@ use compass_graph::{
 };
 use compass_ir::ProgramBundle;
 use compass_model::code_graph::{
-    EdgeKind, EdgeRecord, FileRecord, GraphDocument, NodeKind, NodeRecord,
+    BuildMetadata, EdgeKind, EdgeRecord, FileRecord, GraphDocument, NodeKind, NodeRecord,
 };
 use compass_model::provenance::EvidenceConfidence;
 use compass_model::query_contract::{
@@ -19,6 +19,7 @@ use compass_model::query_contract::{
     normalize_query_symbol, query_edge_from_record, query_node_from_record,
     query_path_from_records,
 };
+use compass_model::validate_build_metadata_identity;
 use compass_store::SqliteStore;
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -288,6 +289,29 @@ pub struct CodeQueryEngine {
     pub(crate) build_generation_identity: String,
     pub(crate) search_query_cache: Mutex<SearchQueryCache>,
     pub(crate) fuzzy_lookup_cache: Mutex<FuzzyLookupCache>,
+}
+
+impl CodeQueryEngine {
+    /// Return the build identity pinned to this engine's exact graph
+    /// realization.
+    pub fn build_metadata(&self) -> Result<BuildMetadata, QueryError> {
+        let build = match &self.backend {
+            CodeGraphBackend::Materialized { graph, .. } => Ok(graph.graph.build.clone()),
+            CodeGraphBackend::Store(snapshot) => snapshot
+                .reader()?
+                .metadata_summary()
+                .map(|metadata| metadata.graph.build)
+                .map_err(snapshot_error),
+        }?;
+        validate_build_metadata_identity(&build).map_err(|error| {
+            QueryError::new(
+                QueryErrorKind::CorruptArtifact,
+                "invalid_graph_build_identity",
+                error.to_string(),
+            )
+        })?;
+        Ok(build)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

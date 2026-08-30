@@ -237,7 +237,7 @@ class Second {
         json!({
             "id": id,
             "label": ".constructor()",
-            "qualified_name": format!("{declaring_type}::constructor"),
+            "qualified_name": format!("bundle.{declaring_type}.constructor"),
             "declaring_type": declaring_type,
             "symbol_kind": "constructor",
             "file_type": "code",
@@ -276,7 +276,7 @@ class Second {
             .iter()
             .map(|node| node.qualified_name.as_str())
             .collect::<BTreeSet<_>>(),
-        ["First::constructor", "Second::constructor"]
+        ["bundle.First.constructor", "bundle.Second.constructor"]
             .into_iter()
             .collect()
     );

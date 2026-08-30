@@ -4,14 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 PARSER_ROOT="${TSLP_PARSER_SOURCE_DIR:-$ROOT/target/parser-sources}"
-case "$TARGET" in
-  /*) ;;
-  *) TARGET="$ROOT/$TARGET" ;;
-esac
-case "$PARSER_ROOT" in
-  /*) ;;
-  *) PARSER_ROOT="$ROOT/$PARSER_ROOT" ;;
-esac
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/compass-react-frontend.XXXXXX")"
 trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf -- "$TMP"' EXIT
 
@@ -52,7 +44,7 @@ fi
 
 mkdir -p "$TARGET"
 [[ -d "$TARGET" && -w "$TARGET" ]] || {
-  echo "[react-frontend] the selected target directory must be writable: $TARGET" >&2
+  echo "[react-frontend] the selected checkout-local target must be writable: $TARGET" >&2
   exit 1
 }
 [[ -f "$PARSER_ROOT/sources/language_definitions.json" && -d "$PARSER_ROOT/parsers" ]] || {

@@ -17,11 +17,11 @@ use compass_model::code_graph::{
     CODE_GRAPH_SCHEMA_V1, EdgeKind, EdgeRecord, FileRecord, GraphDiagnostic, GraphDocument,
     GraphMetadata, NodeDetails, NodeKind, NodeRecord,
 };
-use compass_model::validate_code_graph;
+use compass_model::{validate_build_metadata_identity, validate_code_graph};
 use compass_store::{
-    ImmutableWrite, Key, MAX_IMMUTABLE_BATCH_BYTES, MAX_IMMUTABLE_BATCH_ITEMS, MAX_KEY_SEGMENTS,
-    MAX_SCAN_BYTES, MAX_SCAN_ITEMS, MAX_VALUE_BYTES, NamespaceId, PartitionKey, Store, StoreError,
-    WriteCondition, decode_key_segments, encode_key_segments,
+    ImmutableWrite, Key, MAX_GRAPH_BYTES, MAX_IMMUTABLE_BATCH_BYTES, MAX_IMMUTABLE_BATCH_ITEMS,
+    MAX_KEY_SEGMENTS, MAX_SCAN_BYTES, MAX_SCAN_ITEMS, MAX_VALUE_BYTES, NamespaceId, PartitionKey,
+    Store, StoreError, WriteCondition, decode_key_segments, encode_key_segments, max_graph_bytes,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -30,14 +30,14 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
-pub const GRAPH_SNAPSHOT_LAYOUT_V1: &str = "compass.store.graph-index/1";
+pub const GRAPH_SNAPSHOT_LAYOUT_V2: &str = "compass.store.graph-index/2";
 pub const GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1: &str = "compass.store.graph-selector/1";
 pub const GRAPH_SNAPSHOT_CANONICAL_ENCODING_V1: &str = "canonical-json-v1";
 pub const DISCOVERY_SCOPE_INDEX_CAPABILITY_V1: &str = "compass.discovery-scope-index/1";
 pub const IDENTIFIER_SUBWORD_INDEX_CAPABILITY_V1: &str = "__compass_cap_identifier_subwords_v1__";
 pub const OPERATION_ROLE_TERM_INDEX_CAPABILITY_V1: &str = "__compass_cap_operation_role_terms_v1__";
 pub const DECLARATION_TERM_INDEX_CAPABILITY_V1: &str = "__compass_cap_declaration_terms_v1__";
-pub const RELATIONSHIP_TERM_INDEX_CAPABILITY_V1: &str = "__compass_cap_relationship_terms_v1__";
+pub const RELATIONSHIP_TERM_INDEX_CAPABILITY_V2: &str = "__compass_cap_relationship_terms_v2__";
 const EDGE_ID_ORDERED_ADJACENCY_CAPABILITY_V1: &str = "compass.edge-id-ordered-adjacency/1";
 pub const GRAPH_SNAPSHOT_OBJECT_PARTITION: &str = "graph-snapshot/objects";
 pub const GRAPH_SNAPSHOT_CATALOG_PARTITION: &str = "graph-snapshot/catalog";
@@ -53,6 +53,14 @@ pub const GRAPH_SNAPSHOT_MAX_OBJECTS: usize = 100_000;
 pub const GRAPH_SNAPSHOT_MAX_ITEMS: usize = 5_000_000;
 pub const GRAPH_SNAPSHOT_MAX_FANOUT: usize = 32;
 pub const GRAPH_SNAPSHOT_MAX_LEAF_ENTRIES: usize = 128;
+/// Default maximum size of the canonical graph published by a snapshot.
+pub const MAX_CANONICAL_GRAPH_BYTES: u64 = MAX_GRAPH_BYTES as u64;
+/// Effective canonical publication bound, including the explicit opt-in
+/// `COMPASS_MAX_GRAPH_BYTES` override.
+#[must_use]
+pub fn max_canonical_graph_bytes() -> u64 {
+    max_graph_bytes() as u64
+}
 /// Maximum previous JSON artifact retained while attempting a byte-preserving
 /// fact-neutral publication. Larger artifacts use the bounded streaming
 /// serializer instead of adding another resident graph-sized buffer.
@@ -111,6 +119,17 @@ pub enum SnapshotError {
     Limit(String),
     #[error("snapshot capability unavailable: {0}")]
     CapabilityUnavailable(String),
+}
+
+impl SnapshotError {
+    /// Construct the stable, actionable failure for canonical graph
+    /// publication above a byte limit.
+    #[must_use]
+    pub fn canonical_graph_too_large(maximum: u64) -> Self {
+        Self::Limit(format!(
+            "canonical graph exceeds the {maximum}-byte limit; retry or rebuild with a smaller scope using --exclude <pattern> or persistent patterns in .compassignore, or explicitly raise the bound with COMPASS_MAX_GRAPH_BYTES=<bytes|NMB|NGB>"
+        ))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -183,9 +202,9 @@ pub struct GraphSnapshotManifest {
 
 impl GraphSnapshotManifest {
     pub fn validate(&self) -> Result<(), SnapshotError> {
-        if self.schema != GRAPH_SNAPSHOT_LAYOUT_V1 {
+        if self.schema != GRAPH_SNAPSHOT_LAYOUT_V2 {
             return Err(SnapshotError::Unsupported(format!(
-                "expected {GRAPH_SNAPSHOT_LAYOUT_V1}, found {}",
+                "expected {GRAPH_SNAPSHOT_LAYOUT_V2}, found {}",
                 self.schema
             )));
         }
@@ -214,6 +233,29 @@ impl GraphSnapshotManifest {
                 "graph byte count must be nonzero".to_owned(),
             ));
         }
+        self.validate_roots()
+    }
+
+    fn validate_publication_limits(&self) -> Result<(), SnapshotError> {
+        if self.node_count > GRAPH_SNAPSHOT_MAX_ITEMS as u64
+            || self.edge_count > GRAPH_SNAPSHOT_MAX_ITEMS as u64
+        {
+            return Err(SnapshotError::Limit(format!(
+                "graph record count exceeds the {GRAPH_SNAPSHOT_MAX_ITEMS}-item snapshot limit"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_materialization_limit(&self) -> Result<(), SnapshotError> {
+        let maximum = max_canonical_graph_bytes();
+        if self.graph_bytes > maximum {
+            return Err(SnapshotError::canonical_graph_too_large(maximum));
+        }
+        Ok(())
+    }
+
+    fn validate_roots(&self) -> Result<(), SnapshotError> {
         if self.roots.len() != IndexKind::ALL.len() {
             return Err(SnapshotError::Corrupt(format!(
                 "manifest has {} roots; expected {}",
@@ -979,7 +1021,7 @@ impl GraphSnapshotBuilder {
         graph_bytes: u64,
     ) -> Result<PreparedGraphSnapshot, SnapshotError> {
         let manifest = GraphSnapshotManifest {
-            schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+            schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
             canonical_encoding: GRAPH_SNAPSHOT_CANONICAL_ENCODING_V1.to_owned(),
             snapshot_id: content.snapshot_id,
             graph_schema: CODE_GRAPH_SCHEMA_V1.to_owned(),
@@ -990,6 +1032,7 @@ impl GraphSnapshotBuilder {
             roots: content.roots,
         };
         manifest.validate()?;
+        manifest.validate_publication_limits()?;
         let manifest_bytes = encode_json(&manifest)?;
         let manifest_digest = hex_digest(&manifest_bytes);
         let mut writer = ObjectWriter::new(store)?;
@@ -1108,6 +1151,22 @@ pub fn write_canonical_graph_json<W: Write + ?Sized>(
     writer.write_all(b"}")
 }
 
+/// Stream canonical graph JSON while enforcing the configured publication
+/// limit against the bytes that are actually emitted.
+///
+/// The limit is checked before each write reaches the destination. Callers
+/// can therefore use this function inside an atomic staging callback without
+/// ever publishing an oversized artifact or retaining a guessed source-size
+/// multiplier.
+pub fn write_canonical_graph_json_bounded<W: Write + ?Sized>(
+    graph: &GraphDocument,
+    writer: &mut W,
+    maximum: u64,
+) -> io::Result<()> {
+    let mut bounded = CanonicalGraphLimitWriter::new(writer, maximum);
+    write_canonical_graph_json(graph, &mut bounded)
+}
+
 /// Publish a fact-neutral graph edit by reusing the previous canonical node
 /// and link bytes. Fact-neutral edits only update file-node metadata and graph
 /// inventory; the semantic node IDs and every relationship remain unchanged.
@@ -1146,6 +1205,70 @@ pub fn write_fact_neutral_graph_json_delta_prevalidated<W: Write + ?Sized>(
     )
 }
 
+/// Publish a prevalidated fact-neutral delta while enforcing the canonical
+/// graph byte limit against the actual emitted artifact.
+pub fn write_fact_neutral_graph_json_delta_prevalidated_bounded<W: Write + ?Sized>(
+    previous_bytes: &[u8],
+    graph: &GraphDocument,
+    changed_node_ids: &BTreeSet<String>,
+    writer: &mut W,
+    maximum: u64,
+) -> io::Result<bool> {
+    let mut bounded = CanonicalGraphLimitWriter::new(writer, maximum);
+    write_fact_neutral_graph_json_delta_inner(
+        previous_bytes,
+        graph,
+        changed_node_ids,
+        false,
+        &mut bounded,
+    )
+}
+
+struct CanonicalGraphLimitWriter<'a, W: Write + ?Sized> {
+    inner: &'a mut W,
+    bytes: u64,
+    maximum: u64,
+}
+
+impl<'a, W: Write + ?Sized> CanonicalGraphLimitWriter<'a, W> {
+    fn new(inner: &'a mut W, maximum: u64) -> Self {
+        Self {
+            inner,
+            bytes: 0,
+            maximum,
+        }
+    }
+}
+
+impl<W: Write + ?Sized> Write for CanonicalGraphLimitWriter<'_, W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let buffer_len = u64::try_from(buffer.len())
+            .map_err(|_| io::Error::other("canonical graph byte count does not fit u64"))?;
+        let next = self
+            .bytes
+            .checked_add(buffer_len)
+            .ok_or_else(|| io::Error::other("canonical graph byte count exceeds u64"))?;
+        if next > self.maximum {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                SnapshotError::canonical_graph_too_large(self.maximum),
+            ));
+        }
+        let written = self.inner.write(buffer)?;
+        self.bytes = self
+            .bytes
+            .checked_add(u64::try_from(written).map_err(|_| {
+                io::Error::other("canonical graph written byte count does not fit u64")
+            })?)
+            .ok_or_else(|| io::Error::other("canonical graph byte count exceeds u64"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 fn write_fact_neutral_graph_json_delta_inner<W: Write + ?Sized>(
     previous_bytes: &[u8],
     graph: &GraphDocument,
@@ -1153,7 +1276,10 @@ fn write_fact_neutral_graph_json_delta_inner<W: Write + ?Sized>(
     validate_records: bool,
     writer: &mut W,
 ) -> io::Result<bool> {
-    if previous_bytes.is_empty() || previous_bytes.len() > GRAPH_JSON_DELTA_MAX_SOURCE_BYTES {
+    if previous_bytes.is_empty()
+        || previous_bytes.len() > max_graph_bytes()
+        || previous_bytes.len() > GRAPH_JSON_DELTA_MAX_SOURCE_BYTES
+    {
         return Ok(false);
     }
     let Some(nodes_range) = top_level_member_range(previous_bytes, "nodes") else {
@@ -1606,6 +1732,7 @@ pub fn activate_graph_snapshot<S: Store + ?Sized>(
     prepared: &PreparedGraphSnapshot,
 ) -> Result<SnapshotSelector, SnapshotError> {
     prepared.manifest.validate()?;
+    prepared.manifest.validate_publication_limits()?;
     parse_digest(&prepared.manifest_digest)?;
     let namespace = NamespaceId::graph();
     let objects = object_partition()?;
@@ -1810,10 +1937,29 @@ impl<'a, S: Store + ?Sized> GraphSnapshotReader<'a, S> {
         let Some(selector) = active_graph_snapshot(store)? else {
             return Ok(None);
         };
-        Self::open_selector(store, selector).map(Some)
+        Self::open_selector_with_policy(store, selector, false).map(Some)
     }
 
     pub fn open_selector(store: &'a S, selector: SnapshotSelector) -> Result<Self, SnapshotError> {
+        Self::open_selector_with_policy(store, selector, true)
+    }
+
+    /// Open a snapshot for bounded integrity maintenance without applying the
+    /// current process's whole-graph admission ceiling. Status, validation,
+    /// backup, and restore inspect already-published immutable objects and do
+    /// not materialize the canonical graph payload.
+    pub fn open_selector_for_maintenance(
+        store: &'a S,
+        selector: SnapshotSelector,
+    ) -> Result<Self, SnapshotError> {
+        Self::open_selector_with_policy(store, selector, false)
+    }
+
+    fn open_selector_with_policy(
+        store: &'a S,
+        selector: SnapshotSelector,
+        enforce_publication_limits: bool,
+    ) -> Result<Self, SnapshotError> {
         selector.validate()?;
         let namespace = NamespaceId::graph();
         let objects = object_partition()?;
@@ -1826,6 +1972,10 @@ impl<'a, S: Store + ?Sized> GraphSnapshotReader<'a, S> {
         verify_digest(&entry.value, &selector.manifest_digest)?;
         let manifest = decode_json::<GraphSnapshotManifest>(&entry.value)?;
         manifest.validate()?;
+        manifest.validate_publication_limits()?;
+        if enforce_publication_limits {
+            manifest.validate_materialization_limit()?;
+        }
         if manifest.snapshot_id != selector.snapshot_id {
             return Err(SnapshotError::Corrupt(
                 "selector snapshot ID does not match its manifest".to_owned(),
@@ -1927,6 +2077,9 @@ impl<'a, S: Store + ?Sized> GraphSnapshotReader<'a, S> {
             .lookup(IndexKind::Metadata, &key)?
             .ok_or_else(|| SnapshotError::Corrupt("metadata index entry is missing".to_owned()))?;
         let record = decode_json::<MetadataRecord>(&value)?;
+        validate_build_metadata_identity(&record.graph.build).map_err(|error| {
+            SnapshotError::Corrupt(format!("graph build identity is invalid: {error}"))
+        })?;
         Ok(GraphSnapshotMetadata {
             directed: record.directed,
             multigraph: record.multigraph,
@@ -2447,7 +2600,7 @@ impl<'a, S: Store + ?Sized> GraphSnapshotReader<'a, S> {
 
     /// Whether this snapshot includes exact direct-caller concept postings.
     pub fn supports_relationship_terms(&self) -> Result<bool, SnapshotError> {
-        let capability = RELATIONSHIP_TERM_INDEX_CAPABILITY_V1;
+        let capability = RELATIONSHIP_TERM_INDEX_CAPABILITY_V2;
         let posting_prefix = capability.get(..3).unwrap_or(capability);
         let key = encode_graph_index_key(
             IndexKind::Terms,
@@ -3174,10 +3327,10 @@ fn digest_canonical_graph(
     graph: &GraphDocument,
     clear_generation: bool,
 ) -> Result<(String, u64), SnapshotError> {
-    digest_json(&canonical_graph_document_with_generation(
-        graph,
-        clear_generation,
-    ))
+    digest_canonical_graph_json(
+        &canonical_graph_document_with_generation(graph, clear_generation),
+        max_graph_bytes(),
+    )
 }
 
 fn canonical_graph_document_with_generation(
@@ -3560,7 +3713,7 @@ fn build_index(
                     &(),
                 )?;
             }
-            let relationship_capability = RELATIONSHIP_TERM_INDEX_CAPABILITY_V1;
+            let relationship_capability = RELATIONSHIP_TERM_INDEX_CAPABILITY_V2;
             let relationship_prefix = relationship_capability
                 .get(..3)
                 .unwrap_or(relationship_capability);
@@ -4006,7 +4159,7 @@ fn update_index_tree<S: Store + ?Sized>(
             put_tree_object(
                 writer,
                 &TreeObject::Branch {
-                    schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+                    schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
                     index,
                     children: updated_children,
                 },
@@ -4048,7 +4201,7 @@ fn build_index_tree<S: Store + ?Sized>(
     }
     if current.is_empty() && leaves.is_empty() {
         let object = TreeObject::Leaf {
-            schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+            schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
             index,
             entries: Vec::new(),
         };
@@ -4073,7 +4226,7 @@ fn put_leaf_entries<S: Store + ?Sized>(
         .map(|entry| entry.key.clone())
         .ok_or_else(|| SnapshotError::Corrupt("empty leaf".to_owned()))?;
     let object = TreeObject::Leaf {
-        schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+        schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
         index,
         entries,
     };
@@ -4127,7 +4280,7 @@ fn build_branch_levels<S: Store + ?Sized>(
             .map(|child| child.first_key.clone())
             .ok_or_else(|| SnapshotError::Corrupt("empty branch group".to_owned()))?;
         let object = TreeObject::Branch {
-            schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+            schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
             index,
             children: chunk,
         };
@@ -4495,7 +4648,7 @@ fn validate_tree_header(
     index: IndexKind,
     expected: IndexKind,
 ) -> Result<(), SnapshotError> {
-    if schema != GRAPH_SNAPSHOT_LAYOUT_V1 {
+    if schema != GRAPH_SNAPSHOT_LAYOUT_V2 {
         return Err(SnapshotError::Unsupported(format!(
             "tree object schema {schema} is not supported"
         )));
@@ -4568,7 +4721,9 @@ fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, SnapshotError> {
 struct DigestWriter {
     hasher: Sha256,
     bytes: u64,
+    maximum: Option<u64>,
     overflowed: bool,
+    exceeded: bool,
 }
 
 impl DigestWriter {
@@ -4576,7 +4731,16 @@ impl DigestWriter {
         Self {
             hasher: Sha256::new(),
             bytes: 0,
+            maximum: None,
             overflowed: false,
+            exceeded: false,
+        }
+    }
+
+    fn with_maximum(maximum: usize) -> Self {
+        Self {
+            maximum: Some(maximum as u64),
+            ..Self::new()
         }
     }
 }
@@ -4589,6 +4753,12 @@ impl Write for DigestWriter {
             self.overflowed = true;
             return Err(std::io::Error::other("serialized byte count exceeds u64"));
         };
+        if self.maximum.is_some_and(|maximum| next > maximum) {
+            self.exceeded = true;
+            return Err(std::io::Error::other(
+                "serialized value exceeds its byte limit",
+            ));
+        }
         self.hasher.update(buffer);
         self.bytes = next;
         Ok(buffer.len())
@@ -4599,9 +4769,15 @@ impl Write for DigestWriter {
     }
 }
 
-fn digest_json<T: Serialize>(value: &T) -> Result<(String, u64), SnapshotError> {
-    let mut writer = DigestWriter::new();
+fn digest_canonical_graph_json<T: Serialize>(
+    value: &T,
+    maximum: usize,
+) -> Result<(String, u64), SnapshotError> {
+    let mut writer = DigestWriter::with_maximum(maximum);
     if let Err(error) = serde_json::to_writer(&mut writer, value) {
+        if writer.exceeded {
+            return Err(SnapshotError::canonical_graph_too_large(maximum as u64));
+        }
         if writer.overflowed {
             return Err(SnapshotError::Limit(
                 "canonical graph byte count exceeds u64".to_owned(),
@@ -4751,9 +4927,17 @@ fn object_key(digest: &str) -> Result<Key, SnapshotError> {
     Key::new(format!("object/{digest}").as_bytes()).map_err(SnapshotError::from)
 }
 
-fn manifest_key(digest: &str) -> Result<Key, SnapshotError> {
+/// Return the versioned store key for an immutable graph snapshot manifest.
+///
+/// Store adapters and contract tests use this helper instead of duplicating
+/// the snapshot layout's key encoding outside its owning crate.
+pub fn graph_snapshot_manifest_key(digest: &str) -> Result<Key, SnapshotError> {
     parse_digest(digest)?;
     Key::new(format!("manifest/{digest}").as_bytes()).map_err(SnapshotError::from)
+}
+
+fn manifest_key(digest: &str) -> Result<Key, SnapshotError> {
+    graph_snapshot_manifest_key(digest)
 }
 
 fn digest_bytes(value: &[u8]) -> [u8; 32] {
@@ -4949,7 +5133,7 @@ mod tests {
             IndexKind::Nodes,
             "branch",
             TreeObject::Branch {
-                schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+                schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
                 index: IndexKind::Nodes,
                 children: vec![TreeChild {
                     first_key: vec![0],
@@ -4962,7 +5146,7 @@ mod tests {
                 IndexKind::Nodes,
                 &format!("leaf-{index:02}"),
                 TreeObject::Leaf {
-                    schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+                    schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
                     index: IndexKind::Nodes,
                     entries: vec![TreeEntry {
                         key: vec![u8::try_from(index).unwrap_or_default()],
@@ -5442,7 +5626,7 @@ mod tests {
         let mut content = builder.prepare_content(&store, &graph)?;
         let term_postings = build_term_postings(&graph);
         let mut term_entries = build_index(&graph, IndexKind::Terms, Some(&term_postings))?;
-        let capability = RELATIONSHIP_TERM_INDEX_CAPABILITY_V1;
+        let capability = RELATIONSHIP_TERM_INDEX_CAPABILITY_V2;
         let prefix = capability.get(..3).unwrap_or(capability);
         term_entries.remove(&encode_graph_index_key(
             IndexKind::Terms,
@@ -5704,7 +5888,7 @@ mod tests {
     #[test]
     fn tree_decoder_accepts_compact_and_legacy_encodings() -> Result<(), SnapshotError> {
         let object = TreeObject::Leaf {
-            schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+            schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
             index: IndexKind::Nodes,
             entries: vec![TreeEntry {
                 key: encode_graph_index_key(IndexKind::Nodes, &[b"node-id"])?,
@@ -5716,7 +5900,7 @@ mod tests {
         assert_eq!(decode_tree_object(&encode_json(&object)?)?, object);
 
         let compressible = TreeObject::Leaf {
-            schema: GRAPH_SNAPSHOT_LAYOUT_V1.to_owned(),
+            schema: GRAPH_SNAPSHOT_LAYOUT_V2.to_owned(),
             index: IndexKind::Nodes,
             entries: vec![TreeEntry {
                 key: encode_graph_index_key(IndexKind::Nodes, &[b"compressible"])?,

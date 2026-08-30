@@ -254,11 +254,7 @@ fn enable_disable_are_explicit_idempotent_and_invalid_profiles_roll_back()
     git(directory.path(), &["add", "fixture.rs"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "fixture"])?;
     let compass = env!("CARGO_BIN_EXE_compass");
-    let enabled = run(
-        compass,
-        directory.path(),
-        &["history", "enable", "--code-only"],
-    )?;
+    let enabled = run(compass, directory.path(), &["history", "enable"])?;
     assert!(enabled.status.success());
     let config = directory.path().join(".git/compass/config.json");
     let before = std::fs::read(&config)?;
@@ -1379,7 +1375,7 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
     ] {
         assert!(
             envelope["graph_delta"][field].is_array(),
-            "graph_delta.{field} must remain an array"
+            "graph delta field {field} is not an array"
         );
     }
     assert!(

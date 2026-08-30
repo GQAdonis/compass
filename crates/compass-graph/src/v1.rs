@@ -5583,6 +5583,9 @@ fn node_identity(
                 }))
             ) =>
         {
+            if semantic_document_resource(details) {
+                return Ok(domain_id(kind, source_path, qualified_name));
+            }
             // Markdown/HTML blocks are occurrences, not global concepts. The
             // source anchor is part of their semantic identity so repeated
             // blocks in one file cannot quarantine one another.
@@ -5647,6 +5650,17 @@ fn node_identity(
         }
     };
     Ok(id)
+}
+
+fn semantic_document_resource(details: Option<&NodeDetails>) -> bool {
+    matches!(
+        details,
+        Some(NodeDetails::Resource(ResourceNodeDetails {
+            resource_kind: ResourceKind::Document,
+            uri: Some(uri),
+            ..
+        })) if uri.starts_with('#')
+    )
 }
 
 fn node_identity_source(

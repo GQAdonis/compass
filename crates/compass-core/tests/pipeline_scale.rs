@@ -9,7 +9,6 @@ const SOURCE_FILES: usize = 300;
 const OVERSIZED_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 const COLD_CEILING: Duration = Duration::from_secs(60);
 const WARM_CEILING: Duration = Duration::from_secs(10);
-
 #[test]
 fn cold_and_warm_in_process_builds_stay_within_enterprise_ceiling() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
