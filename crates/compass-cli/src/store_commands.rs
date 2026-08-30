@@ -12,9 +12,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+use compass_graphdb_surreal::{
+    ProjectionBundle, SURREAL_REF_FILE_NAME, SurrealEngine, SurrealProjection, SurrealRef,
+};
+
 use crate::Outcome;
 
 const BACKUP_SCHEMA_V1: &str = "compass.store.backup/1";
+const SURREAL_BACKUP_SCHEMA_V1: &str = "compass.surreal.backup/1";
+const MAX_BACKUP_MANIFEST_BYTES: u64 = 64 * 1024;
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+const SURREAL_BUNDLE_FILE_NAME: &str = "surreal.bundle.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +36,17 @@ struct BackupManifest {
     snapshot_id: String,
     manifest_digest: String,
     store_reference: StoreRef,
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SurrealBackupManifest {
+    schema: String,
+    adapter: String,
+    graph_digest: String,
+    bundle_digest: String,
+    reference: SurrealRef,
 }
 
 pub(crate) fn command(args: &[String]) -> Outcome {
@@ -118,18 +138,24 @@ fn status(args: &[String]) -> Result<Value, String> {
         json!({ "present": false })
     };
 
+    let surreal = surreal_status(&output);
+
     Ok(json!({
         "schema": "compass.store.status/1",
         "output": output,
         "graphJson": graph.unwrap_or_else(|| json!({ "present": false })),
         "store": store.unwrap_or_else(|| json!({ "present": false })),
         "storeRef": reference,
+        "surrealStore": surreal,
         "rebuildCommand": "compass update --force",
     }))
 }
 
 fn validate(args: &[String]) -> Result<Value, String> {
     let output = output_root(args)?;
+    if selects_surreal(args, &output)? {
+        return validate_surreal(&output);
+    }
     let graph_path = output.join("graph.json");
     let store_path = local_sqlite_store_path(&graph_path);
     if !store_path.is_file() {
@@ -184,6 +210,9 @@ fn backup(args: &[String]) -> Result<Value, String> {
             "backup destination already exists: {}",
             destination.display()
         ));
+    }
+    if selects_surreal(args, &output)? {
+        return backup_surreal(&output, &destination);
     }
     let graph_path = output.join("graph.json");
     let store_path = local_sqlite_store_path(&graph_path);
@@ -263,11 +292,16 @@ fn restore(args: &[String]) -> Result<Value, String> {
             destination.display()
         ));
     }
-    let manifest: BackupManifest = serde_json::from_slice(
-        &fs::read(source.join("manifest.json"))
-            .map_err(|error| format!("read backup manifest: {error}"))?,
-    )
-    .map_err(|error| format!("decode backup manifest: {error}"))?;
+    let manifest_bytes =
+        compass_files::read_bytes_bounded(&source.join("manifest.json"), MAX_BACKUP_MANIFEST_BYTES)
+            .map_err(|error| format!("read backup manifest: {error}"))?;
+    let manifest_value: Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| format!("decode backup manifest: {error}"))?;
+    if manifest_value.get("schema").and_then(Value::as_str) == Some(SURREAL_BACKUP_SCHEMA_V1) {
+        return restore_surreal(&source, &destination, &manifest_bytes);
+    }
+    let manifest: BackupManifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|error| format!("decode backup manifest: {error}"))?;
     if manifest.schema != BACKUP_SCHEMA_V1
         || manifest.store_schema != STORE_SCHEMA_V1
         || manifest.adapter != "sqlite"
@@ -323,6 +357,338 @@ fn restore(args: &[String]) -> Result<Value, String> {
         "snapshotId": manifest.snapshot_id,
         "graphDigest": manifest.graph_digest,
     }))
+}
+
+fn selects_surreal(args: &[String], output: &Path) -> Result<bool, String> {
+    match option(args, "--engine") {
+        Some("surreal") => Ok(true),
+        Some("store" | "sqlite") => Ok(false),
+        Some(value) => Err(format!(
+            "--engine must be sqlite or surreal for store operations (found {value})"
+        )),
+        None => Ok(output.join("surreal.ref").is_file()),
+    }
+}
+
+fn surreal_status(output: &Path) -> Value {
+    let reference_path = output.join("surreal.ref");
+    if !reference_path.is_file() {
+        return json!({
+            "present": false,
+            "available": cfg!(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")),
+        });
+    }
+    #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+    {
+        return match validate_surreal(output) {
+            Ok(value) => value,
+            Err(error) => json!({
+                "present": true,
+                "available": true,
+                "valid": false,
+                "error": error,
+            }),
+        };
+    }
+    #[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+    {
+        let value = compass_files::read_bytes_bounded(&reference_path, 32 * 1024)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        json!({
+            "present": true,
+            "available": false,
+            "valid": value.as_ref().is_some_and(|value| {
+                value.get("schema").and_then(Value::as_str) == Some("compass.surreal.ref/1")
+            }),
+            "reference": value,
+        })
+    }
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn validate_surreal(output: &Path) -> Result<Value, String> {
+    let reference = read_surreal_reference(output)?;
+    let runtime = surreal_runtime()?;
+    runtime.block_on(async {
+        let projection = open_surreal_projection(&reference, false).await?;
+        projection
+            .validate_contents(&reference)
+            .await
+            .map_err(|error| error.to_string())?;
+        let graph_path = output.join("graph.json");
+        if graph_path.is_file() {
+            let digest = format!("sha256:{}", digest_file(&graph_path)?);
+            if digest != reference.graph_digest {
+                return Err("surreal.ref graph digest does not match graph.json".to_owned());
+            }
+        }
+        Ok(json!({
+            "schema": "compass.surreal.validation/1",
+            "present": true,
+            "available": true,
+            "valid": true,
+            "adapter": "surreal",
+            "engine": reference.engine.as_str(),
+            "referenceContract": reference.schema,
+            "generationId": reference.generation_id,
+            "graphDigest": reference.graph_digest,
+            "nodeCount": reference.node_count,
+            "relationCount": reference.relation_count,
+            "fileCount": reference.file_count,
+            "location": reference.location,
+            "reference": reference,
+        }))
+    })
+}
+
+#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+fn validate_surreal(_output: &Path) -> Result<Value, String> {
+    Err("this Compass binary was built without a SurrealDB engine".to_owned())
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn backup_surreal(output: &Path, destination: &Path) -> Result<Value, String> {
+    let reference = read_surreal_reference(output)?;
+    let graph_path = output.join("graph.json");
+    let graph_digest = format!("sha256:{}", digest_file(&graph_path)?);
+    if graph_digest != reference.graph_digest {
+        return Err("surreal.ref graph digest does not match graph.json".to_owned());
+    }
+    let runtime = surreal_runtime()?;
+    let bundle = runtime.block_on(async {
+        let projection = open_surreal_projection(&reference, false).await?;
+        projection
+            .export_bundle(&reference)
+            .await
+            .map_err(|error| error.to_string())
+    })?;
+    bundle.validate().map_err(|error| error.to_string())?;
+    let manifest = SurrealBackupManifest {
+        schema: SURREAL_BACKUP_SCHEMA_V1.to_owned(),
+        adapter: format!("surreal-{}", reference.engine.as_str()),
+        graph_digest,
+        bundle_digest: bundle.digest.clone(),
+        reference,
+    };
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("create backup destination: {error}"))?;
+    let result = (|| {
+        fs::copy(&graph_path, destination.join("graph.json"))
+            .map_err(|error| format!("copy graph.json: {error}"))?;
+        fs::write(
+            destination.join(SURREAL_BUNDLE_FILE_NAME),
+            serde_json::to_vec_pretty(&bundle).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("write Surreal projection bundle: {error}"))?;
+        fs::write(
+            destination.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("write backup manifest: {error}"))?;
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_dir_all(destination);
+        return Err(error);
+    }
+    Ok(json!({
+        "schema": SURREAL_BACKUP_SCHEMA_V1,
+        "backup": destination,
+        "manifest": manifest,
+    }))
+}
+
+#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+fn backup_surreal(_output: &Path, _destination: &Path) -> Result<Value, String> {
+    Err("this Compass binary was built without a SurrealDB engine".to_owned())
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn restore_surreal(
+    source: &Path,
+    destination: &Path,
+    manifest_bytes: &[u8],
+) -> Result<Value, String> {
+    let manifest: SurrealBackupManifest = serde_json::from_slice(manifest_bytes)
+        .map_err(|error| format!("decode Surreal backup manifest: {error}"))?;
+    if manifest.schema != SURREAL_BACKUP_SCHEMA_V1
+        || manifest.adapter != format!("surreal-{}", manifest.reference.engine.as_str())
+    {
+        return Err("backup uses an unsupported Compass Surreal format".to_owned());
+    }
+    let bundle_path = source.join(SURREAL_BUNDLE_FILE_NAME);
+    let bundle_bytes = bounded_read(
+        &bundle_path,
+        compass_model::DEFAULT_GRAPH_SIZE_CAP_BYTES,
+        "Surreal projection bundle",
+    )?;
+    let bundle: ProjectionBundle = serde_json::from_slice(&bundle_bytes)
+        .map_err(|error| format!("decode Surreal projection bundle: {error}"))?;
+    bundle.validate().map_err(|error| error.to_string())?;
+    if bundle.digest != manifest.bundle_digest || bundle.reference != manifest.reference {
+        return Err("Surreal projection bundle does not match backup manifest".to_owned());
+    }
+    let source_graph = source.join("graph.json");
+    let graph_digest = format!("sha256:{}", digest_file(&source_graph)?);
+    if graph_digest != manifest.graph_digest || graph_digest != bundle.reference.graph_digest {
+        return Err("backup graph digest does not match its Surreal projection".to_owned());
+    }
+
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("create restore destination: {error}"))?;
+    let location = destination.join("surreal");
+    let new_reference = SurrealRef::from_plan(
+        &bundle.plan,
+        bundle.reference.engine,
+        &location,
+        graph_digest.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    let runtime = surreal_runtime()?;
+    let result = runtime.block_on(async {
+        let projection = open_surreal_projection(&new_reference, true).await?;
+        projection
+            .stage_for_reference(&bundle.plan, &new_reference)
+            .await
+            .map_err(|error| error.to_string())?;
+        projection
+            .validate_reference(&new_reference)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok::<SurrealProjection, String>(projection)
+    });
+    let projection = match result {
+        Ok(projection) => projection,
+        Err(error) => {
+            let _ = fs::remove_dir_all(destination);
+            return Err(error);
+        }
+    };
+    let publication = (|| {
+        fs::copy(&source_graph, destination.join("graph.json"))
+            .map_err(|error| format!("restore graph.json: {error}"))?;
+        fs::write(
+            destination.join(SURREAL_REF_FILE_NAME),
+            new_reference.encode().map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("write surreal.ref: {error}"))?;
+        if read_surreal_reference(destination)? != new_reference
+            || format!("sha256:{}", digest_file(&destination.join("graph.json"))?)
+                != new_reference.graph_digest
+        {
+            return Err(
+                "restored artifacts do not match their validated Surreal generation".to_owned(),
+            );
+        }
+        runtime
+            .block_on(projection.validate_reference(&new_reference))
+            .map_err(|error| error.to_string())?;
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = publication {
+        let _ = fs::remove_dir_all(destination);
+        return Err(error);
+    }
+    Ok(json!({
+        "schema": "compass.surreal.restore/1",
+        "restored": destination,
+        "generationId": new_reference.generation_id,
+        "graphDigest": graph_digest,
+        "engine": new_reference.engine.as_str(),
+    }))
+}
+
+#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+fn restore_surreal(
+    _source: &Path,
+    _destination: &Path,
+    _manifest_bytes: &[u8],
+) -> Result<Value, String> {
+    Err("this Compass binary was built without a SurrealDB engine".to_owned())
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn read_surreal_reference(output: &Path) -> Result<SurrealRef, String> {
+    let path = output.join(SURREAL_REF_FILE_NAME);
+    let bytes = bounded_read(
+        &path,
+        compass_graphdb_surreal::MAX_SURREAL_REF_BYTES,
+        "surreal.ref",
+    )?;
+    SurrealRef::decode(&bytes).map_err(|error| error.to_string())
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn surreal_runtime() -> Result<tokio::runtime::Runtime, String> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("could not start Surreal runtime: {error}"))
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+async fn open_surreal_projection(
+    reference: &SurrealRef,
+    initialize_schema: bool,
+) -> Result<SurrealProjection, String> {
+    match reference.engine {
+        SurrealEngine::SurrealKv => {
+            #[cfg(feature = "surreal-surrealkv")]
+            {
+                let projection = if initialize_schema {
+                    SurrealProjection::surrealkv(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                } else {
+                    SurrealProjection::surrealkv_existing(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                };
+                return projection.map_err(|error| error.to_string());
+            }
+            #[cfg(not(feature = "surreal-surrealkv"))]
+            {
+                Err("this Compass binary was built without surreal-surrealkv".to_owned())
+            }
+        }
+        SurrealEngine::RocksDb => {
+            #[cfg(feature = "surreal-rocksdb")]
+            {
+                let projection = if initialize_schema {
+                    SurrealProjection::rocksdb(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                } else {
+                    SurrealProjection::rocksdb_existing(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                };
+                return projection.map_err(|error| error.to_string());
+            }
+            #[cfg(not(feature = "surreal-rocksdb"))]
+            {
+                Err("this Compass binary was built without surreal-rocksdb".to_owned())
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn bounded_read(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>, String> {
+    compass_files::read_bytes_bounded(path, limit).map_err(|error| format!("read {label}: {error}"))
 }
 
 fn validate_store(
@@ -421,7 +787,7 @@ fn output_root(args: &[String]) -> Result<PathBuf, String> {
 }
 
 fn positional(args: &[String]) -> Vec<String> {
-    let value_options = ["--format", "--output", "--from", "--into"];
+    let value_options = ["--format", "--output", "--from", "--into", "--engine"];
     let mut values = Vec::new();
     let mut skip = false;
     for argument in args.iter().skip(1) {

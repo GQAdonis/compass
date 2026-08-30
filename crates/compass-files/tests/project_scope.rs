@@ -1,7 +1,10 @@
 use std::error::Error;
 use std::fs;
 
-use compass_files::{BuildScope, DetectOptions, ProjectConfig, WatchPathFilter, detect};
+use compass_files::{
+    BuildScope, DetectOptions, ProjectConfig, ProjectStorage, ProjectStore, ProjectSurrealEngine,
+    WatchPathFilter, detect,
+};
 
 #[test]
 fn project_config_round_trips_normalized_scope() -> Result<(), Box<dyn Error>> {
@@ -59,13 +62,13 @@ fn project_config_rejects_unknown_versions_and_root_escapes() -> Result<(), Box<
     fs::create_dir(root.path().join(".compass"))?;
     fs::write(
         root.path().join(".compass/config.toml"),
-        "version = 2\n[build]\n",
+        "version = 3\n[build]\n",
     )?;
     let error = match ProjectConfig::load(root.path()) {
         Err(error) => error,
         Ok(_) => return Err("version must fail".into()),
     };
-    assert!(error.to_string().contains("version 2"));
+    assert!(error.to_string().contains("version 3"));
     assert!(
         ProjectConfig::new(BuildScope {
             include: vec!["../outside".to_owned()],
@@ -82,6 +85,38 @@ fn project_config_rejects_unknown_versions_and_root_escapes() -> Result<(), Box<
         .normalize(root.path())
         .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn project_config_v1_remains_compatible_and_v2_persists_surreal_storage()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    fs::create_dir(root.path().join(".compass"))?;
+    fs::write(
+        root.path().join(".compass/config.toml"),
+        "version = 1\n\n[build]\ninclude = []\nexclude = []\n",
+    )?;
+    let legacy = ProjectConfig::load(root.path())?.ok_or("missing v1 config")?;
+    assert_eq!(legacy.version, 1);
+    assert_eq!(legacy.storage, ProjectStorage::default());
+
+    let configured = ProjectConfig {
+        version: 2,
+        build: BuildScope::default(),
+        storage: ProjectStorage {
+            store: Some(ProjectStore::Surreal),
+            surreal_engine: Some(ProjectSurrealEngine::RocksDb),
+            surreal_path: Some("compass-out/shared-surreal".into()),
+        },
+    };
+    configured.write(root.path())?;
+    let loaded = ProjectConfig::load(root.path())?.ok_or("missing v2 config")?;
+    assert_eq!(loaded, configured);
+    let encoded = fs::read_to_string(root.path().join(".compass/config.toml"))?;
+    assert!(encoded.contains("store = \"surreal\""));
+    assert!(encoded.contains("surreal_engine = \"rocksdb\""));
+    assert!(encoded.contains("surreal_path = \"compass-out/shared-surreal\""));
     Ok(())
 }
 

@@ -31,6 +31,11 @@ use rmcp::model::{
 use rmcp::{ClientLifecycleMode, ClientServiceExt, ServiceExt};
 use serde_json::{Map, Value, json};
 
+#[cfg(feature = "surreal-surrealkv")]
+use compass_core::{BuildOptions, GraphStorage, build_local_graph};
+#[cfg(feature = "surreal-surrealkv")]
+use compass_query::EngineSelection;
+
 fn write_typed_graph(root: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let graph_path = root.join("graph.json");
     fs::create_dir_all(root.join("src"))?;
@@ -237,7 +242,8 @@ fn invoke(server: &CompassMcp, name: &str, arguments: Value) -> Result<Value, Bo
         name,
         arguments.as_object().cloned().unwrap_or_else(Map::new),
     );
-    let envelope = serde_json::from_str::<Value>(&output)?;
+    let envelope = serde_json::from_str::<Value>(&output)
+        .map_err(|error| format!("tool {name} returned invalid JSON ({error}): {output}"))?;
     if envelope["schema"] == "compass.code_context.v1" {
         return Ok(envelope);
     }
@@ -1382,5 +1388,53 @@ async fn mcp_code_queries_publish_structured_content_and_protocol_errors()
     );
     client.cancel().await?;
     server_task.await?.map_err(std::io::Error::other)?;
+    Ok(())
+}
+
+#[cfg(feature = "surreal-surrealkv")]
+#[test]
+fn mcp_typed_tools_and_task_context_share_the_generation_pinned_surreal_engine()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    fs::write(
+        root.path().join("lib.rs"),
+        "pub fn caller() { callee(); }\npub fn callee() {}\n",
+    )?;
+    let mut options = BuildOptions::new(root.path());
+    options.no_cluster = true;
+    options.no_viz = true;
+    options.graph_storage = GraphStorage::Surreal;
+    let build = build_local_graph(&options)?;
+    let graph = build.output_dir.join("graph.json");
+    let server = CompassMcp::new_with_engine(graph, EngineSelection::Surreal);
+
+    let cases = [
+        ("search_symbols", json!({"query": "callee"})),
+        ("query_graph", json!({"question": "who calls callee?"})),
+        ("get_callers", json!({"symbol": "callee"})),
+        ("get_callees", json!({"symbol": "caller"})),
+        ("get_impact", json!({"symbol": "callee"})),
+        (
+            "explore_code",
+            json!({"symbols": ["caller", "callee"], "root": root.path()}),
+        ),
+        ("get_node", json!({"source": "caller", "target": "callee"})),
+    ];
+    for (name, arguments) in cases {
+        let result = invoke(&server, name, arguments)?;
+        assert_eq!(result["schema"], "compass.code_context.v1", "tool: {name}");
+        assert_eq!(result["data"]["schema"], "compass.query/1", "tool: {name}");
+    }
+
+    let context = invoke(
+        &server,
+        "task_context",
+        json!({
+            "intent": "explain",
+            "target": "callee",
+            "project_path": root.path()
+        }),
+    )?;
+    assert_eq!(context["schema"], "compass.task-context/2");
     Ok(())
 }

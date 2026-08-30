@@ -11,6 +11,11 @@ pub struct SchemaFingerprint([u8; 32]);
 
 impl SchemaFingerprint {
     #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
     pub const fn empty() -> Self {
         Self([0; 32])
     }
@@ -176,7 +181,12 @@ pub fn cypher_node_label(node: &NodeRecord) -> String {
         .or_else(|| node.logical_property("file_type"))
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_default();
-    let raw = if raw.is_empty() { "Entity" } else { &raw };
+    cypher_node_label_from_kind(&raw)
+}
+
+#[must_use]
+pub fn cypher_node_label_from_kind(raw: &str) -> String {
+    let raw = if raw.is_empty() { "Entity" } else { raw };
     let mut value = raw.to_lowercase();
     if let Some(first) = value.get_mut(0..1) {
         first.make_ascii_uppercase();
@@ -186,10 +196,15 @@ pub fn cypher_node_label(node: &NodeRecord) -> String {
 
 #[must_use]
 pub fn cypher_relationship_type(edge: &EdgeRecord) -> String {
-    let raw = if edge.relation().is_empty() {
+    cypher_relationship_type_from_relation(edge.relation())
+}
+
+#[must_use]
+pub fn cypher_relationship_type_from_relation(relation: &str) -> String {
+    let raw = if relation.is_empty() {
         "RELATES_TO".to_owned()
     } else {
-        edge.relation().to_uppercase()
+        relation.to_uppercase()
     };
     cypher_identifier(&raw, "RELATES_TO")
 }
@@ -211,28 +226,52 @@ fn cypher_identifier(value: &str, fallback: &str) -> String {
 }
 
 fn fingerprint_schema(nodes: &[NodeRecord], edges: &[EdgeRecord]) -> SchemaFingerprint {
-    let mut entries = BTreeSet::new();
+    let mut builder = SchemaFingerprintBuilder::default();
     for node in nodes {
-        entries.insert(format!("N:L:{}", cypher_node_label(node)));
-        entries.insert("N:P:id:string".to_owned());
-        entries.insert("N:P:label:string".to_owned());
-        for (key, value) in node.logical_properties() {
-            entries.insert(format!("N:P:{key}:{}", value_kind(&value)));
-        }
+        builder.add_node(node);
     }
     for edge in edges {
-        entries.insert(format!("R:T:{}", cypher_relationship_type(edge)));
-        entries.insert("R:P:confidence:string".to_owned());
-        for (key, value) in edge.logical_properties() {
-            entries.insert(format!("R:P:{key}:{}", value_kind(&value)));
+        builder.add_edge(edge);
+    }
+    builder.finish()
+}
+
+/// Streaming schema fingerprint construction for database projections. This
+/// retains only distinct schema facts, never graph records or adjacency.
+#[derive(Default)]
+pub struct SchemaFingerprintBuilder {
+    entries: BTreeSet<String>,
+}
+
+impl SchemaFingerprintBuilder {
+    pub fn add_node(&mut self, node: &NodeRecord) {
+        self.entries
+            .insert(format!("N:L:{}", cypher_node_label(node)));
+        self.entries.insert("N:P:id:string".to_owned());
+        self.entries.insert("N:P:label:string".to_owned());
+        for (key, value) in node.logical_properties() {
+            self.entries
+                .insert(format!("N:P:{key}:{}", value_kind(&value)));
         }
     }
-    let mut digest = Sha256::new();
-    for entry in entries {
-        digest.update((entry.len() as u64).to_le_bytes());
-        digest.update(entry.as_bytes());
+    pub fn add_edge(&mut self, edge: &EdgeRecord) {
+        self.entries
+            .insert(format!("R:T:{}", cypher_relationship_type(edge)));
+        self.entries.insert("R:P:confidence:string".to_owned());
+        for (key, value) in edge.logical_properties() {
+            self.entries
+                .insert(format!("R:P:{key}:{}", value_kind(&value)));
+        }
     }
-    SchemaFingerprint(digest.finalize().into())
+    #[must_use]
+    pub fn finish(self) -> SchemaFingerprint {
+        let mut digest = Sha256::new();
+        for entry in self.entries {
+            digest.update((entry.len() as u64).to_le_bytes());
+            digest.update(entry.as_bytes());
+        }
+        SchemaFingerprint(digest.finalize().into())
+    }
 }
 
 fn value_kind(value: &Value) -> &'static str {

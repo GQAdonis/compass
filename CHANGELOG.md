@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Wire optional embedded SurrealDB through project configuration v2,
+  `init`/`update`/`extract`/`watch` publication, generation-pinned typed CLI and
+  MCP queries, native CompassQL, capabilities, validation, and portable
+  digest-bound backup/restore. `--store surreal` defaults to SurrealKV;
+  RocksDB remains optional. Current-project `--engine default` now prefers a
+  valid `surreal.ref`, then SQLite, then JSON, while explicit Surreal selection
+  fails closed and historical `--at` queries remain unchanged. The fully wired
+  typed/indexed projection is `compass.graph.surreal/2`; the earlier
+  library-only v1 projection requires republishing. Reference-aware staging
+  binds graph digests in immutable manifests; orphan GC is repository-scoped
+  even when multiple checkouts explicitly share an embedded store.
+  Portable CLI restore preserves that binding at the new store location;
+  backup manifests are stream-bounded to 64 KiB before restore.
+
 - Add one deterministic `distribution.toml` inventory and native package
   generators for Codex, Claude Code, and OpenCode. Exports now include the
   harness manifests, credential-free MCP configuration, complete copied skill

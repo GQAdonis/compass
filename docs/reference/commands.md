@@ -27,7 +27,9 @@ compass init [PATH]
   [--include PATH_OR_GLOB]
   [--exclude GLOB]
   [--program]
-  [--store json|sqlite]
+  [--store json|sqlite|surreal]
+  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--yes]
   [--force]
@@ -52,7 +54,9 @@ compass update [PATH]
   [--program]
   [--program-artifact PATH]
   [--out DIR]
-  [--store json|sqlite]
+  [--store json|sqlite|surreal]
+  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--no-program]
   [--no-cluster]
@@ -111,7 +115,9 @@ compass extract [PATH]
   [--dedup-llm]
   [--timing]
   [--out DIR]
-  [--store json|sqlite]
+  [--store json|sqlite|surreal]
+  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--no-cluster]
   [--force]
@@ -184,7 +190,9 @@ compass watch [PATH]
   [--program]
   [--program-artifact PATH]
   [--no-program]
-  [--store json|sqlite]
+  [--store json|sqlite|surreal]
+  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--out DIR]
   [--no-cluster]
@@ -391,7 +399,7 @@ Traverses incoming impact-relevant relations.
 ```text
 compass context explain|modify|debug|test TARGET
   [--graph PATH] [--program PATH] [--root PATH] [--memory PATH]
-  [--engine default|json|store] [--format text|json]
+  [--engine default|json|store|surreal] [--format text|json]
   [--max-depth N] [--max-nodes N] [--max-edges N]
   [--max-paths N] [--max-candidates N] [--max-source-bytes N]
   [--max-knowledge-items N] [--max-response-bytes N]
@@ -958,10 +966,11 @@ Managed integration/update probe.
 - `--graph PATH` selects a graph JSON.
 - Typed code-query commands (`search`, `callers`, `callees`, `impact`,
   `explore`, and `node`) use `graph.json` by default. Their
-  `--engine default|json|store` option selects the engine; `default` uses the
-  validated SQLite sidecar when the build published one and otherwise falls
-  back to JSON, `json` always reads graph.json, and `store` requires the
-  sidecar and fails closed when it is missing or corrupt.
+  `--engine default|json|store|surreal` option selects the engine; `default`
+  prefers a valid `surreal.ref`, then the validated SQLite sidecar, then JSON.
+  `json` always reads graph.json, `store` requires SQLite, and `surreal`
+  requires the exact referenced embedded generation. Explicit engines fail
+  closed when their reference is missing, corrupt, or unavailable.
 - `--at REV` selects an exact historical graph for supported reads.
 - `--graph` and `--at` are mutually exclusive.
 - Build `PATH` defaults are command-specific; run help before scripting.
@@ -972,8 +981,8 @@ Managed integration/update probe.
 
 ```text
 compass store status [OUTPUT] [--format text|json]
-compass store validate [OUTPUT] [--format text|json]
-compass store backup [OUTPUT] --output BACKUP_DIR [--format text|json]
+compass store validate [OUTPUT] [--engine sqlite|surreal] [--format text|json]
+compass store backup [OUTPUT] --output BACKUP_DIR [--engine sqlite|surreal]
 compass store restore --from BACKUP_DIR --into OUTPUT [--format text|json]
 ```
 
@@ -981,10 +990,17 @@ compass store restore --from BACKUP_DIR --into OUTPUT [--format text|json]
 and digest state. `validate` requires a matching
 `store/store.sqlite3`, the current snapshot, and that snapshot's `store.ref`;
 a mismatch is an error, never an empty graph.
-`backup` creates a new digest-bound directory after checkpointing SQLite.
-`restore` validates that bundle and writes only to a new or empty destination.
-The commands currently operate on the local SQLite adapter. The redb adapter is
-library-only, and PostgreSQL/DynamoDB are future backends.
+`backup` creates a new digest-bound directory. SQLite backups checkpoint the
+WAL; Surreal backups export a versioned projection bundle and never copy an
+embedded-database directory. `restore` validates either bundle and writes only
+to a new or empty destination.
+
+Build publication accepts `--store surreal`, `--surreal-engine
+surrealkv|rocksdb`, and `--surreal-path PATH` on `init`, `update`, `extract`,
+and `watch`. See the [embedded SurrealDB guide](../guides/surrealdb.md).
+The commands operate on the local SQLite adapter and, when compiled with an
+embedded engine feature, SurrealKV or RocksDB. The redb adapter is library-only,
+and PostgreSQL/DynamoDB are future backends.
 
 `graph.json` remains the complete portable authority. The default query engine
 uses the validated SQLite sidecar when present; use `--engine json` to force

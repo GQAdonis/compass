@@ -1,0 +1,115 @@
+{
+  "schemaVersion": "1",
+  "artifact": "surreal-integration",
+  "source": ".kbd-orchestrator/constraints.md",
+  "blocking": [
+    {
+      "id": "build-passes",
+      "description": "After the complete phase implementation, the workspace integration targets must compile without running unit harnesses",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "tests-pass",
+      "description": "After the complete phase implementation, the full workspace integration suite must pass; unit tests are not valid evidence",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "clippy-clean",
+      "description": "Clippy must pass with -D warnings across the workspace",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "fmt-clean",
+      "description": "Rust formatting must be clean",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "no-unsafe-code",
+      "description": "Workspace policy forbids unsafe code",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "no-unwrap-expect-panic",
+      "description": "Workspace denies unwrap_used, expect_used, and panic. Return typed errors with actionable context.",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "product-boundary",
+      "description": "Production Compass must not reference Graphify, or use non-Compass configuration/artifact names",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "no-graphify-dependency",
+      "description": "No Graphify runtime, test, configuration, artifact, or fallback dependency may be introduced",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "local-first-preserved",
+      "description": "Structural extraction and graph queries must work without Python, model credentials, embeddings, a vector database, runtime grammar downloads, or Graphify",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "no-secrets-or-machine-paths",
+      "description": "No credentials, machine-specific paths, generated graphs, local .compass/ state, compass-out/, or private repository content committed outside the repository-owned .prometheus/knowledge/wiki transcript exception",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "refiner-qa-evidence",
+      "description": "Per-change .refiner/artifacts/<change-id>/ manifests, constraints, decisions, logs, and receipts are repository-owned KBD certification evidence and remain tracked; they must be deterministic, portable, secret-free, and contain no generated product data or machine-specific paths",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "locked-dependencies",
+      "description": "Build and test commands use --locked; Cargo.lock is updated when dependency resolution changes",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "regression-test-present",
+      "description": "Behavior changes require full integration coverage at the lowest public boundary; inline and library unit tests are prohibited as new evidence",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "determinism-preserved",
+      "description": "Discovery, identities, ordering, canonical encoding, and output stay deterministic for equivalent inputs. Ambiguity is never resolved by taking the first or most convenient candidate.",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "bounded-work",
+      "description": "All work over source files, graphs, archives, network responses, queries, and subprocess output remains bounded. A limit error is a distinct outcome from an empty result.",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "immutable-realizations",
+      "description": "Published historical realizations are immutable — never rewritten in place, never silently substituted with a different realization/profile",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "no-real-credentials-in-tests",
+      "description": "Network/provider tests use local mock servers and fixtures; subprocess work uses bounded fake runners. Never real credentials or services.",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    },
+    {
+      "id": "viewer-assets-generated",
+      "description": "Generated viewer assets must match their packages/compass-viewer source and never be hand-edited",
+      "status": "PENDING",
+      "evidence": "See verification.md; final gate reconciliation pending."
+    }
+  ]
+}

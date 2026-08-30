@@ -21,7 +21,10 @@ pub use error::GraphError;
 pub use graph::{EdgeIndex, Graph, NodeIndex};
 pub use lexical::{canonical_code_token, identifier_tokens, strip_diacritics};
 pub use lexical_index::{LexicalIndex, LexicalPosting, LexicalTermFrequency};
-pub use query_index::{QueryIndex, SchemaFingerprint, cypher_node_label, cypher_relationship_type};
+pub use query_index::{
+    QueryIndex, SchemaFingerprint, SchemaFingerprintBuilder, cypher_node_label,
+    cypher_node_label_from_kind, cypher_relationship_type, cypher_relationship_type_from_relation,
+};
 pub use validation::{
     CodeGraphValidationError, CodeGraphValidationReport, ExtractionValidationError,
     RecordValidationErrors, assert_valid_extraction, validate_build_metadata_identity,

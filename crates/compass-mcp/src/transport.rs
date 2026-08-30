@@ -36,6 +36,7 @@ pub struct HttpOptions {
     pub json_response: bool,
     pub stateless: bool,
     pub session_timeout: Option<Duration>,
+    pub engine: compass_query::EngineSelection,
 }
 
 impl HttpOptions {
@@ -52,6 +53,7 @@ impl HttpOptions {
             json_response: false,
             stateless: true,
             session_timeout: None,
+            engine: compass_query::EngineSelection::Default,
         }
     }
 }
@@ -74,6 +76,19 @@ pub async fn serve_stdio(graph_path: PathBuf) -> Result<(), String> {
 pub async fn serve_stdio_configured(
     graph_path: PathBuf,
     agent_graph: Option<AgentGraphMcpConfig>,
+) -> Result<(), String> {
+    serve_stdio_configured_with_engine(
+        graph_path,
+        agent_graph,
+        compass_query::EngineSelection::Default,
+    )
+    .await
+}
+
+pub async fn serve_stdio_configured_with_engine(
+    graph_path: PathBuf,
+    agent_graph: Option<AgentGraphMcpConfig>,
+    engine: compass_query::EngineSelection,
 ) -> Result<(), String> {
     let (mut relay_write, relay_read) = tokio::io::duplex(64 * 1024);
     let relay = tokio::spawn(async move {
@@ -104,8 +119,8 @@ pub async fn serve_stdio_configured(
         Ok::<(), String>(())
     });
     let server = match agent_graph {
-        Some(config) => CompassMcp::new(graph_path).with_agent_graph(config)?,
-        None => CompassMcp::new(graph_path),
+        Some(config) => CompassMcp::new_with_engine(graph_path, engine).with_agent_graph(config)?,
+        None => CompassMcp::new_with_engine(graph_path, engine),
     };
     let running = server
         .serve((relay_read, tokio::io::stdout()))
@@ -199,8 +214,14 @@ fn build_http_router(
 ) -> Result<Router, String> {
     let manager = Arc::new(LocalSessionManager::default());
     let factory_graph = match options.agent_graph.clone() {
-        Some(config) => CompassMcp::new_http(options.graph_path.clone()).with_agent_graph(config),
-        None => Ok(CompassMcp::new_http(options.graph_path.clone())),
+        Some(config) => {
+            CompassMcp::new_http_with_engine(options.graph_path.clone(), options.engine)
+                .with_agent_graph(config)
+        }
+        None => Ok(CompassMcp::new_http_with_engine(
+            options.graph_path.clone(),
+            options.engine,
+        )),
     }?;
     let allowed_hosts = if is_wildcard_host(&options.host) {
         Vec::new()
@@ -229,8 +250,7 @@ fn build_http_router(
             .write_api_key
             .as_ref()
             .map(|key| Arc::<[u8]>::from(key.as_bytes())),
-        // rmcp 2.2 emits SSE for stateful responses even when json_response is
-        // requested. The Python SDK returns plain JSON, so adapt that response.
+        // rmcp 3.1.4 transport negotiation owns the response representation.
         convert_stateful_sse_to_json: false,
     };
     Ok(Router::new()

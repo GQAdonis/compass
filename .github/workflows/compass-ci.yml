@@ -202,6 +202,10 @@ jobs:
         run: |
           cargo test -p compass-graphdb-surreal --test '*' --features surrealkv --locked
           cargo test -p compass-graphdb-surreal --test '*' --features rocksdb --locked
+      - name: Qualify fully wired SurrealKV surfaces
+        run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-surrealkv --locked
+      - name: Qualify optional RocksDB surface
+        run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-rocksdb --locked
 
   native-platforms:
     name: ${{ matrix.target }}

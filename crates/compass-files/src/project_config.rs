@@ -6,6 +6,35 @@ use serde::{Deserialize, Serialize};
 use crate::{BuildScope, FileError, write_text_atomic};
 
 pub const PROJECT_CONFIG_RELATIVE_PATH: &str = ".compass/config.toml";
+pub const PROJECT_CONFIG_VERSION: u32 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectStore {
+    Json,
+    Sqlite,
+    Surreal,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ProjectSurrealEngine {
+    #[default]
+    #[serde(rename = "surrealkv")]
+    SurrealKv,
+    #[serde(rename = "rocksdb")]
+    RocksDb,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectStorage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<ProjectStore>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surreal_engine: Option<ProjectSurrealEngine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surreal_path: Option<PathBuf>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,22 +42,36 @@ pub struct ProjectConfig {
     pub version: u32,
     #[serde(default)]
     pub build: BuildScope,
+    #[serde(default, skip_serializing_if = "ProjectStorage::is_empty")]
+    pub storage: ProjectStorage,
 }
 
 impl ProjectConfig {
     #[must_use]
     pub fn new(build: BuildScope) -> Self {
-        Self { version: 1, build }
+        Self {
+            version: PROJECT_CONFIG_VERSION,
+            build,
+            storage: ProjectStorage::default(),
+        }
     }
 
     pub fn normalize(mut self, root: &Path) -> Result<Self, FileError> {
-        if self.version != 1 {
+        if !matches!(self.version, 1 | PROJECT_CONFIG_VERSION) {
             return Err(FileError::UnsupportedProjectConfig {
                 path: root.join(PROJECT_CONFIG_RELATIVE_PATH),
                 version: self.version,
             });
         }
+        if self.version == 1 && !self.storage.is_empty() {
+            return Err(FileError::InvalidProjectConfig {
+                path: root.join(PROJECT_CONFIG_RELATIVE_PATH),
+                reason: "version 1 project configuration cannot contain storage settings"
+                    .to_owned(),
+            });
+        }
         self.build = self.build.normalize(root)?;
+        self.storage.normalize(root)?;
         Ok(self)
     }
 
@@ -56,6 +99,47 @@ impl ProjectConfig {
         })?;
         write_text_atomic(&path, &text)?;
         Ok(path)
+    }
+}
+
+impl ProjectStorage {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.store.is_none() && self.surreal_engine.is_none() && self.surreal_path.is_none()
+    }
+
+    fn normalize(&mut self, root: &Path) -> Result<(), FileError> {
+        if self.surreal_engine.is_some() || self.surreal_path.is_some() {
+            match self.store {
+                Some(ProjectStore::Surreal) => {}
+                _ => {
+                    return Err(FileError::InvalidProjectConfig {
+                        path: root.join(PROJECT_CONFIG_RELATIVE_PATH),
+                        reason:
+                            "surreal_engine and surreal_path require storage.store = \"surreal\""
+                                .to_owned(),
+                    });
+                }
+            }
+        }
+        if let Some(path) = &self.surreal_path {
+            if path.as_os_str().is_empty() {
+                return Err(FileError::InvalidProjectConfig {
+                    path: root.join(PROJECT_CONFIG_RELATIVE_PATH),
+                    reason: "storage.surreal_path must not be empty".to_owned(),
+                });
+            }
+            if path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(FileError::InvalidProjectConfig {
+                    path: root.join(PROJECT_CONFIG_RELATIVE_PATH),
+                    reason: "storage.surreal_path must not contain '..' components".to_owned(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 

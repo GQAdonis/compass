@@ -4,6 +4,57 @@ Compass performance is measured against Compass-owned baselines. Qualification
 must never trade away graph correctness, deterministic output, resource bounds,
 or complete error reporting.
 
+## Embedded Surreal qualification
+
+SurrealDB is a non-default build profile, so its compile time, binary size,
+database size, publication latency, query latency, and peak RSS are reported
+separately from the default SQLite/JSON baseline. SurrealKV is the production
+profile; RocksDB is an optional comparison profile. Do not combine their Cargo
+builds or share a target directory across worktrees.
+
+Release qualification publishes one canonical graph to JSON, SQLite, and
+Surreal, then runs every supported CompassQL/OpenCypher scenario and typed
+operation against the same generation. Ordered rows, values, stable errors,
+limits, and profiles must agree. The Surreal run also records staged rows,
+idempotent repair, orphan generations reclaimed, projection bytes, and the
+size of the shared embedded store. Explicit Surreal runs are disqualified if
+they open `graph.json` or `store.ref` as a fallback.
+
+Surreal CompassQL operates on indexed ordinal scans and per-node expansions,
+not a whole-graph materialization. Its bounded record cache is per query
+(256 entries; an 8 MiB estimated-size cap). Storage buffers are independent
+of the common executor's semantic-row memory budget, as on JSON/SQLite;
+small query budgets must not reject a node solely because its persisted
+payload is larger than a binding row. Identity-only selectors are bounded by
+the admitted projection (at most one million nodes and 2.5 million relations).
+Projection metadata has a 4 MiB header cap; source-file verification reads
+individual generation/path records. Schema fingerprint construction streams
+record schema facts during publication, without building another adjacency
+index. These are resource bounds, not measured latency claims.
+
+Embedded connections have a process-wide owner on a dedicated two-worker
+runtime with at most four blocking workers and 256 queued requests per router.
+Publication, watch, and MCP sessions reuse physical connections by canonical
+store path; replacing a caller runtime cannot strand a lock. At most 16 physical
+stores may be opened per process. Owners retain locks until process exit:
+restart a long-running process to release unused stores. Namespace/database
+selections are session-local; generation pinning remains reference-local.
+
+Use the phase-end integration commands documented in `AGENTS.md`, including:
+
+```bash
+cargo test -p compass-query --test '*' --features surreal-surrealkv --locked
+cargo test -p compass-cli --test '*' --features surreal-surrealkv --locked
+cargo test -p compass-mcp --test '*' --features surreal-surrealkv --locked
+cargo test -p compass-graphdb-surreal --test '*' --features rocksdb --locked
+```
+
+The default-feature isolation gate must also prove that `compass-cli`,
+`compass-core`, `compass-query`, and `compass-mcp` have no SurrealDB dependency
+path. Measurements must state the exact engine, Compass commit, SurrealDB
+3.2.4 pin, Rust toolchain, feature set, target directory, corpus, and warm/cold
+state.
+
 The reproducible real-repository harness, operator commands, correctness gates,
 and optional explicit Graphify comparison are documented in
 [`benchmarks/performance/README.md`](benchmarks/performance/README.md).

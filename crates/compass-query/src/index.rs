@@ -38,6 +38,8 @@ pub enum EngineSelection {
     Json,
     /// Require the store sidecar and fail if it is unavailable or corrupt.
     Store,
+    /// Require the exact generation in `surreal.ref`.
+    Surreal,
 }
 
 /// Identifies the engine that supplied a query engine's graph snapshot.
@@ -45,6 +47,7 @@ pub enum EngineSelection {
 pub enum QueryEngineKind {
     Json,
     Store,
+    Surreal,
     Memory,
 }
 

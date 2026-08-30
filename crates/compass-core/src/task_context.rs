@@ -523,8 +523,76 @@ pub enum TaskContextError {
     ResponseLimit { limit: u64 },
 }
 
-pub fn build_task_context(
-    engine: &CodeQueryEngine,
+/// Minimal typed-query boundary required to compose task context. Backends
+/// implement this through their public, bounded query operations.
+pub trait TaskContextQuery {
+    fn explore(
+        &self,
+        request: ExploreRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError>;
+    fn search(
+        &self,
+        request: SearchRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError>;
+    fn callers(&self, request: CallRequest)
+    -> Result<CodeQueryResponse, compass_query::QueryError>;
+    fn callees(&self, request: CallRequest)
+    -> Result<CodeQueryResponse, compass_query::QueryError>;
+    fn impact(
+        &self,
+        request: ImpactRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError>;
+    fn graph_identity(&self) -> &str;
+    fn build_generation_identity(&self) -> &str;
+}
+
+impl TaskContextQuery for CodeQueryEngine {
+    fn explore(
+        &self,
+        request: ExploreRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError> {
+        Self::explore(self, request)
+    }
+
+    fn search(
+        &self,
+        request: SearchRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError> {
+        Self::search(self, request)
+    }
+
+    fn callers(
+        &self,
+        request: CallRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError> {
+        Self::callers(self, request)
+    }
+
+    fn callees(
+        &self,
+        request: CallRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError> {
+        Self::callees(self, request)
+    }
+
+    fn impact(
+        &self,
+        request: ImpactRequest,
+    ) -> Result<CodeQueryResponse, compass_query::QueryError> {
+        Self::impact(self, request)
+    }
+
+    fn graph_identity(&self) -> &str {
+        Self::graph_identity(self)
+    }
+
+    fn build_generation_identity(&self) -> &str {
+        Self::build_generation_identity(self)
+    }
+}
+
+pub fn build_task_context<Q: TaskContextQuery + ?Sized>(
+    engine: &Q,
     request: &TaskContextRequest,
     memory: &[MemoryDoc],
 ) -> Result<TaskContext, TaskContextError> {

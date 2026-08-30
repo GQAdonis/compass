@@ -1551,6 +1551,7 @@ dependencies = [
  "compass-google-workspace",
  "compass-graph",
  "compass-graphdb",
+ "compass-graphdb-surreal",
  "compass-history",
  "compass-ingest",
  "compass-ir",
@@ -1598,6 +1599,7 @@ dependencies = [
  "compass-files",
  "compass-google-workspace",
  "compass-graph",
+ "compass-graphdb-surreal",
  "compass-history",
  "compass-ir",
  "compass-languages",
@@ -1624,6 +1626,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "time",
+ "tokio",
  "zip 6.0.0",
 ]
 
@@ -1992,6 +1995,7 @@ dependencies = [
  "compass-cypher",
  "compass-graph",
  "compass-graphdb",
+ "compass-graphdb-surreal",
  "compass-ir",
  "compass-languages",
  "compass-model",
@@ -2006,6 +2010,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
  "unicode-normalization",
 ]
 

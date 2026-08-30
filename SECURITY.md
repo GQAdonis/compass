@@ -84,6 +84,8 @@ bindings before exposing a store snapshot. `compass store restore` is
 fail-closed, restores only into a new destination, and removes an incomplete
 destination on validation failure. Stop writers before copying a redb file;
 the SQLite backup command checkpoints WAL for this purpose.
+Backup manifests are limited to 64 KiB at both metadata inspection and streaming
+read, before either adapter decodes them or creates a restore destination.
 
 The namespace is an isolation and lifecycle key, not an authorization
 mechanism. A future hosted adapter must add authentication, authorization,
@@ -94,15 +96,38 @@ to a public issue: it can disclose repository names, paths, source anchors,
 and graph structure. Share a sanitized `compass store status --format json`
 response instead.
 
-The optional SurrealDB projection accepts only validated `compass.graph/1`
-documents and exposes no arbitrary SurrealQL API. Record identities are
-deterministic digests, statement values are parameter-bound, table selection is
-a closed enum, query work is bounded, and a repository's active generation is
-switched only after the exact staged identities and manifest are validated.
-The current features are embedded local engines and add no credential or
-network boundary. Any future remote engine requires a separate design covering
-authentication, TLS, endpoint validation, timeouts, output bounds, and tenant
-isolation.
+The optional SurrealDB backend accepts only validated `compass.graph/1`
+documents and exposes no arbitrary SurrealQL API. `surreal.ref` and projection
+bundles are untrusted, bounded inputs whose schema, graph digest, projection
+fingerprint, repository, generation, counts, engine, and location binding are
+validated before reads. Record identities are deterministic digests, statement
+values are parameter-bound, table selection is a closed enum, query work is
+bounded, and filesystem publication occurs only after the exact staged
+generation is validated. Queries pin the reference generation and never trust
+an unbound or mismatched graph digest: reference-aware staging persists the
+publisher's admitted digest in the immutable manifest, including after portable
+restore. Generation garbage collection scopes its candidate read to the
+publishing repository and excludes retained generations before applying the
+batch limit, so it cannot reclaim another checkout's data in a shared store.
+Queries never trust
+the database's mutable active pointer; query, status, validation, and backup
+opens do not issue schema-definition statements. Backup/restore exports typed
+projection records instead of copying opaque database directories. The current features
+are embedded local engines and add no credential or network boundary. Any
+future remote engine requires a separate design covering authentication, TLS,
+endpoint validation, timeouts, output bounds, and tenant isolation.
+
+Embedded physical connections are shared only within the process by canonical
+store path and engine, with independent namespace/database sessions and exact
+generation references. A dedicated runtime retains at most 16 store owners
+until process exit, preventing caller-runtime teardown from stranding database
+locks. A caller cannot switch the engine of an already open path. This local
+resource ownership is not a tenant authorization boundary.
+
+An explicit embedded storage path may be project-relative or absolute, but it
+may not resolve to the output container itself or beneath its immutable
+`snapshots/` tree. Compass resolves the existing path prefix before this check
+so a symlinked parent cannot redirect database writes into a published snapshot.
 
 ## Document and OCR boundary
 

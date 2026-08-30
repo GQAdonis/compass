@@ -1,12 +1,16 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+use compass_core::TaskContextQuery;
 use compass_core::{
     AgentGraphContext, TaskContext, TaskContextIntent, TaskContextLimits, TaskContextRequest,
     TaskContextTarget, attach_agent_knowledge, build_task_context,
 };
 use compass_model::query_contract::CodeQueryLimits;
 use compass_query::{EngineSelection, open_with_engine, open_with_verified_document};
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+use compass_query::{SurrealQueryEngine, has_published_surreal};
 
 use crate::Outcome;
 
@@ -79,9 +83,10 @@ fn execute(args: &[String]) -> Result<TaskContext, String> {
         None | Some("default") => EngineSelection::Default,
         Some("json") => EngineSelection::Json,
         Some("store") => EngineSelection::Store,
+        Some("surreal") => EngineSelection::Surreal,
         Some(value) => {
             return Err(format!(
-                "--engine must be default, json, or store (found {value})"
+                "--engine must be default, json, store, or surreal (found {value})"
             ));
         }
     };
@@ -122,6 +127,16 @@ fn execute(args: &[String]) -> Result<TaskContext, String> {
         limits,
     };
     let memory = compass_reflect::load_memory_docs(&memory_dir);
+    let use_surreal = engine_selection == EngineSelection::Surreal
+        || (engine_selection == EngineSelection::Default && published_surreal(&graph));
+    if use_surreal {
+        if option(args, "--agent-overlay").is_some() || option(args, "--agent-revision").is_some() {
+            return Err(
+                "--engine surreal cannot be combined with an in-memory Effective Graph".to_owned(),
+            );
+        }
+        return build_surreal_context(&graph, &request, &memory);
+    }
     match (
         option(args, "--agent-overlay"),
         option(args, "--agent-revision"),
@@ -132,7 +147,10 @@ fn execute(args: &[String]) -> Result<TaskContext, String> {
             build_task_context(&engine, &request, &memory).map_err(|error| error.to_string())
         }
         (Some(overlay), Some(revision)) => {
-            if engine_selection == EngineSelection::Store {
+            if matches!(
+                engine_selection,
+                EngineSelection::Store | EngineSelection::Surreal
+            ) {
                 return Err(
                     "--engine store cannot be combined with an in-memory Effective Graph"
                         .to_owned(),
@@ -211,6 +229,94 @@ fn execute(args: &[String]) -> Result<TaskContext, String> {
         }
         _ => Err("--agent-overlay and --agent-revision must be supplied together".to_owned()),
     }
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+struct SyncSurrealTaskEngine {
+    runtime: tokio::runtime::Runtime,
+    engine: SurrealQueryEngine,
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+impl TaskContextQuery for SyncSurrealTaskEngine {
+    fn explore(
+        &self,
+        request: compass_model::query_contract::ExploreRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        self.runtime.block_on(self.engine.explore(request))
+    }
+
+    fn search(
+        &self,
+        request: compass_model::query_contract::SearchRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        self.runtime.block_on(self.engine.search(request))
+    }
+
+    fn callers(
+        &self,
+        request: compass_model::query_contract::CallRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        self.runtime.block_on(self.engine.callers(request))
+    }
+
+    fn callees(
+        &self,
+        request: compass_model::query_contract::CallRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        self.runtime.block_on(self.engine.callees(request))
+    }
+
+    fn impact(
+        &self,
+        request: compass_model::query_contract::ImpactRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        self.runtime.block_on(self.engine.impact(request))
+    }
+
+    fn graph_identity(&self) -> &str {
+        &self.engine.reference().graph_digest
+    }
+
+    fn build_generation_identity(&self) -> &str {
+        &self.engine.reference().generation_id
+    }
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn build_surreal_context(
+    graph: &std::path::Path,
+    request: &TaskContextRequest,
+    memory: &[compass_reflect::MemoryDoc],
+) -> Result<TaskContext, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("create Surreal runtime: {error}"))?;
+    let engine = runtime
+        .block_on(SurrealQueryEngine::open(graph))
+        .map_err(|error| error.to_string())?;
+    build_task_context(&SyncSurrealTaskEngine { runtime, engine }, request, memory)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+fn build_surreal_context(
+    _graph: &std::path::Path,
+    _request: &TaskContextRequest,
+    _memory: &[compass_reflect::MemoryDoc],
+) -> Result<TaskContext, String> {
+    Err("Surreal query support is unavailable in this Compass build".to_owned())
+}
+
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+fn published_surreal(graph: &std::path::Path) -> bool {
+    has_published_surreal(graph)
+}
+
+#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+fn published_surreal(_graph: &std::path::Path) -> bool {
+    false
 }
 
 fn render_text(context: &TaskContext) -> String {

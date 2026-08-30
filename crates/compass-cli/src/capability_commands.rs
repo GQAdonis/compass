@@ -11,6 +11,7 @@ pub struct CapabilityReport {
     pub compass_version: &'static str,
     pub contracts: BTreeMap<&'static str, &'static str>,
     pub features: BTreeMap<&'static str, bool>,
+    pub engines: BTreeMap<&'static str, bool>,
 }
 
 pub fn command(frontend: Frontend, args: &[String]) -> Outcome {
@@ -36,6 +37,9 @@ pub fn command(frontend: Frontend, args: &[String]) -> Outcome {
             ("history_change_counts", "compass.history.change_counts/1"),
             ("history_viewer_graph", "compass.history.viewer_graph/1"),
             ("semantic_diff_report", compass_semantic_diff::REPORT_SCHEMA),
+            ("surreal_reference", "compass.surreal.ref/1"),
+            ("surreal_projection", "compass.graph.surreal/2"),
+            ("surreal_backup", "compass.surreal.backup/1"),
         ]),
         features: BTreeMap::from([
             ("init", true),
@@ -49,6 +53,33 @@ pub fn command(frontend: Frontend, args: &[String]) -> Outcome {
             ("history_timeline_pagination", true),
             ("semantic_diff", true),
             ("community_detail", true),
+            (
+                "surreal_store",
+                cfg!(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb"
+                )),
+            ),
+            (
+                "surreal_cql",
+                cfg!(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb"
+                )),
+            ),
+        ]),
+        engines: BTreeMap::from([
+            ("json", true),
+            ("sqlite", true),
+            (
+                "surreal",
+                cfg!(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb"
+                )),
+            ),
+            ("surrealkv", cfg!(feature = "surreal-surrealkv")),
+            ("rocksdb", cfg!(feature = "surreal-rocksdb")),
         ]),
     };
     match serde_json::to_string(&report) {

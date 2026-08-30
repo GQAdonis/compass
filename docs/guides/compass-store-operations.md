@@ -40,6 +40,8 @@ run the rebuild procedure, and retain the unchanged `graph.json`.
 | Backend | Local CLI | Credentials/network | Platforms | Status |
 | --- | --- | --- | --- | --- |
 | SQLite | Default sidecar `store.sqlite3` (use `--store json` to opt out) | None; local file only | macOS, Linux, Windows | Released local adapter |
+| SurrealKV | `--store surreal` with a `surreal-surrealkv` build | None; embedded local directory | Supported native SDK platforms | Optional production backend |
+| RocksDB | `--store surreal --surreal-engine rocksdb` with `surreal-rocksdb` | None; embedded local directory | Qualified native platforms | Optional native backend |
 | redb | Explicit Rust adapter `compass-store-redb` | None; local file only | CI-supported native platforms | Library/conformance adapter; not selected by the CLI |
 | PostgreSQL | No released CLI adapter | Would require an explicit endpoint, credentials, TLS, and bounded client | Future service profile | Deferred |
 | DynamoDB | No released CLI adapter | Would require an explicit AWS boundary, credentials, TLS, retries, and quotas | Future service profile | Deferred |
@@ -56,7 +58,9 @@ For an output root `DIR` the published set is:
 DIR/current-snapshot # BuildGuard publication pointer, when used
 DIR/snapshots/<snapshot>/graph.json
 DIR/snapshots/<snapshot>/store.ref  # with default storage or --store sqlite
+DIR/snapshots/<snapshot>/surreal.ref # with --store surreal
 DIR/store/store.sqlite3          # shared by store snapshots
+DIR/surreal/                     # default shared embedded Surreal location
 ```
 
 `graph.json` is the portable authority. When SQLite is selected (the default),
@@ -115,6 +119,19 @@ the validated database, copies `graph.json` and `store.ref`, and writes a
 digest-bound `manifest.json`. Keep the bundle on storage with equivalent or
 better access controls; it contains project structure and source anchors.
 
+For Surreal, select the backend explicitly when both references exist:
+
+```bash
+compass store backup compass-out --engine surreal \
+  --output /safe/path/compass-surreal-backup
+```
+
+This writes a `compass.surreal.backup/1` manifest, canonical `graph.json`, and
+a digest-bound `compass.surreal.bundle/1` projection plan. It does not copy the
+embedded database directory. Restore stages the typed rows into a fresh local
+database, validates the exact generation, and writes a new location-bound
+`surreal.ref` only after success.
+
 Restore only into a new or empty directory:
 
 ```bash
@@ -126,9 +143,12 @@ compass store validate /recovered/compass-out --format json
 
 Restore validates every digest and snapshot before publication. It removes an
 incomplete destination on failure and never overwrites an existing output.
-After restore, typed queries use the restored SQLite snapshot by default. Pass
-`--engine json` to force the portable reader or `--engine store` to require and
-validate the restored database.
+Backup manifests larger than 64 KiB are rejected before decoding or creating
+the destination. After restore, typed queries select the restored Surreal
+reference or SQLite snapshot by default. Pass `--engine json` to force the
+portable reader, `--engine surreal` to require the exact Surreal generation, or
+`--engine store` to require the SQLite snapshot. Surreal restore binds the
+original canonical graph digest while publishing its new connection location.
 
 ## Rebuild and upgrade policy
 

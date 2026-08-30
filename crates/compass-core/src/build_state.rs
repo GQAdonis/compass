@@ -95,6 +95,10 @@ pub(crate) struct BuildProfile {
     pub code_only: bool,
     pub program_analysis: bool,
     pub graph_storage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surreal_engine: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surreal_path: Option<String>,
     #[serde(
         default = "legacy_default_inference_level",
         skip_serializing_if = "inference_level_is_legacy_max"

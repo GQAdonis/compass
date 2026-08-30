@@ -188,7 +188,8 @@ pub(super) fn eval(
             Ok(match target {
                 CompassValue::Null => CompassValue::Null,
                 CompassValue::Node(node) => CompassValue::Boolean(
-                    compass_model::cypher_node_label(context.graph.node(node.index)) == *label,
+                    compass_model::cypher_node_label(context.graph.node(node.index)?.as_ref())
+                        == *label,
                 ),
                 _ => return Err(type_error("label test requires a node")),
             })
@@ -436,7 +437,7 @@ fn eval_function(
             Some(CompassValue::Node(node)) => {
                 Ok(CompassValue::List(Arc::from(vec![CompassValue::String(
                     Arc::from(compass_model::cypher_node_label(
-                        context.graph.node(node.index),
+                        context.graph.node(node.index)?.as_ref(),
                     )),
                 )])))
             }
@@ -786,7 +787,7 @@ pub(super) fn property_value(
     match target {
         CompassValue::Null => Ok(CompassValue::Null),
         CompassValue::Node(reference) => {
-            let node = context.graph.node(reference.index);
+            let node = context.graph.node(reference.index)?;
             if property == "id" {
                 return Ok(CompassValue::String(Arc::clone(&reference.id)));
             }
@@ -797,7 +798,7 @@ pub(super) fn property_value(
                 .map_or(Ok(CompassValue::Null), |value| json_value(&value))
         }
         CompassValue::Relationship(reference) => {
-            let edge = context.graph.edge(reference.index);
+            let edge = context.graph.edge(reference.index)?;
             let synthetic = match property {
                 "source" => Some(reference.source.as_ref()),
                 "target" => Some(reference.target.as_ref()),
@@ -828,7 +829,7 @@ fn properties_function(
         Some(CompassValue::Null) | None => Ok(CompassValue::Null),
         Some(CompassValue::Map(values)) => Ok(CompassValue::Map(Arc::clone(values))),
         Some(CompassValue::Node(node)) => {
-            let record = context.graph.node(node.index);
+            let record = context.graph.node(node.index)?;
             let mut values = record
                 .logical_properties()
                 .map(|(key, value)| Ok((key, json_value(&value)?)))
@@ -841,7 +842,7 @@ fn properties_function(
             Ok(CompassValue::Map(Arc::new(values)))
         }
         Some(CompassValue::Relationship(relationship)) => {
-            let record = context.graph.edge(relationship.index);
+            let record = context.graph.edge(relationship.index)?;
             let mut values = record
                 .logical_properties()
                 .map(|(key, value)| Ok((key, json_value(&value)?)))

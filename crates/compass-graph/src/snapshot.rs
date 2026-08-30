@@ -3402,48 +3402,7 @@ fn build_term_postings(graph: &GraphDocument) -> BTreeMap<String, Vec<String>> {
 }
 
 fn searchable_node_terms(node: &NodeRecord) -> BTreeSet<String> {
-    let mut terms = BTreeSet::new();
-    terms.extend(search_terms(&node.name));
-    terms.extend(search_terms(&node.qualified_name));
-    terms.extend(compass_model::search::identifier_search_terms(&node.name));
-    terms.extend(compass_model::search::identifier_search_terms(
-        &node.qualified_name,
-    ));
-    terms.extend(search_terms(node.kind.as_str()));
-    for role in &node.roles {
-        let role = format!("{role:?}");
-        terms.extend(search_terms(&role));
-    }
-    if let Some(language) = &node.language {
-        terms.extend(search_terms(language));
-    }
-    if let Some(framework) = &node.framework {
-        terms.extend(search_terms(framework));
-    }
-    if let Some(source) = &node.source {
-        terms.extend(search_terms(&source.file));
-    }
-    if let Some(community) = &node.community {
-        terms.extend(search_terms(&community.id.to_string()));
-        if let Some(label) = &community.label {
-            terms.extend(search_terms(label));
-        }
-    }
-    if let Some(path) = node
-        .details
-        .as_ref()
-        .and_then(|details| serde_json::to_value(details).ok())
-        .and_then(|value| {
-            value
-                .get("data")
-                .and_then(|data| data.get("path"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-    {
-        terms.extend(search_terms(&path));
-    }
-    terms
+    compass_model::search::searchable_node_terms(node)
 }
 
 fn build_index(

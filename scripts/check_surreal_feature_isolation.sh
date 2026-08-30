@@ -16,6 +16,7 @@ check_tree() {
 check_tree compass-cli
 check_tree compass-mcp
 check_tree compass-core
+check_tree compass-query
 
 default_projection_tree=$(cargo tree -p compass-graphdb-surreal --locked --prefix none)
 if printf '%s\n' "$default_projection_tree" | rg -i '^surrealdb[^ ]*( |$)' >/dev/null; then

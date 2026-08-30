@@ -101,6 +101,19 @@ The equivalent direct Cargo command is:
 cargo install --locked --path crates/compass-cli --bin compass
 ```
 
+For an opt-in local SurrealKV projection and native Surreal query engine, add
+the feature and publish with `--store surreal`:
+
+```bash
+cargo install --locked --path crates/compass-cli --bin compass \
+  --features surreal-surrealkv
+compass update . --store surreal
+```
+
+Default release/source builds do not link SurrealDB. See
+[Embedded SurrealDB](guides/surrealdb.md) for configuration, engine selection,
+backup, and licensing details.
+
 `--locked` uses the dependency versions in `Cargo.lock`. The resulting
 executable and its test suite are native and do not launch Python.
 

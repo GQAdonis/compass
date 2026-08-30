@@ -11,6 +11,23 @@ description.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+surreal-surrealkv = [
+    "dep:compass-graphdb-surreal",
+    "compass-graphdb-surreal/surrealkv",
+    "compass-core/surreal-surrealkv",
+    "compass-query/surreal-surrealkv",
+    "compass-mcp/surreal-surrealkv",
+]
+surreal-rocksdb = [
+    "dep:compass-graphdb-surreal",
+    "compass-graphdb-surreal/rocksdb",
+    "compass-core/surreal-rocksdb",
+    "compass-query/surreal-rocksdb",
+    "compass-mcp/surreal-rocksdb",
+]
+
 [lib]
 name = "compass_cli"
 
@@ -45,6 +62,7 @@ compass-cargo = { path = "../compass-cargo", version = "0.3.23" }
 compass-files = { path = "../compass-files", version = "0.3.23" }
 compass-graph = { path = "../compass-graph", version = "0.3.23" }
 compass-graphdb = { path = "../compass-graphdb", version = "0.3.23" }
+compass-graphdb-surreal = { path = "../compass-graphdb-surreal", version = "0.3.23", optional = true }
 compass-global = { path = "../compass-global", version = "0.3.23" }
 compass-history = { path = "../compass-history", version = "0.3.23" }
 compass-google-workspace = { path = "../compass-google-workspace", version = "0.3.23" }

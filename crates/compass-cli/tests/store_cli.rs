@@ -6,6 +6,27 @@ use compass_files::BuildGuard;
 use serde_json::Value;
 
 #[test]
+fn store_restore_bounds_manifest_before_creating_destination() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let backup = root.path().join("backup");
+    let destination = root.path().join("restored");
+    fs::create_dir(&backup)?;
+    fs::write(backup.join("manifest.json"), vec![b' '; 64 * 1024 + 1])?;
+    let result = Command::new(env!("CARGO_BIN_EXE_compass"))
+        .args(["store", "restore", "--from"])
+        .arg(&backup)
+        .arg("--into")
+        .arg(&destination)
+        .output()?;
+    assert!(!result.status.success());
+    let diagnostic = String::from_utf8_lossy(&result.stderr);
+    assert!(diagnostic.contains("read backup manifest"), "{diagnostic}");
+    assert!(diagnostic.contains("65536-byte limit"), "{diagnostic}");
+    assert!(!destination.exists());
+    Ok(())
+}
+
+#[test]
 fn store_status_backup_and_restore_are_end_to_end_validated() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     fs::write(

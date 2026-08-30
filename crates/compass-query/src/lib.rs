@@ -16,6 +16,12 @@ mod recall;
 mod relevance;
 mod score;
 mod source;
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+mod surreal;
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+mod surreal_backend;
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+mod surreal_cql;
 mod telemetry;
 mod text;
 mod traversal;
@@ -42,6 +48,17 @@ pub use index::{
     open_with_document, open_with_engine, open_with_store, open_with_store_selector,
     open_with_verified_document,
 };
+
+/// Feature-independent reference discovery used by callers that must fail
+/// closed when a Surreal engine was requested but not compiled in.
+#[must_use]
+pub fn has_published_surreal_compatible(graph_path: &std::path::Path) -> bool {
+    graph_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("surreal.ref")
+        .is_file()
+}
 pub use intent::{
     NaturalQueryIntent, NaturalQueryPlan, NaturalQueryRequest, QUERY_PLANNER_PROFILE_V1,
     plan_natural_query,
@@ -59,6 +76,12 @@ pub use score::{
     ProfiledQueryScores, QueryScores, ScoredNode, TEXT_RANKER_BM25_V1, TEXT_RANKER_FULL_SCAN_V1,
     TextRankProfile, find_node, pick_scored_endpoint, score_nodes, score_nodes_with_profile,
 };
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+pub use surreal::{
+    SurrealQueryEngine, SurrealQueryEngineCache, has_published_surreal, read_surreal_ref,
+};
+#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+pub use surreal_cql::SurrealCqlRequest;
 pub use telemetry::{
     ProfiledCodeQueryResponse, QUERY_EXECUTION_PROFILE_V1, QueryExecutionProfile,
     QueryStageTimings, WorkCounts,
