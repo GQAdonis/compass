@@ -75,13 +75,13 @@
   Existing history APIs, encoded bytes, persisted formats, and round trips
   remain compatible.
 
-- Honor `COMPASS_MAX_GRAPH_BYTES` consistently across canonical graph
-  preflight, snapshot publication, validation, and reads while retaining the
-  2 GiB default and failing closed on invalid override values.
-
-- Add a deterministic, bounded canonical graph-size preflight after discovery,
-  so inputs estimated above the snapshot limit fail before project-wide
-  extraction with the existing actionable scope-reduction guidance.
+- Remove the source-byte multiplier used as a fatal canonical graph preflight.
+  `COMPASS_MAX_GRAPH_BYTES` is now enforced against the actual canonical bytes
+  streamed into atomic staging for full, SQLite-backed, and fact-neutral delta
+  publications. A real overrun leaves the previous graph and store reference
+  active. Add a five-estate qualification command and measured expansion
+  distribution; source-to-graph ratios remain diagnostic evidence and are not
+  an admission rule.
 
 - Make oversized canonical graph failures actionable by naming `--exclude`
   and `.compassignore` as safe ways to reduce publication scope. The CLI keeps

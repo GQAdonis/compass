@@ -5,6 +5,15 @@ The checked-in files are inputs, schemas, digests, tests, and summarized raw
 measurements. Generated graphs, indexes, binaries, and raw logs are disposable
 and belong under `target/` or an explicit temporary directory.
 
+The five-estate canonical-size qualification is intentionally artifact-driven:
+it measures completed publications rather than predicting output from source
+metadata. Run `scripts/qualify_graph_size_ratios.py` with exactly five named
+`graph.json` artifacts. It emits the versioned
+`compass.qualification.graph-size-ratios/1` JSON report and a Markdown table of
+per-estate admitted source bytes, canonical bytes, ratios, and the
+minimum/median/maximum distribution. See `PERFORMANCE.md` for the complete
+command. Generated reports belong under `target/` and are not corpus inputs.
+
 `manifest-v1.json` is the closed checksum inventory for the retained benchmark
 sources and evidence. The test suite verifies every listed byte digest and
 rejects missing or unlisted retained benchmark artifacts.
