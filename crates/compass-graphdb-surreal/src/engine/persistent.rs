@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use surrealdb::Surreal;
-use surrealdb::engine::local::Db;
+use surrealdb::engine::any::Any;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::Mutex;
 
@@ -18,7 +18,7 @@ use crate::{ProjectionError, SurrealEngine};
 
 const MAX_STORES: usize = 16;
 const ROUTER_CAPACITY: usize = 256;
-type Connections = BTreeMap<PathBuf, (SurrealEngine, Surreal<Db>)>;
+type Connections = BTreeMap<PathBuf, (SurrealEngine, Surreal<Any>)>;
 
 static RUNTIME: LazyLock<Result<Runtime, std::io::Error>> = LazyLock::new(|| {
     Builder::new_multi_thread()
@@ -37,7 +37,7 @@ pub(super) async fn client(
     engine: SurrealEngine,
     path: &str,
     create: bool,
-) -> Result<Surreal<Db>, ProjectionError> {
+) -> Result<Surreal<Any>, ProjectionError> {
     let runtime = RUNTIME
         .as_ref()
         .map_err(|error| database_error("embedded_runtime", error))?;
@@ -55,7 +55,7 @@ async fn connect(
     engine: SurrealEngine,
     path: &str,
     create: bool,
-) -> Result<Surreal<Db>, ProjectionError> {
+) -> Result<Surreal<Any>, ProjectionError> {
     if create {
         std::fs::create_dir_all(path)
             .map_err(|error| database_error("create_store_directory", error))?;
@@ -78,18 +78,24 @@ async fn connect(
             limit: MAX_STORES as u64,
         });
     }
-    let store_path = path.clone();
+    let store_path = path.to_str().ok_or_else(|| {
+        ProjectionError::InvalidReference("embedded storage path must be UTF-8".into())
+    })?;
     let connection = match engine {
         #[cfg(feature = "surrealkv")]
-        SurrealEngine::SurrealKv => Surreal::new::<surrealdb::engine::local::SurrealKv>(store_path)
-            .with_capacity(ROUTER_CAPACITY)
-            .await
-            .map_err(|error| database_error("connect_surrealkv", error)),
+        SurrealEngine::SurrealKv => {
+            surrealdb::engine::any::connect(format!("surrealkv://{store_path}"))
+                .with_capacity(ROUTER_CAPACITY)
+                .await
+                .map_err(|error| database_error("connect_surrealkv", error))
+        }
         #[cfg(feature = "rocksdb")]
-        SurrealEngine::RocksDb => Surreal::new::<surrealdb::engine::local::RocksDb>(store_path)
-            .with_capacity(ROUTER_CAPACITY)
-            .await
-            .map_err(|error| database_error("connect_rocksdb", error)),
+        SurrealEngine::RocksDb => {
+            surrealdb::engine::any::connect(format!("rocksdb://{store_path}"))
+                .with_capacity(ROUTER_CAPACITY)
+                .await
+                .map_err(|error| database_error("connect_rocksdb", error))
+        }
         #[allow(unreachable_patterns)]
         _ => Err(ProjectionError::InvalidReference(
             "requested embedded engine was not compiled in".to_owned(),

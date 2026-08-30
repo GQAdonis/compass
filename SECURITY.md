@@ -112,10 +112,27 @@ batch limit, so it cannot reclaim another checkout's data in a shared store.
 Queries never trust
 the database's mutable active pointer; query, status, validation, and backup
 opens do not issue schema-definition statements. Backup/restore exports typed
-projection records instead of copying opaque database directories. The current features
-are embedded local engines and add no credential or network boundary. Any
-future remote engine requires a separate design covering authentication, TLS,
-endpoint validation, timeouts, output bounds, and tenant isolation.
+projection records instead of copying opaque database directories.
+
+The optional `surreal-remote` feature introduces an explicit network and credential
+boundary. Server URLs reject userinfo, query strings, fragments, and unexpected
+paths. Plaintext is allowed only for loopback hosts; other hosts require
+certificate-validated TLS. HTTP(S) endpoint spellings select the equivalent
+WebSocket RPC transport. Each connection/authentication has a 30-second deadline;
+each query RPC has a 120-second outer deadline and WebSocket messages are limited
+to 128 MiB, in addition to the existing semantic row/byte/deadline limits.
+References must match independently configured endpoint, namespace, and database
+before connection or authentication. Authentication errors redact credentials.
+Prefer protected environment variables or password/token environment selectors;
+YAML may contain secrets only in an operator-protected file, never committed.
+YAML reads are capped at 64 KiB and parser diagnostics omit input contents.
+CLI password/token arguments are supported but visible to process inspectors.
+Process configuration is immutable; restart Compass/MCP to rotate credentials.
+Use a dedicated Compass database and least-privilege database user. Publication
+defines Compass tables/indexes only there. Automatic remote generation GC is
+disabled because local snapshots cannot establish other machines' reader
+liveness; an administrator must coordinate remote reclamation. No launch-agent
+configuration or running server's database files are modified.
 
 Embedded physical connections are shared only within the process by canonical
 store path and engine, with independent namespace/database sessions and exact

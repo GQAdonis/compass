@@ -1,7 +1,11 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 use compass_core::TaskContextQuery;
 use compass_core::{
     AgentGraphContext, TaskContext, TaskContextIntent, TaskContextLimits, TaskContextRequest,
@@ -9,7 +13,11 @@ use compass_core::{
 };
 use compass_model::query_contract::CodeQueryLimits;
 use compass_query::{EngineSelection, open_with_engine, open_with_verified_document};
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 use compass_query::{SurrealQueryEngine, has_published_surreal};
 
 use crate::Outcome;
@@ -231,13 +239,21 @@ fn execute(args: &[String]) -> Result<TaskContext, String> {
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 struct SyncSurrealTaskEngine {
     runtime: tokio::runtime::Runtime,
     engine: SurrealQueryEngine,
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 impl TaskContextQuery for SyncSurrealTaskEngine {
     fn explore(
         &self,
@@ -283,7 +299,11 @@ impl TaskContextQuery for SyncSurrealTaskEngine {
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn build_surreal_context(
     graph: &std::path::Path,
     request: &TaskContextRequest,
@@ -300,7 +320,11 @@ fn build_surreal_context(
         .map_err(|error| error.to_string())
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn build_surreal_context(
     _graph: &std::path::Path,
     _request: &TaskContextRequest,
@@ -309,12 +333,20 @@ fn build_surreal_context(
     Err("Surreal query support is unavailable in this Compass build".to_owned())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn published_surreal(graph: &std::path::Path) -> bool {
     has_published_surreal(graph)
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn published_surreal(_graph: &std::path::Path) -> bool {
     false
 }

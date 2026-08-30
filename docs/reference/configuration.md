@@ -128,10 +128,10 @@ and hosted quotas are deferred. Local disk availability remains an operational
 limit. See the [operations guide](../guides/operations.md)
 for the support window and rebuild procedure.
 
-### Embedded SurrealDB
+### Embedded and standalone SurrealDB
 
 Surreal storage is optional and requires a CLI built with
-`surreal-surrealkv` or `surreal-rocksdb`:
+`surreal-surrealkv`, `surreal-rocksdb`, or `surreal-remote`:
 
 ```bash
 compass update . --store surreal \
@@ -141,7 +141,14 @@ compass update . --store surreal \
 
 The same flags are accepted by `init`, `extract`, and `watch`. SurrealKV is the
 default embedded engine. The default path is the checkout-local shared store
-beneath `compass-out`. Remote endpoints, credentials, and TLS are not accepted.
+beneath `compass-out`. `--surreal-engine remote` instead uses a standalone
+server via `--surreal-endpoint`, `--surreal-namespace`, and `--surreal-database`.
+The same connection settings apply to typed queries, CompassQL, MCP, and store
+operations. YAML (`--surreal-config`, `COMPASS_SURREAL_CONFIG`, or the automatic
+`~/.compass/surreal.yaml`) and `COMPASS_SURREAL_*` variables are supported.
+Flags override environment, YAML, persisted project storage, then defaults.
+See the [complete connection configuration](../guides/surrealdb.md) for all
+fields, authentication scope, secret handling, and TLS constraints.
 
 New project configuration files use version 2 and may persist this selection:
 
@@ -163,10 +170,14 @@ contain `..`. Treat a repository-provided absolute setting as an explicit local
 storage grant; override it with `--surreal-path` before building an untrusted
 checkout.
 
-Explicit CLI flags have highest precedence, followed by `[storage]`, followed
-by the existing SQLite default. Version-1 configuration files remain valid and
+Explicit CLI flags have highest precedence, followed by environment, YAML,
+`[storage]`, and the existing SQLite default. Version-1 configuration files remain valid and
 retain their old storage behavior. Surreal engine/path settings are invalid
 unless `store = "surreal"`.
+
+Remote project storage uses `surreal_engine = "remote"`, `surreal_endpoint`,
+`surreal_namespace`, and `surreal_database` instead of `surreal_path`.
+Credentials are never written to project configuration, references, or backups.
 
 ## Build configuration
 

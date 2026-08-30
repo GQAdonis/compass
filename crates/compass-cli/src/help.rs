@@ -1148,8 +1148,30 @@ fn render_page(page: &Page, style: HelpStyle) -> String {
     if matches!(page.path, "init" | "update" | "extract" | "watch") {
         details = details.replace(
             "Graph storage [default: sqlite]",
-            "Graph storage [default: sqlite]\n  --surreal-engine <ENGINE>   Embedded engine: surrealkv or rocksdb [default: surrealkv]\n  --surreal-path <PATH>       Embedded database location [default: compass-out/surreal]",
+            "Graph storage [default: sqlite]\n  --surreal-engine <ENGINE>   surrealkv, rocksdb, or remote [default: surrealkv]\n  --surreal-path <PATH>       Embedded database location [default: compass-out/surreal]",
         );
+    }
+    if matches!(
+        page.path.split_whitespace().next(),
+        Some(
+            "init"
+                | "update"
+                | "extract"
+                | "watch"
+                | "ask"
+                | "search"
+                | "callers"
+                | "callees"
+                | "impact"
+                | "explore"
+                | "node"
+                | "query"
+                | "context"
+                | "serve"
+                | "store"
+        )
+    ) {
+        details.push_str("\n\nSurreal connection (optional):\n  --surreal-config <YAML>       Configuration file (default: ~/.compass/surreal.yaml)\n  --surreal-endpoint <URL>      Standalone server; ws/wss or http/https\n  --surreal-namespace <NAME>    Server namespace [default: compass]\n  --surreal-database <NAME>     Server database [default: graph]\n  --surreal-auth-level <LEVEL>  root, namespace, or database [default: root]\n  --surreal-username <USER>     Authentication username\n  --surreal-password-env <VAR>  Read password from a named environment variable\n  --surreal-token-env <VAR>     Read bearer token from a named environment variable\n  --surreal-password <VALUE>   Direct password (prefer environment to process arguments)\n  --surreal-token <VALUE>      Direct bearer token (prefer environment)\n  Precedence: flags > COMPASS_SURREAL_* environment > YAML > project > defaults.\n  Remote references must match the configured target; no query fallback.");
     }
     if page.path == "query" {
         details = details.replace(

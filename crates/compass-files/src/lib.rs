@@ -12,6 +12,7 @@ mod manifest;
 mod project_config;
 mod scope;
 mod slice;
+mod surreal_config;
 
 pub use atomic::{
     AtomicJsonDigest, write_atomic_with, write_atomic_with_digest, write_bytes_atomic,
@@ -37,6 +38,9 @@ pub use project_config::{
 };
 pub use scope::{BuildScope, ScopeMatcher};
 pub use slice::{FileSlice, bisect_slice, read_slice_text, slice_boundaries, split_file};
+pub use surreal_config::{
+    SurrealSettings, configure_surreal, normalize_surreal_endpoint, surreal_settings,
+};
 
 use std::path::PathBuf;
 

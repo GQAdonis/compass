@@ -108,6 +108,7 @@ fn project_config_v1_remains_compatible_and_v2_persists_surreal_storage()
             store: Some(ProjectStore::Surreal),
             surreal_engine: Some(ProjectSurrealEngine::RocksDb),
             surreal_path: Some("compass-out/shared-surreal".into()),
+            ..ProjectStorage::default()
         },
     };
     configured.write(root.path())?;

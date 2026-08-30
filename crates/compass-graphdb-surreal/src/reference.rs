@@ -17,6 +17,7 @@ pub const MAX_SURREAL_REF_BYTES: u64 = 32 * 1024;
 pub enum SurrealEngine {
     SurrealKv,
     RocksDb,
+    Remote,
 }
 
 impl SurrealEngine {
@@ -25,6 +26,7 @@ impl SurrealEngine {
         match self {
             Self::SurrealKv => "surrealkv",
             Self::RocksDb => "rocksdb",
+            Self::Remote => "remote",
         }
     }
 }
@@ -48,6 +50,44 @@ pub struct SurrealRef {
 }
 
 impl SurrealRef {
+    pub fn from_remote_plan(
+        plan: &ProjectionPlan,
+        graph_digest: impl Into<String>,
+    ) -> Result<Self, ProjectionError> {
+        let settings =
+            compass_files::surreal_settings().map_err(ProjectionError::InvalidReference)?;
+        let endpoint = settings.endpoint.as_deref().ok_or_else(|| {
+            ProjectionError::InvalidReference("remote endpoint is not configured".into())
+        })?;
+        let mut reference = Self::from_plan(
+            plan,
+            SurrealEngine::Remote,
+            Path::new(endpoint),
+            graph_digest,
+        )?;
+        reference.namespace = settings
+            .namespace
+            .clone()
+            .unwrap_or_else(|| SURREAL_NAMESPACE.into());
+        reference.database = settings
+            .database
+            .clone()
+            .unwrap_or_else(|| SURREAL_DATABASE.into());
+        reference.validate()?;
+        Ok(reference)
+    }
+
+    pub fn connection_location(&self) -> Result<std::path::PathBuf, ProjectionError> {
+        if self.engine == SurrealEngine::Remote {
+            return compass_files::normalize_surreal_endpoint(&self.location)
+                .map(std::path::PathBuf::from)
+                .map_err(ProjectionError::InvalidReference);
+        }
+        std::fs::canonicalize(&self.location).map_err(|error| {
+            ProjectionError::InvalidReference(format!("cannot resolve reference location: {error}"))
+        })
+    }
+
     pub fn from_plan(
         plan: &ProjectionPlan,
         engine: SurrealEngine,
@@ -79,6 +119,15 @@ impl SurrealRef {
     }
 
     pub fn validate(&self) -> Result<(), ProjectionError> {
+        if self.engine == SurrealEngine::Remote {
+            let endpoint = compass_files::normalize_surreal_endpoint(&self.location)
+                .map_err(ProjectionError::InvalidReference)?;
+            if endpoint != self.location {
+                return Err(ProjectionError::InvalidReference(
+                    "remote reference endpoint must be canonical".into(),
+                ));
+            }
+        }
         if self.schema != SURREAL_REF_SCHEMA_V1 {
             return Err(ProjectionError::InvalidReference(format!(
                 "expected reference schema {SURREAL_REF_SCHEMA_V1}, found {}",

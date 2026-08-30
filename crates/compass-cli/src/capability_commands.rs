@@ -40,8 +40,11 @@ pub fn command(frontend: Frontend, args: &[String]) -> Outcome {
             ("surreal_reference", "compass.surreal.ref/1"),
             ("surreal_projection", "compass.graph.surreal/2"),
             ("surreal_backup", "compass.surreal.backup/1"),
+            ("surreal_configuration", "compass.surreal.config/1"),
         ]),
         features: BTreeMap::from([
+            ("surreal_remote", cfg!(feature = "surreal-remote")),
+            ("surreal_yaml_config", true),
             ("init", true),
             ("update", true),
             ("watch", true),
@@ -57,14 +60,16 @@ pub fn command(frontend: Frontend, args: &[String]) -> Outcome {
                 "surreal_store",
                 cfg!(any(
                     feature = "surreal-surrealkv",
-                    feature = "surreal-rocksdb"
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
                 )),
             ),
             (
                 "surreal_cql",
                 cfg!(any(
                     feature = "surreal-surrealkv",
-                    feature = "surreal-rocksdb"
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
                 )),
             ),
         ]),
@@ -75,11 +80,13 @@ pub fn command(frontend: Frontend, args: &[String]) -> Outcome {
                 "surreal",
                 cfg!(any(
                     feature = "surreal-surrealkv",
-                    feature = "surreal-rocksdb"
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
                 )),
             ),
             ("surrealkv", cfg!(feature = "surreal-surrealkv")),
             ("rocksdb", cfg!(feature = "surreal-rocksdb")),
+            ("surreal_remote", cfg!(feature = "surreal-remote")),
         ]),
     };
     match serde_json::to_string(&report) {

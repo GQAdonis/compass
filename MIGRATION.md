@@ -7,6 +7,15 @@ layout remains visible and clearly owned.
 
 ## Enable embedded SurrealDB
 
+To use a standalone server as well, install with
+`--features surreal-surrealkv,surreal-remote`. Configure a dedicated namespace
+and database through `--surreal-config connection.yaml`, environment settings,
+or flags, then run `compass update . --store surreal --surreal-engine remote`.
+The server is contacted over its API; never point `--surreal-path` at a running
+server's storage files. Existing embedded references need no migration.
+See the [Surreal guide](docs/guides/surrealdb.md) for exact YAML and environment
+names, precedence, credentials, and cross-engine portable restore.
+
 SurrealDB remains an opt-in compile feature. Reinstall a SurrealKV-enabled CLI,
 then republish the active project:
 

@@ -297,7 +297,11 @@ impl CodeQueryEngine {
     pub fn build_metadata(&self) -> Result<BuildMetadata, QueryError> {
         let build = match &self.backend {
             CodeGraphBackend::Materialized { graph, .. } => Ok(graph.graph.build.clone()),
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             CodeGraphBackend::Surreal(snapshot) => Ok(snapshot.metadata.build.clone()),
             CodeGraphBackend::Store(snapshot) => snapshot
                 .reader()?
@@ -404,7 +408,11 @@ impl FuzzyLookupCache {
 }
 
 pub(crate) enum CodeGraphBackend {
-    #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+    #[cfg(any(
+        feature = "surreal-surrealkv",
+        feature = "surreal-rocksdb",
+        feature = "surreal-remote"
+    ))]
     Surreal(Box<crate::surreal_backend::SurrealCodeBackend>),
     Materialized {
         graph: Box<GraphDocument>,
@@ -695,7 +703,11 @@ impl CodeAdjacencyIndex {
 impl CodeGraphBackend {
     pub(crate) fn pin_discovery(&self) -> Result<PinnedDiscoveryBackend<'_>, QueryError> {
         match self {
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             Self::Surreal(_) => Err(QueryError::new(
                 QueryErrorKind::InvalidParameter,
                 "surreal_discovery_unavailable",
@@ -718,7 +730,11 @@ impl CodeGraphBackend {
 
     pub(crate) fn node_by_id(&self, id: &str) -> Result<Option<NodeRecord>, QueryError> {
         match self {
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             Self::Surreal(snapshot) => snapshot.node_by_id(id),
             Self::Materialized { graph, lookup, .. } => Ok(lookup
                 .node_by_id(id)
@@ -729,7 +745,11 @@ impl CodeGraphBackend {
 
     fn edge_by_id(&self, id: &str) -> Result<Option<EdgeRecord>, QueryError> {
         match self {
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             Self::Surreal(snapshot) => snapshot.edge_by_id(id),
             Self::Materialized {
                 graph, adjacency, ..
@@ -745,7 +765,11 @@ impl CodeGraphBackend {
     ) -> Result<(Vec<NodeRecord>, bool), QueryError> {
         let name = normalize_symbol(name);
         match self {
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             Self::Surreal(snapshot) => snapshot.nodes_by_normalized_name(&name, limit),
             Self::Materialized { graph, lookup, .. } => {
                 let retained = limit.saturating_add(1);
@@ -784,7 +808,11 @@ impl CodeGraphBackend {
         limit: usize,
     ) -> Result<(Vec<EdgeRecord>, bool), QueryError> {
         match self {
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             Self::Surreal(snapshot) => {
                 snapshot.matching_bounded(node, inbound, kinds, include_heuristic, limit)
             }
@@ -835,7 +863,11 @@ impl CodeGraphBackend {
         limit: usize,
     ) -> Result<(Vec<EdgeRecord>, bool), QueryError> {
         match self {
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             Self::Surreal(snapshot) => snapshot.incident_bounded(node, include_heuristic, limit),
             Self::Materialized {
                 graph, adjacency, ..
@@ -872,7 +904,11 @@ impl CodeGraphBackend {
 
     fn file_by_path(&self, path: &str) -> Result<Option<FileRecord>, QueryError> {
         match self {
-            #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+            #[cfg(any(
+                feature = "surreal-surrealkv",
+                feature = "surreal-rocksdb",
+                feature = "surreal-remote"
+            ))]
             Self::Surreal(snapshot) => snapshot.file_by_path(path),
             Self::Materialized { graph, lookup, .. } => Ok(lookup
                 .file_by_path(path)
@@ -890,7 +926,11 @@ impl CodeGraphBackend {
         limit: usize,
         bounded_posting_work: bool,
     ) -> Result<Option<TermCandidateRead>, QueryError> {
-        #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+        #[cfg(any(
+            feature = "surreal-surrealkv",
+            feature = "surreal-rocksdb",
+            feature = "surreal-remote"
+        ))]
         if let Self::Surreal(snapshot) = self {
             return snapshot.term_candidates(terms, limit).map(Some);
         }

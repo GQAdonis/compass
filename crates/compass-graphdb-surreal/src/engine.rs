@@ -1,10 +1,11 @@
 //! Feature-gated SurrealDB execution layer.
 
 use std::collections::BTreeSet;
+use std::future::IntoFuture;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use surrealdb::engine::local::Db;
+use surrealdb::engine::any::Any;
 use surrealdb::types::{RecordId, SurrealValue as _, Value as DatabaseValue};
 use surrealdb::{IndexedResults, Surreal};
 
@@ -14,8 +15,12 @@ use crate::{
     ProjectionError, ProjectionLimits, ProjectionPlan, RelationFamily, SurrealEngine, SurrealRef,
 };
 
+mod bounded;
 #[cfg(any(feature = "surrealkv", feature = "rocksdb"))]
 mod persistent;
+#[cfg(feature = "remote")]
+mod remote;
+use bounded::BoundedDatabase;
 mod query;
 mod reader;
 pub use reader::{CqlDirection, CqlNodeSelector, EdgeSelector, NodeSelector};
@@ -309,7 +314,7 @@ struct ActivePointer {
 /// A local SurrealDB projection client with a closed operation surface.
 #[derive(Clone)]
 pub struct SurrealProjection {
-    database: Surreal<Db>,
+    database: BoundedDatabase,
     limits: ProjectionLimits,
     namespace: String,
     database_name: String,
@@ -317,6 +322,81 @@ pub struct SurrealProjection {
 }
 
 impl SurrealProjection {
+    /// Open exactly the reference's connection; read paths never define schema.
+    pub async fn open_reference(
+        reference: &SurrealRef,
+        create: bool,
+    ) -> Result<Self, ProjectionError> {
+        reference.validate()?;
+        match reference.engine {
+            #[cfg(feature = "surrealkv")]
+            SurrealEngine::SurrealKv => {
+                if create {
+                    Self::surrealkv(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                } else {
+                    Self::surrealkv_existing(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                }
+            }
+            #[cfg(feature = "rocksdb")]
+            SurrealEngine::RocksDb => {
+                if create {
+                    Self::rocksdb(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                } else {
+                    Self::rocksdb_existing(
+                        &reference.location,
+                        &reference.namespace,
+                        &reference.database,
+                    )
+                    .await
+                }
+            }
+            #[cfg(feature = "remote")]
+            SurrealEngine::Remote => {
+                let client = remote::client(reference).await?;
+                let mut projection = if create {
+                    Self::initialize(
+                        client,
+                        &reference.namespace,
+                        &reference.database,
+                        ProjectionLimits::default(),
+                    )
+                    .await?
+                } else {
+                    Self::select_database(
+                        client,
+                        &reference.namespace,
+                        &reference.database,
+                        ProjectionLimits::default(),
+                    )
+                    .await?
+                };
+                projection.storage_identity =
+                    Some((SurrealEngine::Remote, reference.connection_location()?));
+                Ok(projection)
+            }
+            #[allow(unreachable_patterns)]
+            _ => Err(ProjectionError::InvalidReference(format!(
+                "Surreal {} support was not compiled in",
+                reference.engine.as_str()
+            ))),
+        }
+    }
+
     #[cfg(feature = "mem")]
     pub async fn memory(namespace: &str, database: &str) -> Result<Self, ProjectionError> {
         Self::memory_with_limits(namespace, database, ProjectionLimits::default()).await
@@ -328,9 +408,7 @@ impl SurrealProjection {
         database: &str,
         limits: ProjectionLimits,
     ) -> Result<Self, ProjectionError> {
-        use surrealdb::engine::local::Mem;
-
-        let client = Surreal::new::<Mem>(())
+        let client = surrealdb::engine::any::connect("mem://")
             .await
             .map_err(|error| database_error("connect_mem", error))?;
         Self::initialize(client, namespace, database, limits).await
@@ -412,7 +490,7 @@ impl SurrealProjection {
     }
 
     async fn initialize(
-        client: Surreal<Db>,
+        client: Surreal<Any>,
         namespace: &str,
         database: &str,
         limits: ProjectionLimits,
@@ -428,7 +506,7 @@ impl SurrealProjection {
     }
 
     async fn select_database(
-        client: Surreal<Db>,
+        client: Surreal<Any>,
         namespace: &str,
         database: &str,
         limits: ProjectionLimits,
@@ -438,13 +516,15 @@ impl SurrealProjection {
                 "namespace and database must not be empty".to_owned(),
             ));
         }
-        client
-            .use_ns(namespace)
-            .use_db(database)
-            .await
-            .map_err(|error| database_error("select_namespace_database", error))?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            client.use_ns(namespace).use_db(database).into_future(),
+        )
+        .await
+        .map_err(|_| database_error("select_namespace_database", "selection exceeded 30 seconds"))?
+        .map_err(|error| database_error("select_namespace_database", error))?;
         Ok(Self {
-            database: client,
+            database: BoundedDatabase::new(client),
             limits,
             namespace: namespace.to_owned(),
             database_name: database.to_owned(),
@@ -652,7 +732,7 @@ impl SurrealProjection {
                     .map_err(|error| database_error("delete_generation_records", error))?;
             }
             self.database
-                .delete::<Option<Value>>(RecordId::new(
+                .delete(RecordId::new(
                     "generation_manifest",
                     manifest_key(&manifest.repository_id, &manifest.generation_id),
                 ))
@@ -721,9 +801,7 @@ impl SurrealProjection {
         reference: &SurrealRef,
     ) -> Result<GenerationManifest, ProjectionError> {
         reference.validate()?;
-        let location = std::fs::canonicalize(&reference.location).map_err(|error| {
-            ProjectionError::InvalidReference(format!("cannot resolve reference location: {error}"))
-        })?;
+        let location = reference.connection_location()?;
         if reference.namespace != self.namespace
             || reference.database != self.database_name
             || self.storage_identity.as_ref() != Some(&(reference.engine, location))
@@ -861,7 +939,7 @@ fn validate_existing_storage_path(path: &str) -> Result<(), ProjectionError> {
 }
 
 async fn stage_generation(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     plan: &ProjectionPlan,
     projected_bytes: u64,
     interrupt: Option<InterruptAfter>,
@@ -1025,7 +1103,7 @@ fn manifest_matches(left: &GenerationManifest, right: &GenerationManifest) -> bo
 }
 
 async fn claim_generation(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     record: RecordId,
     manifest: &GenerationManifest,
 ) -> Result<(), ProjectionError> {
@@ -1063,7 +1141,7 @@ fn write_batch_len(
 }
 
 async fn insert_node_batch(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     nodes: &[ProjectedNode],
 ) -> Result<(), ProjectionError> {
     let payloads = nodes
@@ -1080,7 +1158,7 @@ async fn insert_node_batch(
 }
 
 async fn insert_relation_batch(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     relations: &[ProjectedRelation],
 ) -> Result<(), ProjectionError> {
     let Some(first) = relations.first() else {
@@ -1137,7 +1215,7 @@ fn database_record_value(
 }
 
 async fn insert_batch(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     statement: &'static str,
     payloads: Vec<DatabaseValue>,
     stage: &'static str,
@@ -1152,7 +1230,7 @@ async fn insert_batch(
 }
 
 async fn upsert_pointer(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     plan: &ProjectionPlan,
 ) -> Result<(), ProjectionError> {
     let pointer = ActivePointer {
@@ -1174,7 +1252,7 @@ async fn upsert_pointer(
 }
 
 async fn upsert_payload(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     record: RecordId,
     payload: Value,
     stage: &'static str,
@@ -1190,7 +1268,7 @@ async fn upsert_payload(
 }
 
 async fn validate_candidate(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     plan: &ProjectionPlan,
 ) -> Result<(), ProjectionError> {
     let files = read_files(
@@ -1240,7 +1318,7 @@ async fn validate_candidate(
 }
 
 async fn select_record<T>(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     record: RecordId,
     stage: &'static str,
 ) -> Result<Option<T>, ProjectionError>
@@ -1258,7 +1336,7 @@ where
 }
 
 async fn read_nodes(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     repository_id: &str,
     generation_id: &str,
     limit: usize,
@@ -1276,7 +1354,7 @@ async fn read_nodes(
 }
 
 async fn read_files(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     repository_id: &str,
     generation_id: &str,
     limit: usize,
@@ -1294,7 +1372,7 @@ async fn read_files(
 }
 
 async fn read_relations(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     repository_id: &str,
     generation_id: &str,
     family: RelationFamily,
@@ -1313,7 +1391,7 @@ async fn read_relations(
 }
 
 async fn query_projected<T>(
-    database: &Surreal<Db>,
+    database: &BoundedDatabase,
     statement: &'static str,
     repository_id: &str,
     generation_id: &str,

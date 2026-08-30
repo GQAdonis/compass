@@ -698,9 +698,9 @@ qualification tests; it is not a CLI or packaging dependency. PostgreSQL and
 DynamoDB are future adapters, not supported release backends. No local store
 command accepts cloud credentials, endpoints, or TLS configuration.
 
-`compass-graphdb-surreal` is an optional embedded projection and query backend.
+`compass-graphdb-surreal` is an optional embedded or standalone-server projection and query backend.
 The default workspace and CLI feature sets have no SurrealDB dependency.
-`surreal-surrealkv` and `surreal-rocksdb` wire the backend through publication,
+`surreal-surrealkv`, `surreal-rocksdb`, and `surreal-remote` wire the backend through publication,
 CLI queries, CompassQL, task context, MCP, and store operations. The immutable
 projection uses `compass.graph.surreal/2`; each filesystem snapshot carries a
 `compass.surreal.ref/1` reference that pins one repository, generation, graph
@@ -711,6 +711,15 @@ digest, projection fingerprint, engine, counts, and location. Explicit
 unavailable engine features fail explicitly. SurrealDB 3.2.4 is pinned under
 BUSL 1.1; enabling an engine feature carries the notice and redistribution
 conditions recorded in `THIRD_PARTY_NOTICES.md`.
+
+The additive `remote` engine in `compass.surreal.ref/1` binds a canonical
+WebSocket endpoint plus namespace/database instead of a directory. Older
+embedded-only binaries reject this engine explicitly. Independently supplied
+connection configuration must match that target before credentials are sent.
+YAML connection settings use `compass.surreal.config/1`; command flags override
+environment, YAML, persisted project storage, and defaults. Credentials are
+never persisted in project config, references, or portable bundles. Embedded
+references retain their existing shape. Historical realizations are unchanged.
 
 Projection v2 also binds indexed source-file records, canonical search and
 alias terms, case-sensitive CompassQL labels/types, stable node/relationship

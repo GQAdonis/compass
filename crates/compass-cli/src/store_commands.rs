@@ -12,7 +12,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 use compass_graphdb_surreal::{
     ProjectionBundle, SURREAL_REF_FILE_NAME, SurrealEngine, SurrealProjection, SurrealRef,
 };
@@ -22,7 +26,11 @@ use crate::Outcome;
 const BACKUP_SCHEMA_V1: &str = "compass.store.backup/1";
 const SURREAL_BACKUP_SCHEMA_V1: &str = "compass.surreal.backup/1";
 const MAX_BACKUP_MANIFEST_BYTES: u64 = 64 * 1024;
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 const SURREAL_BUNDLE_FILE_NAME: &str = "surreal.bundle.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -38,7 +46,11 @@ struct BackupManifest {
     store_reference: StoreRef,
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SurrealBackupManifest {
@@ -375,10 +387,14 @@ fn surreal_status(output: &Path) -> Value {
     if !reference_path.is_file() {
         return json!({
             "present": false,
-            "available": cfg!(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")),
+            "available": cfg!(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb", feature = "surreal-remote")),
         });
     }
-    #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+    #[cfg(any(
+        feature = "surreal-surrealkv",
+        feature = "surreal-rocksdb",
+        feature = "surreal-remote"
+    ))]
     {
         return match validate_surreal(output) {
             Ok(value) => value,
@@ -390,7 +406,11 @@ fn surreal_status(output: &Path) -> Value {
             }),
         };
     }
-    #[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+    #[cfg(not(any(
+        feature = "surreal-surrealkv",
+        feature = "surreal-rocksdb",
+        feature = "surreal-remote"
+    )))]
     {
         let value = compass_files::read_bytes_bounded(&reference_path, 32 * 1024)
             .ok()
@@ -406,7 +426,11 @@ fn surreal_status(output: &Path) -> Value {
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn validate_surreal(output: &Path) -> Result<Value, String> {
     let reference = read_surreal_reference(output)?;
     let runtime = surreal_runtime()?;
@@ -442,12 +466,20 @@ fn validate_surreal(output: &Path) -> Result<Value, String> {
     })
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn validate_surreal(_output: &Path) -> Result<Value, String> {
     Err("this Compass binary was built without a SurrealDB engine".to_owned())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn backup_surreal(output: &Path, destination: &Path) -> Result<Value, String> {
     let reference = read_surreal_reference(output)?;
     let graph_path = output.join("graph.json");
@@ -499,12 +531,20 @@ fn backup_surreal(output: &Path, destination: &Path) -> Result<Value, String> {
     }))
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn backup_surreal(_output: &Path, _destination: &Path) -> Result<Value, String> {
     Err("this Compass binary was built without a SurrealDB engine".to_owned())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn restore_surreal(
     source: &Path,
     destination: &Path,
@@ -535,17 +575,29 @@ fn restore_surreal(
         return Err("backup graph digest does not match its Surreal projection".to_owned());
     }
 
-    fs::create_dir_all(destination)
-        .map_err(|error| format!("create restore destination: {error}"))?;
     let location = destination.join("surreal");
-    let new_reference = SurrealRef::from_plan(
-        &bundle.plan,
-        bundle.reference.engine,
-        &location,
-        graph_digest.clone(),
-    )
+    let settings = compass_files::surreal_settings().ok();
+    let selected_engine = settings.and_then(|settings| settings.engine.as_deref());
+    let restore_engine = match selected_engine {
+        Some("remote") => SurrealEngine::Remote,
+        Some("surrealkv") => SurrealEngine::SurrealKv,
+        Some("rocksdb") => SurrealEngine::RocksDb,
+        _ => bundle.reference.engine,
+    };
+    let new_reference = if restore_engine == SurrealEngine::Remote {
+        SurrealRef::from_remote_plan(&bundle.plan, graph_digest.clone())
+    } else {
+        SurrealRef::from_plan(
+            &bundle.plan,
+            restore_engine,
+            &location,
+            graph_digest.clone(),
+        )
+    }
     .map_err(|error| error.to_string())?;
     let runtime = surreal_runtime()?;
+    fs::create_dir_all(destination)
+        .map_err(|error| format!("create restore destination: {error}"))?;
     let result = runtime.block_on(async {
         let projection = open_surreal_projection(&new_reference, true).await?;
         projection
@@ -599,7 +651,11 @@ fn restore_surreal(
     }))
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn restore_surreal(
     _source: &Path,
     _destination: &Path,
@@ -608,7 +664,11 @@ fn restore_surreal(
     Err("this Compass binary was built without a SurrealDB engine".to_owned())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn read_surreal_reference(output: &Path) -> Result<SurrealRef, String> {
     let path = output.join(SURREAL_REF_FILE_NAME);
     let bytes = bounded_read(
@@ -619,7 +679,11 @@ fn read_surreal_reference(output: &Path) -> Result<SurrealRef, String> {
     SurrealRef::decode(&bytes).map_err(|error| error.to_string())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn surreal_runtime() -> Result<tokio::runtime::Runtime, String> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -627,66 +691,25 @@ fn surreal_runtime() -> Result<tokio::runtime::Runtime, String> {
         .map_err(|error| format!("could not start Surreal runtime: {error}"))
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 async fn open_surreal_projection(
     reference: &SurrealRef,
     initialize_schema: bool,
 ) -> Result<SurrealProjection, String> {
-    match reference.engine {
-        SurrealEngine::SurrealKv => {
-            #[cfg(feature = "surreal-surrealkv")]
-            {
-                let projection = if initialize_schema {
-                    SurrealProjection::surrealkv(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                } else {
-                    SurrealProjection::surrealkv_existing(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                };
-                return projection.map_err(|error| error.to_string());
-            }
-            #[cfg(not(feature = "surreal-surrealkv"))]
-            {
-                Err("this Compass binary was built without surreal-surrealkv".to_owned())
-            }
-        }
-        SurrealEngine::RocksDb => {
-            #[cfg(feature = "surreal-rocksdb")]
-            {
-                let projection = if initialize_schema {
-                    SurrealProjection::rocksdb(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                } else {
-                    SurrealProjection::rocksdb_existing(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                };
-                return projection.map_err(|error| error.to_string());
-            }
-            #[cfg(not(feature = "surreal-rocksdb"))]
-            {
-                Err("this Compass binary was built without surreal-rocksdb".to_owned())
-            }
-        }
-    }
+    SurrealProjection::open_reference(reference, initialize_schema)
+        .await
+        .map_err(|error| error.to_string())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn bounded_read(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>, String> {
     compass_files::read_bytes_bounded(path, limit).map_err(|error| format!("read {label}: {error}"))
 }

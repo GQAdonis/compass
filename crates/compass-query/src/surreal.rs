@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use compass_graphdb_surreal::{
-    SURREAL_REF_FILE_NAME, SurrealEngine, SurrealProjection, SurrealRef,
-};
+use compass_graphdb_surreal::{SURREAL_REF_FILE_NAME, SurrealProjection, SurrealRef};
 use compass_model::query_contract::{
     CallRequest, CodeQueryResponse, ExploreRequest, ImpactRequest, NodeTrailRequest, SearchRequest,
 };
@@ -43,39 +41,9 @@ impl SurrealQueryEngine {
 
     pub async fn open_reference(reference: SurrealRef) -> Result<Self, QueryError> {
         reference.validate().map_err(projection_error)?;
-        let projection = match reference.engine {
-            SurrealEngine::SurrealKv => {
-                #[cfg(feature = "surreal-surrealkv")]
-                {
-                    SurrealProjection::surrealkv_existing(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                }
-                #[cfg(not(feature = "surreal-surrealkv"))]
-                {
-                    return Err(unavailable("surrealkv"));
-                }
-            }
-            SurrealEngine::RocksDb => {
-                #[cfg(feature = "surreal-rocksdb")]
-                {
-                    SurrealProjection::rocksdb_existing(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                }
-                #[cfg(not(feature = "surreal-rocksdb"))]
-                {
-                    return Err(unavailable("rocksdb"));
-                }
-            }
-        }
-        .map_err(projection_error)?;
+        let projection = SurrealProjection::open_reference(&reference, false)
+            .await
+            .map_err(projection_error)?;
         Self::from_projection(reference, projection).await
     }
 
@@ -260,16 +228,7 @@ struct SurrealConnectionKey {
 
 impl SurrealConnectionKey {
     fn from_reference(reference: &SurrealRef) -> Result<Self, QueryError> {
-        let location = fs::canonicalize(&reference.location).map_err(|error| {
-            QueryError::new(
-                QueryErrorKind::CorruptArtifact,
-                "surreal_store_missing",
-                format!(
-                    "cannot resolve Surreal store {}: {error}",
-                    reference.location
-                ),
-            )
-        })?;
+        let location = reference.connection_location().map_err(projection_error)?;
         Ok(Self {
             engine: reference.engine.as_str().to_owned(),
             location,
@@ -384,13 +343,5 @@ pub(crate) fn projection_error(error: compass_graphdb_surreal::ProjectionError) 
         QueryErrorKind::CorruptArtifact,
         "surreal_projection_failed",
         error.to_string(),
-    )
-}
-
-fn unavailable(engine: &str) -> QueryError {
-    QueryError::new(
-        QueryErrorKind::InvalidParameter,
-        "surreal_engine_unavailable",
-        format!("this Compass binary was built without surreal-{engine}"),
     )
 }

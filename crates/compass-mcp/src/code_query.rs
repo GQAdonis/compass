@@ -504,7 +504,11 @@ pub(super) fn envelope_with_identity(
     }))
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 pub(super) async fn invoke_with_surreal(
     name: &str,
     arguments: &Map<String, Value>,

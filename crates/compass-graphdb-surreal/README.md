@@ -5,14 +5,15 @@ This optional integration crate projects one validated, immutable
 records. Canonical JSON remains portable; a published `surreal.ref` selects
 Surreal for active-project queries ahead of SQLite or JSON. The owning core,
 query, CLI, and MCP crates provide the fully wired `surreal-surrealkv` and
-`surreal-rocksdb` features. This crate contains no presentation logic.
+`surreal-rocksdb` and `surreal-remote` features. This crate contains no presentation logic.
 
 The crate has no default engine feature. Enable exactly the embedded profile
 you need:
 
 - `mem` for deterministic tests and ephemeral sessions;
 - `surrealkv` for an embedded SurrealKV database; or
-- `rocksdb` for an embedded RocksDB database.
+- `rocksdb` for an embedded RocksDB database;
+- `remote` for a standalone server over WS/WSS (combinable with embedded modes).
 
 These features resolve exactly `surrealdb` 3.2.4. That dependency and its core
 are licensed under Business Source License 1.1 before conversion, with a
@@ -36,8 +37,11 @@ pointer. The standalone `activate` API retains pointer-based library behavior.
 Reference-aware staging binds the admitted graph digest in the immutable
 manifest; a changed digest or an unbound library-only generation fails query
 loading without reading JSON. Portable bundle restore preserves this binding.
-GC is explicitly scoped to one repository and excludes retained generations
+Embedded automatic GC is explicitly scoped to one repository and excludes retained generations
 before limiting candidates, preserving other repositories in a shared store.
+Remote publication skips automatic GC because local snapshots cannot prove
+distributed reader liveness. Remote connections require an independently
+configured target matching the reference before authentication.
 Interrupted candidates remain invisible and can be resumed without retaining
 one graph-sized transaction or rewriting the prior valid generation.
 

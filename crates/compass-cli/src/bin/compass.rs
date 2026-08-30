@@ -61,6 +61,10 @@ fn main() -> ExitCode {
             &mut io::stderr(),
         ));
     }
+    if let Err(error) = compass_cli::prepare_surreal_arguments(&mut arguments) {
+        eprintln!("error: {error}");
+        return ExitCode::from(2);
+    }
     if arguments.first().and_then(|value| value.to_str()) == Some("init") {
         let stdin = io::stdin();
         let input_is_terminal = stdin.is_terminal();

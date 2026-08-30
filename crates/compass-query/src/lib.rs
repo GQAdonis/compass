@@ -16,11 +16,23 @@ mod recall;
 mod relevance;
 mod score;
 mod source;
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 mod surreal;
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 mod surreal_backend;
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 mod surreal_cql;
 mod telemetry;
 mod text;
@@ -76,11 +88,19 @@ pub use score::{
     ProfiledQueryScores, QueryScores, ScoredNode, TEXT_RANKER_BM25_V1, TEXT_RANKER_FULL_SCAN_V1,
     TextRankProfile, find_node, pick_scored_endpoint, score_nodes, score_nodes_with_profile,
 };
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 pub use surreal::{
     SurrealQueryEngine, SurrealQueryEngineCache, has_published_surreal, read_surreal_ref,
 };
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 pub use surreal_cql::SurrealCqlRequest;
 pub use telemetry::{
     ProfiledCodeQueryResponse, QUERY_EXECUTION_PROFILE_V1, QueryExecutionProfile,

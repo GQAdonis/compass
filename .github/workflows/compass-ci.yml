@@ -206,6 +206,10 @@ jobs:
         run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-surrealkv --locked
       - name: Qualify optional RocksDB surface
         run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-rocksdb --locked
+      - name: Compile combined embedded and standalone server surfaces
+        run: cargo check -p compass-cli --features surreal-surrealkv,surreal-remote --locked
+      - name: Verify bounded YAML and endpoint configuration
+        run: cargo test -p compass-files --test surreal_configuration --locked
 
   native-platforms:
     name: ${{ matrix.target }}

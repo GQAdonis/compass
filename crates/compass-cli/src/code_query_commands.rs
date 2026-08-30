@@ -7,7 +7,11 @@ use compass_model::query_contract::{
 use compass_query::{
     EngineSelection, NaturalQueryRequest, open_with_engine, open_with_verified_document,
 };
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 use compass_query::{SurrealQueryEngine, has_published_surreal};
 
 use crate::Outcome;
@@ -159,17 +163,29 @@ fn execute(operation: &str, args: &[String]) -> Result<CodeQueryResponse, String
     .map_err(|error| error.to_string())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn published_surreal(graph: &std::path::Path) -> bool {
     has_published_surreal(graph)
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn published_surreal(_graph: &std::path::Path) -> bool {
     false
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn execute_surreal(
     operation: &str,
     args: &[String],
@@ -257,7 +273,11 @@ fn execute_surreal(
     })
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn execute_surreal(
     _operation: &str,
     _args: &[String],

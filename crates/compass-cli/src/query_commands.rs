@@ -14,7 +14,11 @@ use compass_output::{render_cql_json, render_cql_jsonl, render_cql_table};
 use compass_query::{
     EngineSelection, PlanCache, QueryLimits, QueryRequest, QueryResult, execute, open_graph_engine,
 };
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 use compass_query::{SurrealCqlRequest, SurrealQueryEngine, has_published_surreal};
 use serde_json::Value;
 
@@ -441,7 +445,11 @@ fn render_result(request: &CqlCliRequest, result: QueryResult) -> Result<String,
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn run_source_with_surreal(
     request: &CqlCliRequest,
     source_name: &str,
@@ -500,7 +508,11 @@ fn run_source_with_surreal(
     render_result(request, result)
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn run_source_with_surreal(
     _request: &CqlCliRequest,
     _source_name: &str,
@@ -730,12 +742,20 @@ fn parse_engine(raw: &str) -> Result<EngineSelection, CliError> {
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn published_surreal(graph_path: &Path) -> bool {
     has_published_surreal(graph_path)
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn published_surreal(_graph_path: &Path) -> bool {
     false
 }

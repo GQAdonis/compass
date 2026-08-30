@@ -17,10 +17,20 @@ pub use reference::{
     SURREAL_NAMESPACE, SURREAL_REF_FILE_NAME, SURREAL_REF_SCHEMA_V1, SurrealEngine, SurrealRef,
 };
 
-#[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+#[cfg(any(
+    feature = "mem",
+    feature = "surrealkv",
+    feature = "rocksdb",
+    feature = "remote"
+))]
 mod engine;
 
-#[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+#[cfg(any(
+    feature = "mem",
+    feature = "surrealkv",
+    feature = "rocksdb",
+    feature = "remote"
+))]
 pub use engine::{
     ActivationOutcome, CqlDirection, CqlNodeSelector, CqlProjectionRequest, CqlProjectionSlice,
     EdgeSelector, GenerationGcStats, InterruptAfter, NATIVE_RELATION_PAGE_SCHEMA_V1, NodeSelector,

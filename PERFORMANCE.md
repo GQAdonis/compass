@@ -6,6 +6,13 @@ or complete error reporting.
 
 ## Embedded Surreal qualification
 
+Remote operation uses the same bounded generation-filtered reads over a
+process-lived WebSocket connection. Network latency is not represented by the
+embedded measurements below; no remote throughput claim is implied. Remote
+connections are capped at 16, router capacity at 256, response messages at
+128 MiB, connection establishment at 30 seconds, and each RPC at 120 seconds.
+Remote GC is not inferred from local snapshot retention.
+
 SurrealDB is a non-default build profile, so its compile time, binary size,
 database size, publication latency, query latency, and peak RSS are reported
 separately from the default SQLite/JSON baseline. SurrealKV is the production

@@ -2,7 +2,11 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 use std::io::Read;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -11,7 +15,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ahash::{AHashMap, AHashSet};
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 use compass_files::write_bytes_atomic;
 use compass_files::{
     BuildGuard, BuildScope, Cache, CacheOptions, DetectOptions, Detection, IgnorePolicy, Manifest,
@@ -209,6 +217,7 @@ pub enum SurrealStorageEngine {
     #[default]
     SurrealKv,
     RocksDb,
+    Remote,
 }
 
 impl SurrealStorageEngine {
@@ -217,6 +226,7 @@ impl SurrealStorageEngine {
         match self {
             Self::SurrealKv => "surrealkv",
             Self::RocksDb => "rocksdb",
+            Self::Remote => "remote",
         }
     }
 }
@@ -4533,6 +4543,19 @@ fn build_profile(options: &BuildOptions) -> BuildProfile {
         surreal_engine: (options.graph_storage == GraphStorage::Surreal)
             .then(|| options.surreal_engine.as_str().to_owned()),
         surreal_path: (options.graph_storage == GraphStorage::Surreal).then(|| {
+            if options.surreal_engine == SurrealStorageEngine::Remote {
+                return compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|settings| {
+                        serde_json::to_string(&(
+                            &settings.endpoint,
+                            &settings.namespace,
+                            &settings.database,
+                        ))
+                        .ok()
+                    })
+                    .unwrap_or_default();
+            }
             options
                 .surreal_path
                 .as_ref()
@@ -4683,11 +4706,14 @@ fn publish_build_state(
     state.save(output_dir)
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn ensure_surreal_projection(options: &BuildOptions, output_dir: &Path) -> Result<(), CoreError> {
     use compass_graphdb_surreal::{
-        ProjectionPlan, SURREAL_DATABASE, SURREAL_NAMESPACE, SURREAL_REF_FILE_NAME,
-        SurrealProjection, SurrealRef,
+        ProjectionPlan, SURREAL_REF_FILE_NAME, SurrealProjection, SurrealRef,
     };
 
     let graph_path = output_dir.join("graph.json");
@@ -4697,20 +4723,18 @@ fn ensure_surreal_projection(options: &BuildOptions, output_dir: &Path) -> Resul
         surreal_storage_binding(options)?;
     let plan = ProjectionPlan::from_graph(repository_id, &graph)
         .map_err(|error| CoreError::InvalidBuildState(error.to_string()))?;
-    let location_text = location.to_str().ok_or_else(|| {
-        CoreError::InvalidBuildState(format!(
-            "SurrealDB storage path is not valid UTF-8: {}",
-            location.display()
-        ))
-    })?;
     let graph_digest = if graph_digest.starts_with("sha256:") {
         graph_digest
     } else {
         format!("sha256:{graph_digest}")
     };
     let selected_engine = reference_engine.as_str();
-    let reference = SurrealRef::from_plan(&plan, reference_engine, &location, graph_digest)
-        .map_err(|error| CoreError::InvalidBuildState(error.to_string()))?;
+    let reference = if options.surreal_engine == SurrealStorageEngine::Remote {
+        SurrealRef::from_remote_plan(&plan, graph_digest)
+    } else {
+        SurrealRef::from_plan(&plan, reference_engine, &location, graph_digest)
+    }
+    .map_err(|error| CoreError::InvalidBuildState(error.to_string()))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -4718,37 +4742,11 @@ fn ensure_surreal_projection(options: &BuildOptions, output_dir: &Path) -> Resul
             CoreError::InvalidBuildState(format!("create Surreal runtime: {error}"))
         })?;
     runtime.block_on(async {
-        let projection = match options.surreal_engine {
-            SurrealStorageEngine::SurrealKv => {
-                #[cfg(feature = "surreal-surrealkv")]
-                {
-                    SurrealProjection::surrealkv(location_text, SURREAL_NAMESPACE, SURREAL_DATABASE)
-                        .await
-                }
-                #[cfg(not(feature = "surreal-surrealkv"))]
-                {
-                    Err(compass_graphdb_surreal::ProjectionError::InvalidPlan(
-                        "this Compass binary was built without surreal-surrealkv".to_owned(),
-                    ))
-                }
-            }
-            SurrealStorageEngine::RocksDb => {
-                #[cfg(feature = "surreal-rocksdb")]
-                {
-                    SurrealProjection::rocksdb(location_text, SURREAL_NAMESPACE, SURREAL_DATABASE)
-                        .await
-                }
-                #[cfg(not(feature = "surreal-rocksdb"))]
-                {
-                    Err(compass_graphdb_surreal::ProjectionError::InvalidPlan(
-                        "this Compass binary was built without surreal-rocksdb".to_owned(),
-                    ))
-                }
-            }
-        }
-        .map_err(|error| {
-            CoreError::InvalidBuildState(format!("open {selected_engine} projection: {error}"))
-        })?;
+        let projection = SurrealProjection::open_reference(&reference, true)
+            .await
+            .map_err(|error| {
+                CoreError::InvalidBuildState(format!("open {selected_engine} projection: {error}"))
+            })?;
         projection
             .stage_for_reference(&plan, &reference)
             .await
@@ -4788,7 +4786,9 @@ fn ensure_surreal_projection(options: &BuildOptions, output_dir: &Path) -> Resul
                 Err(_) => references_complete = false,
             }
         }
-        if references_complete {
+        // Another machine may retain a reference to this remote database. Local
+        // snapshot discovery cannot establish global liveness for remote GC.
+        if references_complete && options.surreal_engine != SurrealStorageEngine::Remote {
             projection
                 .garbage_collect_generations(&reference.repository_id, &retained, 16)
                 .await
@@ -4807,7 +4807,11 @@ fn ensure_surreal_projection(options: &BuildOptions, output_dir: &Path) -> Resul
     Ok(())
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn surreal_storage_binding(
     options: &BuildOptions,
 ) -> Result<
@@ -4835,6 +4839,23 @@ fn surreal_storage_binding(
         .as_deref()
         .map_or_else(|| root.clone(), absolutize);
     let output_container = output_root.join(output_name);
+    if options.surreal_engine == SurrealStorageEngine::Remote {
+        if options.surreal_path.is_some() {
+            return Err(CoreError::InvalidBuildState(
+                "remote SurrealDB requires an endpoint, not a filesystem path".into(),
+            ));
+        }
+        let settings = compass_files::surreal_settings().map_err(CoreError::InvalidBuildState)?;
+        let endpoint = settings.endpoint.as_ref().ok_or_else(|| {
+            CoreError::InvalidBuildState("remote Surreal endpoint is not configured".into())
+        })?;
+        return Ok((
+            repository_id,
+            SurrealEngine::Remote,
+            PathBuf::from(endpoint),
+            output_container,
+        ));
+    }
     let location = options.surreal_path.as_ref().map_or_else(
         || output_container.join("surreal"),
         |path| {
@@ -4862,11 +4883,16 @@ fn surreal_storage_binding(
     let engine = match options.surreal_engine {
         SurrealStorageEngine::SurrealKv => SurrealEngine::SurrealKv,
         SurrealStorageEngine::RocksDb => SurrealEngine::RocksDb,
+        SurrealStorageEngine::Remote => SurrealEngine::Remote,
     };
     Ok((repository_id, engine, location, output_container))
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn resolve_existing_path_prefix(path: &Path) -> Result<PathBuf, CoreError> {
     let mut existing = path;
     let mut missing = Vec::new();
@@ -4896,10 +4922,14 @@ fn resolve_existing_path_prefix(path: &Path) -> Result<PathBuf, CoreError> {
     Ok(resolved)
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn ensure_surreal_projection(_options: &BuildOptions, _output_dir: &Path) -> Result<(), CoreError> {
     Err(CoreError::InvalidBuildState(
-        "Surreal storage is unavailable; rebuild Compass with surreal-surrealkv or surreal-rocksdb"
+        "Surreal storage is unavailable; rebuild Compass with surreal-surrealkv, surreal-rocksdb, or surreal-remote"
             .to_owned(),
     ))
 }
@@ -7289,9 +7319,13 @@ fn storage_artifacts_complete(options: &BuildOptions, output_dir: &Path) -> bool
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn surreal_artifact_complete(options: &BuildOptions, output_dir: &Path) -> bool {
-    use compass_graphdb_surreal::{SurrealEngine, SurrealProjection};
+    use compass_graphdb_surreal::SurrealProjection;
 
     let path = output_dir.join(compass_graphdb_surreal::SURREAL_REF_FILE_NAME);
     let Some(reference) =
@@ -7324,38 +7358,7 @@ fn surreal_artifact_complete(options: &BuildOptions, output_dir: &Path) -> bool 
         return false;
     };
     runtime.block_on(async {
-        let projection = match reference.engine {
-            SurrealEngine::SurrealKv => {
-                #[cfg(feature = "surreal-surrealkv")]
-                {
-                    SurrealProjection::surrealkv_existing(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                }
-                #[cfg(not(feature = "surreal-surrealkv"))]
-                {
-                    return false;
-                }
-            }
-            SurrealEngine::RocksDb => {
-                #[cfg(feature = "surreal-rocksdb")]
-                {
-                    SurrealProjection::rocksdb_existing(
-                        &reference.location,
-                        &reference.namespace,
-                        &reference.database,
-                    )
-                    .await
-                }
-                #[cfg(not(feature = "surreal-rocksdb"))]
-                {
-                    return false;
-                }
-            }
-        };
+        let projection = SurrealProjection::open_reference(&reference, false).await;
         match projection {
             Ok(projection) => projection.validate_contents(&reference).await.is_ok(),
             Err(_) => false,
@@ -7363,7 +7366,11 @@ fn surreal_artifact_complete(options: &BuildOptions, output_dir: &Path) -> bool 
     })
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn surreal_graph_artifact_digest(path: &Path) -> std::io::Result<String> {
     let metadata = fs::metadata(path)?;
     if !metadata.is_file() || metadata.len() > max_canonical_graph_bytes() {
@@ -7385,7 +7392,11 @@ fn surreal_graph_artifact_digest(path: &Path) -> std::io::Result<String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-#[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
 fn surreal_artifact_complete(_options: &BuildOptions, _output_dir: &Path) -> bool {
     false
 }

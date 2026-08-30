@@ -28,7 +28,7 @@ compass init [PATH]
   [--exclude GLOB]
   [--program]
   [--store json|sqlite|surreal]
-  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-engine surrealkv|rocksdb|remote]
   [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--yes]
@@ -55,7 +55,7 @@ compass update [PATH]
   [--program-artifact PATH]
   [--out DIR]
   [--store json|sqlite|surreal]
-  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-engine surrealkv|rocksdb|remote]
   [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--no-program]
@@ -116,7 +116,7 @@ compass extract [PATH]
   [--timing]
   [--out DIR]
   [--store json|sqlite|surreal]
-  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-engine surrealkv|rocksdb|remote]
   [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--no-cluster]
@@ -191,7 +191,7 @@ compass watch [PATH]
   [--program-artifact PATH]
   [--no-program]
   [--store json|sqlite|surreal]
-  [--surreal-engine surrealkv|rocksdb]
+  [--surreal-engine surrealkv|rocksdb|remote]
   [--surreal-path PATH]
   [--inference-level low|medium|high|max]
   [--out DIR]
@@ -996,10 +996,14 @@ embedded-database directory. `restore` validates either bundle and writes only
 to a new or empty destination.
 
 Build publication accepts `--store surreal`, `--surreal-engine
-surrealkv|rocksdb`, and `--surreal-path PATH` on `init`, `update`, `extract`,
-and `watch`. See the [embedded SurrealDB guide](../guides/surrealdb.md).
+surrealkv|rocksdb|remote`, and `--surreal-path PATH` on `init`, `update`, `extract`,
+and `watch`. `--surreal-config YAML`, `--surreal-endpoint URL`,
+`--surreal-namespace NAME`, `--surreal-database NAME`, and the documented auth
+flags also apply to typed query, CompassQL, context, serve, and store commands.
+See the [embedded and server SurrealDB guide](../guides/surrealdb.md).
 The commands operate on the local SQLite adapter and, when compiled with an
-embedded engine feature, SurrealKV or RocksDB. The redb adapter is library-only,
+engine feature, embedded SurrealKV/RocksDB or a standalone SurrealDB server.
+The redb adapter is library-only,
 and PostgreSQL/DynamoDB are future backends.
 
 `graph.json` remains the complete portable authority. The default query engine

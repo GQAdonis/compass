@@ -30,6 +30,8 @@ mod semantic_commands;
 mod semantic_diff_commands;
 mod semantic_diff_render;
 mod store_commands;
+mod surreal_settings;
+pub use surreal_settings::prepare_surreal_arguments;
 mod task_context_commands;
 mod upgrade_commands;
 
@@ -547,7 +549,8 @@ pub fn run_mcp(arguments: &[OsString], stdout: &mut impl Write, stderr: &mut imp
     if options.engine == compass_query::EngineSelection::Surreal
         && !cfg!(any(
             feature = "surreal-surrealkv",
-            feature = "surreal-rocksdb"
+            feature = "surreal-rocksdb",
+            feature = "surreal-remote"
         ))
     {
         let _result = writeln!(
@@ -1206,7 +1209,9 @@ fn parse_watch_options(args: &[String]) -> Result<Option<WatchOptions>, String> 
                 surreal_engine = Some(parse_surreal_engine(&value[17..])?);
             }
             "--surreal-engine" => {
-                return Err("error: --surreal-engine requires surrealkv or rocksdb".to_owned());
+                return Err(
+                    "error: --surreal-engine requires surrealkv, rocksdb, or remote".to_owned(),
+                );
             }
             "--surreal-path" if index + 1 < args.len() => {
                 if args[index + 1].is_empty() {
@@ -2098,7 +2103,7 @@ fn command_build_with_validation_inner(
             "--surreal-engine" => {
                 return extract_parse_failure(
                     frontend,
-                    "error: --surreal-engine requires surrealkv or rocksdb".to_owned(),
+                    "error: --surreal-engine requires surrealkv, rocksdb, or remote".to_owned(),
                 );
             }
             "--surreal-path" if index + 1 < args.len() => {
@@ -2235,7 +2240,7 @@ fn command_build_with_validation_inner(
                 return Outcome::success(if extract {
                     extract_help()
                 } else {
-                    "Usage: compass update [path] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb] [--surreal-path PATH] [--inference-level low|medium|high|max] [--max-source-bytes N] [--max-workers N] [--no-cluster] [--force] [--no-viz] [--timing]".to_owned()
+                    "Usage: compass update [path] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--max-source-bytes N] [--max-workers N] [--no-cluster] [--force] [--no-viz] [--timing]".to_owned()
                 });
             }
             value if value.starts_with('-') => {
@@ -2623,8 +2628,9 @@ fn parse_surreal_engine(value: &str) -> Result<SurrealStorageEngine, String> {
     match value {
         "surrealkv" => Ok(SurrealStorageEngine::SurrealKv),
         "rocksdb" => Ok(SurrealStorageEngine::RocksDb),
+        "remote" => Ok(SurrealStorageEngine::Remote),
         _ => Err(format!(
-            "error: --surreal-engine must be surrealkv or rocksdb (found {value})"
+            "error: --surreal-engine must be surrealkv, rocksdb, or remote (found {value})"
         )),
     }
 }
@@ -2641,6 +2647,7 @@ fn project_surreal_engine_to_core(value: ProjectSurrealEngine) -> SurrealStorage
     match value {
         ProjectSurrealEngine::SurrealKv => SurrealStorageEngine::SurrealKv,
         ProjectSurrealEngine::RocksDb => SurrealStorageEngine::RocksDb,
+        ProjectSurrealEngine::Remote => SurrealStorageEngine::Remote,
     }
 }
 
@@ -2648,6 +2655,7 @@ fn surreal_engine_available(engine: SurrealStorageEngine) -> bool {
     match engine {
         SurrealStorageEngine::SurrealKv => cfg!(feature = "surreal-surrealkv"),
         SurrealStorageEngine::RocksDb => cfg!(feature = "surreal-rocksdb"),
+        SurrealStorageEngine::Remote => cfg!(feature = "surreal-remote"),
     }
 }
 
@@ -3271,7 +3279,7 @@ fn executable_on_path(name: &str) -> bool {
 }
 
 fn extract_help() -> String {
-    "Usage: compass extract [PATH] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb] [--surreal-path PATH] [--inference-level low|medium|high|max] [--code-only] [--cargo] [--google-workspace] [--postgres DSN] [--backend NAME] [--model MODEL] [--mode deep] [--ocr off|auto|always] [--ocr-profile NAME] [--ocr-language BCP47] [--token-budget N] [--max-concurrency N] [--max-workers N] [--max-source-bytes N] [--api-timeout SECONDS] [--allow-partial] [--dedup-llm] [--timing] [--out DIR] [--no-cluster] [--force] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--resolution N] [--exclude-hubs N]\nProvider selection: --backend/--model override COMPASS_BACKEND/COMPASS_MODEL. Built-ins: claude, kimi, ollama, gemini, openai, deepseek, azure, bedrock, claude-cli. Set the selected provider's documented credential variable; custom providers use `compass provider add`. Credentials are never written to Compass artifacts.".to_owned()
+    "Usage: compass extract [PATH] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--code-only] [--cargo] [--google-workspace] [--postgres DSN] [--backend NAME] [--model MODEL] [--mode deep] [--ocr off|auto|always] [--ocr-profile NAME] [--ocr-language BCP47] [--token-budget N] [--max-concurrency N] [--max-workers N] [--max-source-bytes N] [--api-timeout SECONDS] [--allow-partial] [--dedup-llm] [--timing] [--out DIR] [--no-cluster] [--force] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--resolution N] [--exclude-hubs N]\nProvider selection: --backend/--model override COMPASS_BACKEND/COMPASS_MODEL. Built-ins: claude, kimi, ollama, gemini, openai, deepseek, azure, bedrock, claude-cli. Set the selected provider's documented credential variable; custom providers use `compass provider add`. Credentials are never written to Compass artifacts.".to_owned()
 }
 
 fn saved_graph_root() -> Option<PathBuf> {
@@ -6262,7 +6270,7 @@ fn graph_load_outcome(error: GraphError) -> Outcome {
 }
 
 fn watch_help() -> String {
-    "Usage: compass watch [PATH] [--program] [--program-artifact PATH] [--no-program] [--debounce SECONDS] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb] [--surreal-path PATH] [--inference-level low|medium|high|max] [--out DIR] [--no-cluster] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--poll]"
+    "Usage: compass watch [PATH] [--program] [--program-artifact PATH] [--no-program] [--debounce SECONDS] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--out DIR] [--no-cluster] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--poll]"
         .to_owned()
 }
 

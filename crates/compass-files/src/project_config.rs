@@ -23,6 +23,8 @@ pub enum ProjectSurrealEngine {
     SurrealKv,
     #[serde(rename = "rocksdb")]
     RocksDb,
+    #[serde(rename = "remote")]
+    Remote,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -34,6 +36,12 @@ pub struct ProjectStorage {
     pub surreal_engine: Option<ProjectSurrealEngine>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surreal_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surreal_endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surreal_namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surreal_database: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -105,11 +113,21 @@ impl ProjectConfig {
 impl ProjectStorage {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.store.is_none() && self.surreal_engine.is_none() && self.surreal_path.is_none()
+        self.store.is_none()
+            && self.surreal_engine.is_none()
+            && self.surreal_path.is_none()
+            && self.surreal_endpoint.is_none()
+            && self.surreal_namespace.is_none()
+            && self.surreal_database.is_none()
     }
 
     fn normalize(&mut self, root: &Path) -> Result<(), FileError> {
-        if self.surreal_engine.is_some() || self.surreal_path.is_some() {
+        if self.surreal_engine.is_some()
+            || self.surreal_path.is_some()
+            || self.surreal_endpoint.is_some()
+            || self.surreal_namespace.is_some()
+            || self.surreal_database.is_some()
+        {
             match self.store {
                 Some(ProjectStore::Surreal) => {}
                 _ => {
@@ -121,6 +139,23 @@ impl ProjectStorage {
                     });
                 }
             }
+        }
+        if let Some(endpoint) = &self.surreal_endpoint {
+            if self.surreal_engine != Some(ProjectSurrealEngine::Remote)
+                || self.surreal_path.is_some()
+            {
+                return Err(FileError::InvalidProjectConfig {
+                    path: root.join(PROJECT_CONFIG_RELATIVE_PATH),
+                    reason: "surreal_endpoint requires remote engine and excludes surreal_path"
+                        .into(),
+                });
+            }
+            self.surreal_endpoint = Some(crate::normalize_surreal_endpoint(endpoint).map_err(
+                |reason| FileError::InvalidProjectConfig {
+                    path: root.join(PROJECT_CONFIG_RELATIVE_PATH),
+                    reason,
+                },
+            )?);
         }
         if let Some(path) = &self.surreal_path {
             if path.as_os_str().is_empty() {

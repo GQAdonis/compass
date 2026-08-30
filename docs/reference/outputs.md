@@ -23,7 +23,7 @@ compass-out/
 │   ├── graph.json
 │   ├── graph.html, report, manifest, and optional public artifacts
 │   ├── store.ref                # with the default SQLite query index
-│   ├── surreal.ref              # with an optional embedded Surreal projection
+│   ├── surreal.ref              # with an optional embedded or remote Surreal projection
 │   ├── build-state.json
 │   ├── output-stats.json
 │   ├── ast-fact-digests.json

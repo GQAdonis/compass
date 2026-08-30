@@ -247,9 +247,31 @@ fn run_init_with_builder(
             match options.surreal_engine {
                 SurrealStorageEngine::SurrealKv => ProjectSurrealEngine::SurrealKv,
                 SurrealStorageEngine::RocksDb => ProjectSurrealEngine::RocksDb,
+                SurrealStorageEngine::Remote => ProjectSurrealEngine::Remote,
             },
         ),
         surreal_path: options.surreal_path.clone(),
+        surreal_endpoint: (options.surreal_engine == SurrealStorageEngine::Remote)
+            .then(|| {
+                compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|s| s.endpoint.clone())
+            })
+            .flatten(),
+        surreal_namespace: (options.surreal_engine == SurrealStorageEngine::Remote)
+            .then(|| {
+                compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|s| s.namespace.clone())
+            })
+            .flatten(),
+        surreal_database: (options.surreal_engine == SurrealStorageEngine::Remote)
+            .then(|| {
+                compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|s| s.database.clone())
+            })
+            .flatten(),
     };
     let config = match config.normalize(&root) {
         Ok(config) => config,
@@ -484,7 +506,9 @@ fn parse(args: &[String]) -> Result<InitOptions, String> {
             "--surreal-engine" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
-                    return Err("error: --surreal-engine requires surrealkv or rocksdb".to_owned());
+                    return Err(
+                        "error: --surreal-engine requires surrealkv, rocksdb, or remote".to_owned(),
+                    );
                 };
                 options.surreal_engine = parse_surreal_engine(value)?;
                 surreal_engine_explicit = true;

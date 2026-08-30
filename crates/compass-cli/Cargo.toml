@@ -13,6 +13,7 @@ categories.workspace = true
 
 [features]
 default = []
+surreal-remote = ["dep:compass-graphdb-surreal", "compass-graphdb-surreal/remote", "compass-core/surreal-remote", "compass-query/surreal-remote", "compass-mcp/surreal-remote"]
 surreal-surrealkv = [
     "dep:compass-graphdb-surreal",
     "compass-graphdb-surreal/surrealkv",

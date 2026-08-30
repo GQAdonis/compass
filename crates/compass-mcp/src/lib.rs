@@ -220,7 +220,11 @@ struct StoreInner {
     engine: compass_query::EngineSelection,
     cache: Mutex<HashMap<PathBuf, CacheEntry>>,
     typed_queries: compass_query::QueryEngineCache,
-    #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+    #[cfg(any(
+        feature = "surreal-surrealkv",
+        feature = "surreal-rocksdb",
+        feature = "surreal-remote"
+    ))]
     surreal_queries: compass_query::SurrealQueryEngineCache,
 }
 
@@ -257,7 +261,11 @@ impl GraphStore {
                 engine,
                 cache: Mutex::new(HashMap::new()),
                 typed_queries: compass_query::QueryEngineCache::default(),
-                #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
                 surreal_queries: compass_query::SurrealQueryEngineCache::default(),
             }),
         }
@@ -269,7 +277,8 @@ impl GraphStore {
             compass_query::EngineSelection::Surreal => {
                 if !cfg!(any(
                     feature = "surreal-surrealkv",
-                    feature = "surreal-rocksdb"
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
                 )) {
                     return Err(InvocationError::InvalidParams(
                         "this Compass MCP server was built without a SurrealDB engine".to_owned(),
@@ -290,7 +299,8 @@ impl GraphStore {
             compass_query::EngineSelection::Default => Ok(published
                 && cfg!(any(
                     feature = "surreal-surrealkv",
-                    feature = "surreal-rocksdb"
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
                 ))),
             compass_query::EngineSelection::Json | compass_query::EngineSelection::Store => {
                 Ok(false)
@@ -301,7 +311,8 @@ impl GraphStore {
     fn selects_store(&self, graph_path: &Path) -> bool {
         let usable_surreal = cfg!(any(
             feature = "surreal-surrealkv",
-            feature = "surreal-rocksdb"
+            feature = "surreal-rocksdb",
+            feature = "surreal-remote"
         )) && compass_query::has_published_surreal_compatible(graph_path);
         self.inner.engine == compass_query::EngineSelection::Store
             || (self.inner.engine == compass_query::EngineSelection::Default
@@ -684,7 +695,11 @@ impl CompassMcp {
                 .map_err(InvocationError::Internal)?;
             let use_surreal = self.store.selects_surreal(&graph_path)?;
             if use_surreal {
-                #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
                 {
                     return invoke_surreal_task_context(
                         &self.store,
@@ -695,7 +710,11 @@ impl CompassMcp {
                     )
                     .await;
                 }
-                #[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+                #[cfg(not(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                )))]
                 unreachable!("Surreal selection is false without an engine feature");
             }
             let context = if self.store.selects_store(&graph_path) {
@@ -723,12 +742,20 @@ impl CompassMcp {
                 .map_err(InvocationError::Internal)?;
             let use_surreal = self.store.selects_surreal(&graph_path)?;
             if use_surreal {
-                #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
                 {
                     return invoke_surreal_typed_tool(&self.store, name, arguments, &graph_path)
                         .await;
                 }
-                #[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+                #[cfg(not(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                )))]
                 unreachable!("Surreal selection is false without an engine feature");
             }
             if self.store.selects_store(&graph_path) {
@@ -751,12 +778,20 @@ impl CompassMcp {
                 .map_err(InvocationError::Internal)?;
             let use_surreal = self.store.selects_surreal(&graph_path)?;
             if use_surreal {
-                #[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
                 {
                     return invoke_surreal_typed_tool(&self.store, name, arguments, &graph_path)
                         .await;
                 }
-                #[cfg(not(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb")))]
+                #[cfg(not(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                )))]
                 unreachable!("Surreal selection is false without an engine feature");
             }
             if self.store.selects_store(&graph_path) {
@@ -1277,7 +1312,11 @@ fn invoke_typed_tool(
     })
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 async fn invoke_surreal_typed_tool(
     store: &GraphStore,
     name: &str,
@@ -1317,13 +1356,21 @@ async fn invoke_surreal_typed_tool(
     })
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 struct McpSurrealTaskEngine {
     handle: tokio::runtime::Handle,
     engine: Arc<compass_query::SurrealQueryEngine>,
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 impl compass_core::TaskContextQuery for McpSurrealTaskEngine {
     fn explore(
         &self,
@@ -1369,7 +1416,11 @@ impl compass_core::TaskContextQuery for McpSurrealTaskEngine {
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 async fn invoke_surreal_task_context(
     store: &GraphStore,
     arguments: &Map<String, Value>,
@@ -2159,7 +2210,11 @@ fn task_context_invocation_error(error: compass_core::TaskContextError) -> Invoc
     }
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn task_context_invocation(
     result: compass_core::TaskContext,
 ) -> Result<ToolInvocation, InvocationError> {
@@ -2180,7 +2235,11 @@ fn task_context_invocation(
     })
 }
 
-#[cfg(any(feature = "surreal-surrealkv", feature = "surreal-rocksdb"))]
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
 fn task_context_request(
     arguments: &Map<String, Value>,
     graph_path: &Path,

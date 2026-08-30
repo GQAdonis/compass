@@ -13,6 +13,7 @@ categories.workspace = true
 
 [features]
 default = []
+surreal-remote = ["dep:compass-graphdb-surreal", "compass-graphdb-surreal/remote", "dep:tokio"]
 surreal-surrealkv = [
     "dep:compass-graphdb-surreal",
     "compass-graphdb-surreal/surrealkv",

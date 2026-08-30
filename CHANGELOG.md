@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Support both embedded and standalone SurrealDB with `surreal-remote` plus
+  either embedded feature. YAML, `COMPASS_SURREAL_*` environment settings,
+  and `--surreal-*` flags configure publication, typed queries, CompassQL,
+  MCP, validation, backup, and restore. Server references pin the same immutable
+  generation contract without storing credentials. Non-loopback endpoints
+  require TLS; connection and query RPCs have finite deadlines.
+
 - Wire optional embedded SurrealDB through project configuration v2,
   `init`/`update`/`extract`/`watch` publication, generation-pinned typed CLI and
   MCP queries, native CompassQL, capabilities, validation, and portable
