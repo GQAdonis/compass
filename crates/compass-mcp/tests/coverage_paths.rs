@@ -2,8 +2,11 @@ use std::error::Error;
 use std::fs;
 
 use compass_mcp::{CompassMcp, HttpOptions, serve_http};
-use rmcp::model::{CallToolRequestParams, ReadResourceRequestParams};
-use rmcp::{ServerHandler, ServiceExt};
+use rmcp::model::{
+    CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, ProtocolVersion,
+    ReadResourceRequestParams,
+};
+use rmcp::{ClientLifecycleMode, ClientServiceExt, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
 
 fn write_fixture(root: &std::path::Path) -> Result<std::path::PathBuf, Box<dyn Error>> {
@@ -50,14 +53,14 @@ fn tool_contract_and_all_local_tools_cover_success_and_validation_paths()
 
     let info = server.get_info();
     assert_eq!(info.server_info.name, "compass");
-    assert_eq!(CompassMcp::tools().len(), 16);
+    assert_eq!(CompassMcp::tools().len(), 18);
     assert!(CompassMcp::tools().iter().all(|tool| {
         tool.input_schema
             .get("properties")
             .and_then(Value::as_object)
             .is_some_and(|properties| properties.contains_key("project_path"))
     }));
-    assert_eq!(CompassMcp::resources().len(), 7);
+    assert_eq!(CompassMcp::resources().len(), 8);
 
     assert!(
         server
@@ -218,6 +221,8 @@ fn resources_and_hot_reload_cover_reports_analysis_and_cache_refresh() -> Result
     assert!(server.read("compass://audit")?.contains("Total edges: 3"));
     assert!(!server.read("compass://surprises")?.is_empty());
     assert!(!server.read("compass://questions")?.is_empty());
+    let insights: Value = serde_json::from_str(&server.read("compass://graph-insights")?)?;
+    assert_eq!(insights["schema"], "compass.graph-insights/1");
     assert!(server.read("compass://unknown").is_err());
 
     fs::write(
@@ -293,12 +298,24 @@ async fn in_memory_protocol_exercises_tool_and_resource_server_handlers()
             .map_err(|error| error.to_string())?;
         running.waiting().await.map_err(|error| error.to_string())
     });
-    let client = ().serve(client_transport).await?;
+    let client_info = ClientInfo::new(
+        ClientCapabilities::default(),
+        Implementation::new("compass-handler-test", env!("CARGO_PKG_VERSION")),
+    )
+    .with_protocol_version(ProtocolVersion::V_2026_07_28);
+    let client = client_info
+        .serve_with_lifecycle(
+            client_transport,
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            },
+        )
+        .await?;
 
     let tools = client.list_tools(None).await?;
-    assert_eq!(tools.tools.len(), 16);
+    assert_eq!(tools.tools.len(), 18);
     let resources = client.list_resources(None).await?;
-    assert_eq!(resources.resources.len(), 7);
+    assert_eq!(resources.resources.len(), 8);
 
     let call = client
         .call_tool(CallToolRequestParams::new("graph_stats"))

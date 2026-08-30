@@ -313,6 +313,18 @@ pub(super) fn command_check_update(frontend: Frontend, args: &[String]) -> Outco
 }
 
 pub(super) fn command_hook_guard(_frontend: Frontend, args: &[String]) -> Outcome {
+    let valid = matches!(
+        args.iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice(),
+        ["search"] | ["read"] | ["read", "--strict"] | ["gemini"]
+    );
+    if !valid {
+        return Outcome::failure(
+            "error: hook-guard requires search, read [--strict], or gemini".to_owned(),
+        );
+    }
     let kind = args.first().map_or("", String::as_str);
     if kind == "gemini" {
         let mut payload = Map::new();

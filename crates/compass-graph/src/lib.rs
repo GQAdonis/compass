@@ -9,9 +9,11 @@ mod snapshot;
 mod v1;
 
 pub use analyze::{
-    DiffEdge, DiffNode, GodNode, GraphDiff, ImportCycle, SuggestedQuestion, SurpriseConnection,
-    find_import_cycles, god_nodes, graph_diff, graph_insights, suggest_questions,
-    surprising_connections,
+    BlindSpotEdge, BlindSpotLimits, BlindSpotNode, BlindSpotOmissions, BlindSpotReport,
+    CommunityGap, DiffEdge, DiffNode, DisconnectedComponent, GRAPH_INSIGHTS_SCHEMA, GodNode,
+    GraphDiff, GraphInsights, ImportCycle, SuggestedQuestion, SurpriseConnection,
+    blind_spot_report, find_import_cycles, god_nodes, graph_diff, graph_insights,
+    graph_insights_with_blind_spots, suggest_questions, surprising_connections,
 };
 pub use cluster::{
     ClusterOptions, Communities, IncrementalClusterLimits, IncrementalClusterResult, cluster,
@@ -30,16 +32,18 @@ pub use inference::{
 use inference::{prefilter_raw_edges_inference, prune_orphan_external_placeholders};
 pub use quarantine::{MAX_QUARANTINE_EXAMPLES, PublicationOmissions, PublicationOutcome};
 pub use snapshot::{
-    CanonicalGraphDocument, GRAPH_JSON_DELTA_MAX_SOURCE_BYTES, GRAPH_SNAPSHOT_LAYOUT_V2,
-    GRAPH_SNAPSHOT_MAX_ITEMS, GRAPH_SNAPSHOT_MAX_OBJECTS, GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1,
+    CanonicalGraphDocument, GRAPH_JSON_DELTA_MAX_SOURCE_BYTES, GRAPH_SNAPSHOT_ACTIVE_KEY,
+    GRAPH_SNAPSHOT_CATALOG_PARTITION, GRAPH_SNAPSHOT_LAYOUT_V2, GRAPH_SNAPSHOT_MAX_ITEMS,
+    GRAPH_SNAPSHOT_MAX_OBJECTS, GRAPH_SNAPSHOT_OBJECT_PARTITION, GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1,
     GRAPH_TERM_POSTING_CHUNK_ITEMS, GraphSnapshotBuilder, GraphSnapshotGcStats,
     GraphSnapshotManifest, GraphSnapshotMetadata, GraphSnapshotReader, IndexKind,
-    PreparedGraphSnapshot, PreparedGraphSnapshotContent, SnapshotError, SnapshotReadLimits,
-    SnapshotRoot, SnapshotSelector, TermPostingWork, activate_graph_snapshot,
+    MAX_CANONICAL_GRAPH_BYTES, PreparedGraphSnapshot, PreparedGraphSnapshotContent, SnapshotError,
+    SnapshotReadLimits, SnapshotRoot, SnapshotSelector, TermPostingWork, activate_graph_snapshot,
     active_graph_snapshot, canonical_graph_document, canonical_graph_document_presorted,
     canonical_graph_json, encode_graph_index_key, garbage_collect_graph_snapshots,
-    graph_snapshot_needs_gc, prepare_graph_snapshot, write_canonical_graph_json,
-    write_fact_neutral_graph_json_delta, write_fact_neutral_graph_json_delta_prevalidated,
+    graph_snapshot_manifest_key, graph_snapshot_needs_gc, max_canonical_graph_bytes,
+    prepare_graph_snapshot, write_canonical_graph_json, write_fact_neutral_graph_json_delta,
+    write_fact_neutral_graph_json_delta_prevalidated,
 };
 pub use v1::{
     BuildEvidence, InventoryEvidence, SourceDigest, V1_PUBLICATION_SEMANTICS_VERSION,
@@ -289,6 +293,14 @@ fn build_from_owned_extraction(
     endpoint_remap.extend(doc_remap);
     endpoint_remap.extend(ghost_remap);
 
+    // Document reference evidence is embedded in node attributes rather than
+    // represented by an edge endpoint at this assembly boundary. Carry the
+    // same deterministic endpoint remaps into that evidence so a later strict
+    // publication pass can resolve the retained target/candidate IDs instead
+    // of downgrading otherwise exact links to unresolved merely because a
+    // semantic or document-twin alias changed the raw ID.
+    remap_document_reference_attributes(&mut nodes, &endpoint_remap);
+
     let mut normalized = EndpointAliases::new();
     for node in &nodes {
         normalized
@@ -510,6 +522,44 @@ fn publish_legacy_edge(record: RawEdgeRecord) -> LegacyEdgeRecord {
         source: record.source,
         target: record.target,
         attributes: record.attributes,
+    }
+}
+
+fn remap_document_reference_attributes(
+    nodes: &mut [NodeRecord],
+    endpoint_remap: &HashMap<String, String>,
+) {
+    for node in nodes {
+        let Some(Value::Array(references)) = node.attributes.get_mut("document_references") else {
+            continue;
+        };
+        for reference in references {
+            let Some(object) = reference.as_object_mut() else {
+                continue;
+            };
+            if let Some(target) = object
+                .get("target")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                let remapped = remap_endpoint(&target, endpoint_remap);
+                object.insert("target".to_owned(), Value::String(remapped));
+            }
+            if let Some(candidates) = object.get_mut("candidates").and_then(Value::as_array_mut) {
+                for candidate in candidates {
+                    let Some(candidate) = candidate.as_object_mut() else {
+                        continue;
+                    };
+                    for key in ["nodeId", "node_id"] {
+                        let Some(node_id) = candidate.get(key).and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let remapped = remap_endpoint(node_id, endpoint_remap);
+                        candidate.insert(key.to_owned(), Value::String(remapped));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1109,9 +1159,19 @@ fn normalize_source_file(value: &str, root: Option<&Path>) -> String {
     let path = Path::new(&portable);
     if path.is_absolute()
         && let Some(root) = root
-        && let Ok(relative) = path.strip_prefix(root)
     {
-        return path_text(relative);
+        if let Ok(relative) = path.strip_prefix(root) {
+            return path_text(relative);
+        }
+        // macOS commonly exposes the same temporary/worktree path through
+        // both `/var` and `/private/var`. Resolve those aliases before
+        // deciding that an absolute source is outside the repository root.
+        if let (Ok(canonical_path), Ok(canonical_root)) =
+            (std::fs::canonicalize(path), std::fs::canonicalize(root))
+            && let Ok(relative) = canonical_path.strip_prefix(canonical_root)
+        {
+            return path_text(relative);
+        }
     }
     portable
 }

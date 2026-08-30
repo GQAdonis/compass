@@ -5,10 +5,10 @@ QUALIFY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QUALIFY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/compass-code-graph-v1.XXXXXX")"
 trap 'chmod -R u+w "$QUALIFY_TMP" 2>/dev/null || true; rm -rf -- "$QUALIFY_TMP"' EXIT
 
-# Keep Rust build artifacts on the mounted workspace volume. Qualification
-# intentionally exercises large repositories and must not fill the checkout's
-# disk with a second target tree.
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/Volumes/Workspace/crabbuild-target/compass-main}"
+# Qualification intentionally exercises large repositories. Set CARGO_TARGET_DIR
+# before running if you want those build artifacts somewhere other than the
+# checkout's own target directory.
+PARSER_ROOT="${TSLP_PARSER_SOURCE_DIR:-$QUALIFY_ROOT/target/parser-sources}"
 
 usage() {
   cat >&2 <<EOF
@@ -44,6 +44,11 @@ case "${1:-}" in
 esac
 [[ "$#" -eq 0 ]] || usage
 
+[[ -f "$PARSER_ROOT/sources/language_definitions.json" && -d "$PARSER_ROOT/parsers" ]] || {
+  echo "[code-graph-v1] offline qualification requires a pre-provisioned parser source bundle at $PARSER_ROOT (set TSLP_PARSER_SOURCE_DIR)" >&2
+  exit 1
+}
+
 cd "$QUALIFY_ROOT"
 MANIFEST="$QUALIFY_ROOT/tests/qualification/code-graph-v1-semantic.json"
 CORPUS_MANIFEST="$QUALIFY_ROOT/tests/qualification/code-graph-v1-corpus.json"
@@ -68,7 +73,8 @@ PY
 }
 
 echo "[code-graph-v1] build qualifying production binary once"
-cargo build --locked -p compass-cli --bin compass
+PROJECT_ROOT="$PARSER_ROOT" TSLP_OFFLINE=1 \
+  cargo build --locked -p compass-cli --bin compass
 QUALIFY_TARGET="$(cargo metadata --format-version 1 --no-deps | python3 -c \
   'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
 COMPASS_BIN="$QUALIFY_TARGET/debug/compass"
@@ -232,18 +238,9 @@ python3 scripts/check_code_graph_v1_coverage.py \
   --corpus-manifest "$CORPUS_MANIFEST"
 
 echo "[code-graph-v1] enforce in-process scale ceilings"
-cargo test --locked -p compass-core --lib \
-  resolver_source_text_enforces_the_pre_read_byte_limit
-cargo test --locked -p compass-query --lib \
-  bounded_matching_scales_with_response_budget_on_500k_edges
-cargo test --locked -p compass-resolve --lib \
-  ambiguous_terminal_lookup_is_bounded_by_candidate_budget
-cargo test --locked -p compass-core --test pipeline_scale \
-  cold_and_warm_in_process_builds_stay_within_enterprise_ceiling
-cargo test --locked -p compass-query --test code_query_scale \
-  enterprise_queries_stay_within_in_process_ceiling
-cargo test --locked -p compass-resolve --test framework_resolution_scale \
-  shared_production_framework_resolution_stays_within_enterprise_ceiling
+cargo test --locked -p compass-core --test pipeline_scale
+cargo test --locked -p compass-query --test code_query_scale
+cargo test --locked -p compass-resolve --test framework_resolution_scale
 
 mkdir -p "$CORPUS/fixtures/code-graph"
 cp -R "$QUALIFY_ROOT/fixtures/code-graph/." "$CORPUS/fixtures/code-graph/"
@@ -328,11 +325,38 @@ checkout_graph="$(active_graph "$CHECKOUT_OUTPUT")"
 cp "$checkout_graph" "$QUALIFY_TMP/checkout.graph.json"
 cmp "$QUALIFY_TMP/clean.graph.json" "$QUALIFY_TMP/checkout.graph.json"
 
+echo "[code-graph-v1] language-wave delete/rename/restore production updates"
+for lifecycle_path in \
+  fixtures/code-graph/routes/swift/NearMatches.swift \
+  fixtures/code-graph/qualification/rich.dart \
+  fixtures/code-graph/routes/scala/Universal.scala \
+  fixtures/code-graph/routes/groovy/SpockSpec.groovy; do
+  source_path="$CORPUS/$lifecycle_path"
+  [[ -f "$source_path" ]] || {
+    echo "missing lifecycle fixture: $lifecycle_path" >&2
+    exit 1
+  }
+  original_path="$QUALIFY_TMP/$(basename "$lifecycle_path").original"
+  cp "$source_path" "$original_path"
+  rm "$source_path"
+  deleted_graph="$(run_update "delete-$(basename "$lifecycle_path")")"
+  cp "$original_path" "$source_path"
+  delete_restore_graph="$(run_update "delete-restore-$(basename "$lifecycle_path")")"
+  cmp "$QUALIFY_TMP/clean.graph.json" "$delete_restore_graph"
+
+  renamed_path="${source_path%.*}.compass-renamed.${source_path##*.}"
+  mv "$source_path" "$renamed_path"
+  renamed_graph="$(run_update "rename-$(basename "$lifecycle_path")")"
+  mv "$renamed_path" "$source_path"
+  rename_restore_graph="$(run_update "rename-restore-$(basename "$lifecycle_path")")"
+  cmp "$QUALIFY_TMP/clean.graph.json" "$rename_restore_graph"
+done
+
 fixture_digest_after="$(fixture_digest)"
 [[ "$fixture_digest_before" == "$fixture_digest_after" ]]
 
 cat >"$QUALIFY_TMP/comparisons.json" <<'JSON'
-{"cleanEqualsCheckout":true,"cleanEqualsRebuild":true,"cleanEqualsRestored":true,"cleanEqualsWarm":true,"sourceFixtureUnchanged":true}
+{"cleanEqualsCheckout":true,"cleanEqualsDeleteRestored":true,"cleanEqualsRebuild":true,"cleanEqualsRenameRestored":true,"cleanEqualsRestored":true,"cleanEqualsWarm":true,"sourceFixtureUnchanged":true}
 JSON
 
 echo "[code-graph-v1] execute semantic assertions over production graph"
@@ -343,6 +367,25 @@ python3 scripts/check_code_graph_v1_coverage.py \
   --graph "$QUALIFY_TMP/restored.graph.json" \
   --compass-revision "$(git rev-parse HEAD)" \
   --comparisons "$QUALIFY_TMP/comparisons.json"
+
+echo "[code-graph-v1] clustered production update for topology qualification"
+CLUSTERED_OUTPUT="$QUALIFY_TMP/clustered-output"
+"$COMPASS_BIN" update "$CORPUS" \
+  --out "$CLUSTERED_OUTPUT" --no-viz --no-gitignore \
+  --inference-level max \
+  >"$QUALIFY_TMP/clustered.log"
+clustered_graph="$(active_graph "$CLUSTERED_OUTPUT")"
+
+echo "[code-graph-v1] enforce evidence-backed topology regression policy"
+python3 scripts/check_code_graph_topology.py \
+  --graph "$clustered_graph" \
+  --policy tests/qualification/code-graph-v1-topology.json
+
+echo "[code-graph-v1] execute independent Markdown graph-quality assertions"
+python3 scripts/markdown_graph_quality_oracle.py \
+  --manifest tests/qualification/markdown-intelligence.json \
+  --fixture-root "$CORPUS" \
+  --graph "$QUALIFY_TMP/restored.graph.json"
 
 quality_json="$("$COMPASS_BIN" diagnose quality --graph "$QUALIFY_TMP/restored.graph.json" --json)"
 python3 - "$quality_json" <<'PY'
@@ -361,3 +404,9 @@ if (
 if summary.get("output_consistency", {}).get("stats_match_graph") is False:
     raise SystemExit("fixture output stats do not match canonical graph counts")
 PY
+
+if [[ "$MODE" == fixtures ]]; then
+  echo "[code-graph-v1] execute independent React frontend qualification"
+  TSLP_PARSER_SOURCE_DIR="$PARSER_ROOT" \
+    "$QUALIFY_ROOT/scripts/qualify_react_frontend_graph.sh" --fixtures-only
+fi

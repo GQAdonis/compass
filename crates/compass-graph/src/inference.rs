@@ -401,10 +401,21 @@ fn admits_unreferenced_node(node: &NodeRecord, level: InferenceLevel) -> bool {
     match effective_confidence(&node.evidence) {
         Some(EvidenceConfidence::Exact) => true,
         Some(EvidenceConfidence::Inferred) => {
-            level >= InferenceLevel::Medium && node.source.is_some()
+            explicitly_anchored_external_identity(node)
+                || (level >= InferenceLevel::Medium && node.source.is_some())
         }
         Some(EvidenceConfidence::Ambiguous) | None => false,
     }
+}
+
+fn explicitly_anchored_external_identity(node: &NodeRecord) -> bool {
+    node.source.is_none()
+        && node.evidence.iter().any(|evidence| {
+            evidence.origin == EvidenceOrigin::Heuristic
+                && evidence.rule.as_deref() == Some("external-symbol-placeholder")
+                && evidence.wiring_site.is_some()
+                && evidence.extractor.starts_with("compass.languages.")
+        })
 }
 
 #[cfg(test)]

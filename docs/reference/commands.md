@@ -68,10 +68,14 @@ Use for normal cold/incremental structural builds. The default publishes the
 structural graph only; pass `--program` when Program IR inspection or graph
 enrichment is needed. `--no-program` remains accepted as an explicit
 structural-only compatibility flag. Supply a verified offline SCIP index with
-repeatable `--program-artifact` (which also enables Program IR). For Java,
-fresh exact symbol evidence can disambiguate AST-proven call sites in
-`graph.json`; stale, unverified, conflicting, and non-call references are not
-projected. `--no-program` conflicts with `--program-artifact`.
+repeatable `--program-artifact` (which also enables Program IR). Fresh exact
+Java symbol evidence can disambiguate AST-proven call sites. Python call
+enrichment additionally requires an offline `scip-python` artifact whose
+`<artifact>.compass-manifest.json` contains a complete frozen
+`compass.managed-analyzer-profile/1` profile. Compass never runs or installs
+`scip-python` during the build. Stale, generic, unverified, inexact, or
+conflicting Python artifact evidence is not projected. `--no-program`
+conflicts with `--program-artifact`.
 Graph storage defaults to `sqlite`; `--store json` opts out of the validated
 local store sidecar without replacing `graph.json`. JSON remains the portable
 authority, while the sidecar keeps large graphs queryable under bounded memory.
@@ -96,6 +100,9 @@ compass extract [PATH]
   [--backend NAME]
   [--model MODEL]
   [--mode deep]
+  [--ocr off|auto|always]
+  [--ocr-profile NAME]
+  [--ocr-language BCP47]
   [--token-budget N]
   [--max-concurrency N]
   [--max-workers N]
@@ -115,11 +122,51 @@ compass extract [PATH]
   [--exclude-hubs N]
 ```
 
+`--backend` and `--model` select the semantic provider and model. The
+non-secret `COMPASS_BACKEND` and `COMPASS_MODEL` environment values are used
+when the flags are omitted; explicit flags win. Built-ins are `claude`, `kimi`,
+`ollama`, `gemini`, `openai`, `deepseek`, `azure`, `bedrock`, and `claude-cli`.
+Set only the selected provider's documented credential variable, or register a
+custom OpenAI-compatible provider with `compass provider add`. OCR remains
+local and does not require an LLM credential; document semantic enrichment may
+use the selected provider.
+
 Use `--code-only` for an explicit fully local structural profile; it limits
 structural node and edge extraction to code-classified files while retaining
 the scanned file inventory. Program IR is opt-in with `--program`;
 `--program-artifact` also enables it. `--no-program` is retained for callers
 that already use the structural-only spelling.
+
+OCR is off by default. `auto` processes scanned/low-text PDF pages and eligible
+embedded Office images; `always` processes every bounded visual candidate.
+Both are local and require an explicitly installed verified profile. Extraction
+never downloads a model. `--ocr-language` is repeatable, and
+`--allow-partial` also authorizes visibly incomplete OCR coverage.
+
+### `document` and `models`
+
+```text
+compass document inspect FILE
+  [--format text|json]
+  [--ocr off|auto|always]
+  [--ocr-profile NAME]
+  [--ocr-language BCP47]
+  [--allow-partial]
+
+compass models list [--format text|json]
+compass models install pp-ocrv6-small|pp-ocrv6-medium
+compass models verify pp-ocrv6-small|pp-ocrv6-medium
+```
+
+`document inspect` is read-only and does not publish a graph. JSON uses
+`compass.document.inspect/1`; text marks OCR-derived evidence visibly. Native
+PDF, DOCX, PPTX, and XLSX processing requires no additional installation.
+`models install` is the only command here that uses the network. It downloads
+only pinned artifacts from the Compass allowlist, validates size and SHA-256,
+and publishes an atomic verification marker. `list` and `verify` are offline.
+On Intel (`x86_64`) macOS, managed OCR is unavailable because the pinned ONNX
+runtime has no self-contained distribution; `models install` fails before any
+download, while native document processing and `--ocr off` remain available.
 
 `update`, `extract`, and watch rebuilds may succeed with a warning that Compass
 published a partial graph. The warning reports exact omitted node, omitted
@@ -194,6 +241,11 @@ compass label [PATH]
   [--timing]
 ```
 
+`--min-community-size` controls which communities are presented for labeling
+and in the bounded architecture report. It does not remove nodes, edges, or
+community assignments from the graph; omitted communities remain queryable and
+are included in the report's coverage disclosure. The default is `3`.
+
 ## Read and query
 
 ### `query`
@@ -250,6 +302,19 @@ an explicit `wiring=FILE:LOCATION` site, and traversed relationships render
 their occurrence as `at=FILE:LOCATION`; neither is presented as a declaration
 location.
 
+Typed intent routing:
+
+```text
+compass ask "<question>"
+  [--graph PATH | --at REV]
+  [--format text|json]
+```
+
+`ask` chooses a bounded typed search, callers, callees, impact, or node-trail
+operation and returns `compass.query/1`. `--at REV` reads one immutable trusted
+revision graph; it does not fall back to a legacy projection. Rebuild a revision
+whose realization does not contain the current trusted graph contract.
+
 CompassQL:
 
 ```text
@@ -301,10 +366,11 @@ compass explain "<node>"
   [--graph PATH | --at REV]
 ```
 
-Shows one node and incoming/outgoing connections. An exact node ID resolves
-directly. When a label names multiple source-backed declarations, Compass lists
-the candidates and their source ranges and asks for the full node ID instead of
-silently selecting one. Connection lines include the stored relationship site.
+Shows one node and incoming/outgoing connections. An exact node ID or unique
+exact qualified name resolves directly. When a label or qualified name names
+multiple source-backed declarations, Compass lists the candidates and their
+source ranges and asks for the full node ID instead of silently selecting one.
+Connection lines include the stored relationship site.
 Connections and ambiguous candidates use the same bounded, deterministic
 pagination contract as natural-language queries instead of silently cutting off
 after the first group.
@@ -374,6 +440,7 @@ Runs the native graph-query benchmark surface.
 ```text
 compass history enable [build-profile options]
 compass history disable
+compass history blind-spots [--rev REV] [--limit N] [--format text|json]
 compass history status [REV] [--format text|json]
 compass history build REV [--all [--first-parent]] [build-profile options|--profile-from REV|REALIZATION] [--format text|json]
 compass history rebuild REV [build-profile options] [--replace-corrupt] [--format text|json]
@@ -396,6 +463,12 @@ commit failures, emits a complete final report, and exits `1` if any failed.
 compass history build main --all --code-only
 compass history build main --all --first-parent
 ```
+
+`history blind-spots` reads the preferred immutable realization for each
+reachable commit and compares typed graph-insights IDs. It reports active and
+resolved gaps/components, preserves explicit omission counts, and treats
+missing sidecars from older realizations as unavailable evidence rather than
+as empty reports.
 
 Build-profile options include:
 
@@ -484,7 +557,12 @@ compass serve [GRAPH_PATH]
 ```
 
 Prefer stdio for a single local client. Avoid putting secret values directly in
-shell history; use the deployment's supported secret mechanism.
+shell history; use the deployment's supported secret mechanism. HTTP implements
+the stateless MCP 2026-07-28 contract: begin with `server/discover`, then carry
+`Mcp-Protocol-Version`, `Mcp-Method`, and required `_meta` on each request.
+`--stateless` is an accepted compatibility spelling for this default.
+`--session-timeout` is deprecated and ignored with a warning through 0.4.x and
+will be removed in 0.5.0.
 
 ## Export and visualization
 
@@ -515,6 +593,26 @@ compass export callflow-html --help
 
 Common inputs include `--graph PATH`, labels/report/sections, output directory,
 node/diagram limits, and database connection arguments.
+
+`callflow-json` and `callflow-html` retain their command names for script
+compatibility but now publish one Rust-owned architecture projection. JSON is
+`compass.viewer.architecture/1`; HTML embeds the same model in the shared
+workbench. Production scope is classified before communities are grouped, and
+Generated, Vendor, Test, Documentation, and Unknown sources cannot influence
+Production names or boundaries. Relationships are classified as Execution, Dependency, Type,
+Structure, Contextual, or Unknown. The default Architecture lens admits only
+Execution and Dependency relationships. Aggregate metrics remain labeled
+relationships because the Execution class also includes handlers, routing,
+messaging, and other executable flow; an individual exact `calls` record keeps
+its original relation name in the inspector.
+
+`--max-sections N` bounds overview groups. It does not discard groups or merge
+them into `Other`: the model reports exact omissions and retains every group
+for search and drill-down. Use `--architecture-overlay PATH` for a strict
+`compass.architecture-overlay/1` JSON or TOML file. The canonical current
+project discovers `.compass/architecture.toml`; arbitrary and historical graph
+paths do not inspect live configuration. `--sections PATH` remains a deprecated
+alias and adapts legacy section JSON.
 
 `html`, `json`, and `workbench-json` accept repeatable graph views. Compass
 preserves their command-line order and puts them in one navigable workbench:
@@ -624,6 +722,60 @@ workflows.
 
 ## Assistant and hook lifecycle
 
+### `agent`
+
+```text
+compass agent list [--format text|json]
+compass agent install [PLATFORM] [INSTALL OPTIONS]
+compass agent doctor --platform codex|claude|opencode|agents
+  [--project-root PATH | --user-root PATH]
+  [--format text|json]
+compass agent export --platform codex|claude|opencode|agents --out DIR
+  [--transport stdio|http]
+  [--format text|json]
+compass agent validate --path DIR
+  [--platform codex|claude|opencode|agents]
+  [--format text|json]
+compass agent mcp-config --platform codex|claude|opencode|agents
+  [--transport stdio|http]
+```
+
+`list` returns registry order sorted by platform identifier; its JSON schema is
+`compass.agent-list/1`. `install` passes every remaining argument unchanged to
+the established managed installer, so `compass install` remains the
+compatibility entry point with identical output and side effects.
+
+`doctor` is an offline, read-only aggregate check. It verifies the running
+binary version, compiled MCP 2026-07-28 contract, graph presence and manifest
+freshness, all seven managed skill checksums, and the selected platform's MCP
+configuration. It does not launch a server or contact a network service. JSON
+uses `compass.agent-doctor/1`; exit `0` means every check passed, exit `1`
+means at least one check failed, and exit `2` means invalid arguments.
+
+`agent list` enumerates every installable platform. Commands that inspect or
+render MCP configuration accept the four platforms shown above. Project-scoped
+doctor checks honor `COMPASS_OUT` and resolve graph and manifest files through
+the current immutable snapshot. `--user-root <PATH>` inspects the user installation
+and configuration and reports project graph checks as not applicable.
+
+`export` atomically publishes the embedded umbrella and six focused skills,
+platform-native credential-free MCP configuration, native package and
+marketplace manifests generated from `distribution.toml`, the OpenCode
+TypeScript bridge where applicable, and a sorted SHA-256 manifest using
+`compass.agent-bundle/1`. Native manifests record the exact harness version
+used for lifecycle qualification. The destination must be missing or empty.
+`validate` accepts an exported bundle or a checksum-owned managed skill
+directory and never executes its contents. It bounds file count and bytes,
+rejects symlinks, traversal, machine-specific absolute paths, and likely
+literal credentials, requires every native artifact and harness version, and
+reports only file names and rules so secret values are not echoed. Validation
+JSON uses `compass.agent-validation/1`.
+
+`mcp-config` emits Codex `mcp_servers` TOML, Claude `.mcp.json`, OpenCode `mcp`
+JSON, or the versioned generic Agent Skills JSON envelope. Stdio invokes
+`compass serve --transport stdio` as separate arguments; HTTP uses the
+loopback `http://127.0.0.1:8080/mcp` endpoint.
+
 ### `install`
 
 ```text
@@ -638,9 +790,12 @@ compass install
 
 Run `compass install --help` for the version's platform list. `--strict`
 requires a project-scoped Claude target. With no explicit platform, Compass
-detects agents and also installs the portable Agent Skills package. Dry-run
-output includes the complete skill and adapter path plan and performs read-only
-preflight checks.
+detects agents and installs the canonical `compass` Agent Skill plus focused
+`compass-navigate`, `compass-debug`, `compass-change-impact`,
+`compass-architecture`, `compass-index-maintenance`, and `compass-mcp-setup`
+sibling trees. Dry-run output includes every skill and adapter path and performs
+read-only preflight checks. Equivalent managed trees are current; unowned or
+checksum-modified skill directories are never overwritten.
 
 ### `uninstall`
 
@@ -708,7 +863,10 @@ compass provider add NAME
 compass provider remove NAME
 ```
 
-Built-in provider names cannot be overridden.
+Built-in provider names cannot be overridden. The built-ins are `claude`,
+`kimi`, `ollama`, `gemini`, `openai`, `deepseek`, `azure`, `bedrock`, and
+`claude-cli`; credentials are read from each provider's documented environment
+variable and are never written to the registry.
 
 ### `add`
 
@@ -846,6 +1004,7 @@ compass export callflow-json --output PATH
 compass program call-graph (--symbol SYMBOL | --source FILE --byte BYTE)
   [--direction callers|callees|both] [--depth N] --format json
 compass history timeline [--rev REV] [--limit N [--after CURSOR]] --format json
+compass history blind-spots [--rev REV] [--limit N] [--format text|json]
 compass history change-counts REV [--parent REV] --format json
 compass history diff OLD NEW [--root NAME] [--output PATH] --format jsonl
 compass history export REV --format json [--community ID] [--node-limit N] --output PATH
@@ -871,6 +1030,50 @@ report. Guided writers accept `--events jsonl`; stdout then contains
 `json` is the canonical versioned graph-presentation export. `viewer-json`
 remains accepted as a deprecated compatibility alias.
 
+## Grounded Agent Graph overlays
+
+```text
+compass agent-graph status [OPTIONS]
+compass agent-graph prepare --source-span FILE:START_BYTE:END_BYTE [OPTIONS]
+compass agent-graph apply --request FILE --enable-writes [OPTIONS]
+compass agent-graph show ASSERTION_ID [OPTIONS]
+compass agent-graph history [OPTIONS]
+compass agent-graph audit --revision REVISION [OPTIONS]
+compass agent-graph diff OLD_REVISION NEW_REVISION [OPTIONS]
+compass agent-graph query --revision REVISION --cql QUERY [OPTIONS]
+compass agent-graph export --revision REVISION --output FILE [OPTIONS]
+compass agent-graph rebase-plan --revision SOURCE_REVISION [OPTIONS]
+compass agent-graph rebase-commit --request FILE --enable-writes [OPTIONS]
+```
+
+Common selectors are `--root`, `--overlay`, `--revision`, `--profile
+augment|curated`, and `--format text|json`. Select the current Base Generation
+with `--graph`, or an exact immutable historical Base Generation with
+`--realization`; these selectors are mutually exclusive. Non-Git current-tree
+use requires `--state-root`. Writes are disabled unless the invocation includes
+`--enable-writes`; curated masks additionally require `--allow-masks`.
+
+`prepare` is read-only. Repeat `--base-node ID`, `--base-edge ID`, and
+`--source-span FILE:START_BYTE:END_BYTE` as needed. Compass returns the selected
+Base Generation, current `expectedRevision`, canonical digest-bound Base
+references, and an apply-ready grounding submission. At least one source span
+is required. Do not pass `--revision`: preparation pins the active revision
+atomically with the selected Base Generation.
+
+Apply accepts `compass.agent-graph.batch/1`; rebase commit accepts
+`compass.agent-graph.rebase-commit/1`. Query remains read-only CompassQL.
+Export writes a self-describing `compass.agent-graph.effective/1` document and
+refuses an unsafe or existing destination. Usage errors exit `2`; typed domain,
+conflict, authorization, verification, storage, and limit errors exit `1`.
+
+For continuous coding-session enrichment, there is no separate long-running
+mutation command. The assistant repeats `status` → `prepare` → `apply` →
+`audit`/`diff` at explicit milestones and pins the receipt revision after each
+successful batch. A changed Base Generation puts the loop behind
+`rebase-plan`/`rebase-commit`; writes must stop until every rebase item is
+resolved. The bundled Compass skill documents this lifecycle while keeping
+ordinary query and watch operations read-only.
+
 ## Output and exit conventions
 
 Human text goes to stdout on success. Diagnostics go to stderr.
@@ -889,6 +1092,15 @@ CompassQL:
 
 Other command families preserve documented compatibility-specific codes. Test
 the exact command boundary your automation uses.
+
+Agent namespace:
+
+- successful list, install, export, validation, configuration, or wholly
+  healthy doctor result: exit `0`;
+- failed doctor check, unsafe/invalid bundle, checksum mismatch, or export
+  publication failure: exit `1`;
+- invalid subcommand, option, platform, transport, format, or missing required
+  argument: exit `2`.
 
 ## Related pages
 

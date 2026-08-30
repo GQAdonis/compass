@@ -340,7 +340,7 @@ fn validate_store(
     )
     .map_err(|error| format!("decode store.ref: {error}"))?;
     reference.validate().map_err(|error| error.to_string())?;
-    let reader = GraphSnapshotReader::open_selector(
+    let reader = GraphSnapshotReader::open_selector_for_maintenance(
         store,
         SnapshotSelector {
             schema: GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1.to_owned(),
