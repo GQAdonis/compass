@@ -2,14 +2,22 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARGET="${CARGO_TARGET_DIR:-/Volumes/Workspace/crabbuild-target/compass-021-react-frontend}"
-PARSER_ROOT="${TSLP_PARSER_SOURCE_DIR:-/Volumes/Workspace/crabbuild-target/compass-parser-sources}"
+TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
+PARSER_ROOT="${TSLP_PARSER_SOURCE_DIR:-$ROOT/target/parser-sources}"
+case "$TARGET" in
+  /*) ;;
+  *) TARGET="$ROOT/$TARGET" ;;
+esac
+case "$PARSER_ROOT" in
+  /*) ;;
+  *) PARSER_ROOT="$ROOT/$PARSER_ROOT" ;;
+esac
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/compass-react-frontend.XXXXXX")"
 trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf -- "$TMP"' EXIT
 
 MODE="pinned"
 MANIFEST="$ROOT/tests/qualification/react-frontend-repositories.toml"
-ARTIFACT_ROOT="/Volumes/Workspace/crabbuild-target/compass-021-react-frontend/qualification/react-frontend"
+ARTIFACT_ROOT="$TARGET/qualification/react-frontend"
 BASELINE=""
 AUDIT_ONLY=0
 if [[ "${1:-}" == "--fixtures-only" ]]; then
@@ -42,17 +50,11 @@ elif [[ "$#" -ne 0 ]]; then
 fi
 [[ "$#" -eq 0 ]] || { echo "unexpected argument: $1" >&2; exit 2; }
 
-if [[ "$TARGET" == /Volumes/Workspace/* ]]; then
-  [[ -d /Volumes/Workspace && -d "$(dirname "$TARGET")" && -w "$(dirname "$TARGET")" ]] || {
-    echo "[react-frontend] /Volumes/Workspace and the selected target parent must be mounted and writable" >&2
-    exit 1
-  }
-else
-  [[ -d "$(dirname "$TARGET")" && -w "$(dirname "$TARGET")" ]] || {
-    echo "[react-frontend] the selected target parent must be mounted and writable: $TARGET" >&2
-    exit 1
-  }
-fi
+mkdir -p "$TARGET"
+[[ -d "$TARGET" && -w "$TARGET" ]] || {
+  echo "[react-frontend] the selected target directory must be writable: $TARGET" >&2
+  exit 1
+}
 [[ -f "$PARSER_ROOT/sources/language_definitions.json" && -d "$PARSER_ROOT/parsers" ]] || {
   echo "[react-frontend] offline qualification requires a pre-provisioned parser source bundle at $PARSER_ROOT (set TSLP_PARSER_SOURCE_DIR)" >&2
   exit 1

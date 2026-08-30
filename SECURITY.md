@@ -85,6 +85,16 @@ to a public issue: it can disclose repository names, paths, source anchors,
 and graph structure. Share a sanitized `compass store status --format json`
 response instead.
 
+The optional SurrealDB projection accepts only validated `compass.graph/1`
+documents and exposes no arbitrary SurrealQL API. Record identities are
+deterministic digests, statement values are parameter-bound, table selection is
+a closed enum, query work is bounded, and a repository's active generation is
+switched only after the exact staged identities and manifest are validated.
+The current features are embedded local engines and add no credential or
+network boundary. Any future remote engine requires a separate design covering
+authentication, TLS, endpoint validation, timeouts, output bounds, and tenant
+isolation.
+
 ## Document and OCR boundary
 
 PDF and OOXML files, XML relationships, compressed members, embedded images,

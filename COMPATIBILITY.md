@@ -634,6 +634,17 @@ qualification tests; it is not a CLI or packaging dependency. PostgreSQL and
 DynamoDB are future adapters, not supported release backends. No local store
 command accepts cloud credentials, endpoints, or TLS configuration.
 
+`compass-graphdb-surreal` is an optional library-only projection adapter; it
+does not replace the store contract or add a CLI/MCP backend selector. Its
+default feature set has no SurrealDB dependency. Explicit `mem`, `surrealkv`,
+and `rocksdb` features project an immutable `compass.graph/1` generation into
+the independently versioned `compass.graph.surreal/1` schema. Native reads
+return the shared `compass.query/1` structural contract, and opaque cursors are
+bound to one repository, generation, schema, and operation. Unknown projection
+schema versions and mismatched generation cursors fail explicitly. SurrealDB
+3.2.4 is pinned under BUSL 1.1; enabling an engine feature carries the notice
+and redistribution conditions recorded in `THIRD_PARTY_NOTICES.md`.
+
 The default published locations are `DIR/graph.json` and the validated SQLite
 sidecar under the selected `--out DIR` (default `compass-out/`). The build
 publishes `store.ref` beside the current snapshot's `graph.json` and keeps the

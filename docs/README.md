@@ -106,6 +106,9 @@ They are not evidence that an uncompleted design has shipped.
 | Document | Purpose |
 | --- | --- |
 | [Universal evidence implementation](implementation/universal-evidence.md) | Current universal evidence pipeline, resolution order, and failure classes |
+| [Optional Surreal graph projection](implementation/surreal-graph-projection.md) | Feature isolation, generation activation, schema, engine profiles, and native reads |
+| [SurrealDB license assessment](implementation/surrealdb-license-assessment.md) | Pinned license terms, artifact profiles, and distribution conditions |
+| [SurrealDB persistent-engine evidence](implementation/surreal-persistent-probe-results.md) | Retained SurrealKV/RocksDB semantic, recovery, and resource observations |
 | [Document OCR qualification](implementation/document-ocr-qualification.md) | Offline contract gate and opt-in pinned-model acceptance procedure |
 | [Evidence resolution framework technical design](implementation/evidence-resolution-framework-technical-design.md) | Target ownership, components, interfaces, and invariants for rearchitecting the resolver |
 | [Evidence resolution framework execution plan](implementation/evidence-resolution-framework-phased-execution-plan.md) | Phased, commit-oriented implementation and verification plan |

@@ -1,14 +1,13 @@
-# SurrealDB 3.2.4 license and release decision
+# SurrealDB 3.2.4 license assessment
 
-Status: **APPROVED — ACCEPT**
+Status: **REVIEWED FOR OPTIONAL INTEGRATION**
 Evidence date: 2026-08-28
-Decision date: 2026-08-29
 Decision scope: Compass artifacts that may depend on or contain SurrealDB 3.2.4
 
-This is a factual release-gate record, not legal advice. The user accepted every
-named artifact profile below under its stated conditions. That acceptance is
-limited to the pinned SurrealDB 3.2.4 evidence and does not waive the remaining
-technical, notice, redistribution, or independent-problem gates.
+This is a technical inventory, not legal advice. It records the pinned license,
+dependency, and redistribution conditions so maintainers and downstream users
+can make an informed release decision. Every Surreal-enabled artifact remains
+subject to the applicable license and notice requirements below.
 
 ## Pinned evidence
 
@@ -60,7 +59,7 @@ not the FAQ summary, controls this record.
 
 | Compass artifact | BSL/core relationship | Release condition if approved |
 | --- | --- | --- |
-| Source checkout with no Surreal dependency | Contains neither Surreal core nor its dependency metadata | No Surreal-specific notice. |
+| Default Compass CLI/MCP binary | The optional crate is not in the binary dependency closure | No covered SurrealDB code is linked; retain the repository notice for discoverability. |
 | Optional Compass crate on crates.io | The Compass crate need not copy core source, but activating it resolves BSL `surrealdb` and `surrealdb-core` packages | Pin 3.2.4, disclose the optional BSL dependency and Database Service boundary, and require downstream artifacts to carry applicable notices. |
 | Prebuilt binary or native library with embedded support | Links covered core code | Bundle the exact tagged license conspicuously, identify the covered version and restriction, retain notices, and do not label the complete artifact as exclusively OSI-open-source. |
 | Plugin or archive containing such a binary | Redistributes the same covered bytes | Apply the prebuilt-binary conditions to the archive and its package metadata. |
@@ -73,27 +72,15 @@ Cargo feature isolation contains default build and binary footprint. It does
 not erase obligations from a Surreal-enabled artifact that resolves or embeds
 the covered core.
 
-## Outcome effects
+## Integration conditions
 
-- **Accept all profiles:** C-014 and C-015 may proceed after C-012 and C-013
-  also pass. C-020 still requires its separate user-problem condition.
-- **Conditional:** only explicitly named profiles may proceed. All omitted
-  profiles are prohibited, and later changes must encode the allowed set as a
-  release gate.
-- **Reject:** cancel C-014 and C-015 as framed and cancel the Surreal branch of
-  C-020. Retain SQLite/redb/`graph.json`. A later remote-only proposal may be
-  evaluated only after dependency-tree evidence proves Compass links no BSL
-  core.
-
-## Sign-off
-
-```text
-Decision: ACCEPT
-Approved profiles: Every artifact profile named in this record, under its stated release conditions
-Prohibited profiles: None beyond the conditions and Database Service restriction recorded above
-Decision authority/name: Project user / active Codex task decision authority
-Authority role (user or legal reviewer): User
-Decision date: 2026-08-29
-Provenance (task message, review reference, or signed record): Active Codex task message: "C-011: ACCEPT"
-Conditions or notes: Applies only to pinned SurrealDB 3.2.4; preserve the exact BSL license, notices, version, Change Date, Change License, and Database Service restriction for covered artifacts and redistribution; perform a fresh license/profile review for every version upgrade
-```
+- Keep SurrealDB pinned to the reviewed 3.2.4 release and repeat the assessment
+  before any version change.
+- Keep all engines behind non-default features and continuously prove that the
+  default Compass CLI, MCP server, and core have no SurrealDB dependency path.
+- Preserve the exact tagged license, version, Change Date, Change License, and
+  Database Service restriction in Surreal-enabled distributions.
+- Do not describe a Surreal-enabled artifact as exclusively OSI-open-source
+  before the covered version converts to its Change License.
+- A future remote profile must prove that it is core-free before it can be
+  treated differently from the embedded profiles assessed here.

@@ -5,6 +5,7 @@ use std::path::Path;
 
 use compass_core::{BuildOptions, build_graph_with_layers, build_local_graph};
 use compass_files::{AST_CACHE_VERSION, Cache, CacheOptions};
+use compass_graph::InferenceLevel;
 use compass_languages::{Extraction, Registry};
 use compass_model::code_graph::{CoverageStatus, ExtractionStatus, GraphDocument, NodeKind};
 use compass_model::provenance::{EvidenceConfidence, EvidenceOrigin};
@@ -306,7 +307,14 @@ fn missing_dotnet_references_are_external_and_do_not_abort() -> Result<(), Box<d
         r#"<Project Sdk="Microsoft.NET.Sdk"></Project>"#,
     )?;
 
-    let graph = build(directory.path())?;
+    let mut options = BuildOptions::new(directory.path());
+    options.no_cluster = true;
+    options.no_viz = true;
+    options.max_workers = Some(2);
+    options.built_at_commit = Some("0123456789012345678901234567890123456789".to_owned());
+    options.inference_level = InferenceLevel::Max;
+    let result = build_local_graph(&options)?;
+    let graph = GraphDocument::load(&result.output_dir.join("graph.json"))?;
     let paths = graph
         .graph
         .files

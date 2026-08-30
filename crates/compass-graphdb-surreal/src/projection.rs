@@ -274,6 +274,11 @@ impl ProjectionPlan {
         if self.generation_id.trim().is_empty() {
             return Err(ProjectionError::EmptyGenerationId);
         }
+        if self.source_tree_digest.trim().is_empty() {
+            return Err(ProjectionError::InvalidPlan(
+                "source tree digest must not be empty".to_owned(),
+            ));
+        }
         ensure_strict_order(
             self.nodes.iter().map(|node| node.compass_node_id.as_str()),
             "node",

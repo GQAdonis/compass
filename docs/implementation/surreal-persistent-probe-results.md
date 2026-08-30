@@ -6,10 +6,9 @@ Host: Apple arm64, macOS 26.7 (25G224), Darwin 25.6.0
 Toolchain: Rust 1.97.1 (`8bab26f4f`), Cargo 1.97.1
 
 This is evaluation evidence, not a shipped Compass capability or performance
-claim. It does not satisfy the separate BSL sign-off in
-[`surrealdb-license-decision.md`](surrealdb-license-decision.md), and its
-measurements are not evaluated against numeric budgets until C-013 ratifies
-those budgets.
+claim. It does not replace the separate license assessment in
+[`surrealdb-license-assessment.md`](surrealdb-license-assessment.md), and its
+measurements are descriptive rather than universal performance budgets.
 
 ## Reproducible inputs
 
@@ -81,22 +80,17 @@ statistically controlled comparisons.
 tagged license and has SHA-256
 `98a94ac615f88370865016487b436fa404560910bd329794ed7502277a94b805`.
 It records BSL 1.1, the Database Service restriction, Change Date 2030-01-01,
-and Apache License 2.0 as the Change License. License acceptance remains C-011,
-not an inference from successful engine behavior.
+and Apache License 2.0 as the Change License. Successful engine behavior does
+not alter those license terms.
 
 ## Disposition
 
-C-012 passes: both required persistent engines completed every semantic,
-ordering, pagination, generation, dirty-shutdown, measurement, and license
-capture dimension. At C-012 completion on 2026-08-28, C-014/C-015 remained
-blocked until C-011 recorded explicit user/legal approval and C-013 ratified
-measurement budgets. If either gate rejected the work, Compass retained its
-current SQLite/redb/`graph.json` stack. Later gate outcomes belong to their own
-dated decision records, not this prerequisite probe record.
+Both persistent engines completed every semantic, ordering, pagination,
+generation, dirty-shutdown, measurement, and license-capture dimension. The
+optional integration therefore retains persistent-engine evidence without
+changing Compass's canonical SQLite/redb/`graph.json` stack.
 
-No SurrealDB dependency is present in Compass `Cargo.toml` files or
-`Cargo.lock`; the probe does not alter default builds or published behavior.
-The pre-probe and post-disposal checksum ledgers were byte-identical. Each
-ledger contains 33 sorted Compass `Cargo.toml` SHA-256 records followed by the
-`Cargo.lock` SHA-256 record; the ledger SHA-256 is
-`a98ca39857724b88a12a306b6647299ff93fed69f4c881bee54fddc230b45e6c`.
+SurrealDB dependency metadata is present only for the optional projection
+crate and its explicit engine features. The repository feature-isolation gate
+proves the default Compass CLI, MCP server, core, and projection crate do not
+resolve a SurrealDB dependency path.

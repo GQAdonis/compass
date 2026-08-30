@@ -972,7 +972,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     policy_path = (args.expectation_policy or (ROOT / manifest["expectationPolicy"])).resolve()
     policy = load_expectation_policy(policy_path, manifest, manifest_digest)
     policy_by_id = {repository["id"]: repository for repository in policy["repositories"]}
-    artifact_root = Path(args.artifact_root or "/Volumes/Workspace/crabbuild-target/compass-021-react-frontend/qualification/react-frontend").resolve()
+    target_root = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).expanduser()
+    if not target_root.is_absolute():
+        target_root = ROOT / target_root
+    artifact_root = Path(args.artifact_root or target_root / "qualification" / "react-frontend").resolve()
     artifact_root.mkdir(parents=True, exist_ok=True)
     run_base = artifact_root / f"run-{manifest_digest[:12]}-{binary_digest[:12]}"
     run_root = run_base

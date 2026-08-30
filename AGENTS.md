@@ -21,54 +21,33 @@ Before editing:
 `CONTRIBUTING.md` is the canonical human contribution guide. The design rules
 behind this file live in `docs/design/principles.md`.
 
-## Disk and external-checkout policy
+## Build artifacts and external checkouts
 
-The main disk is limited to 100 GB. Rust build artifacts and repositories used
-for real-repository code-graph qualification belong on the mounted workspace
-volume, not in this checkout or the main disk.
+Compass build artifacts are large. Use this checkout's local `target/` by
+default, or set `CARGO_TARGET_DIR` to an explicit writable directory owned only
+by this checkout.
 
-- Before any Cargo command that can compile (`build`, `check`, `test`,
-  `clippy`, `bench`, `doc`, `install`, `package`, or a Make target that invokes
-  one), set `CARGO_TARGET_DIR` beneath `/Volumes/Workspace/crabbuild-target`.
-- Every repository checkout and worktree must have its own target directory.
-  Never share one Cargo target directory between different repositories or
-  concurrent worktrees: feature sets, build scripts, and locks can collide.
-- Use a stable, descriptive directory such as
-  `/Volumes/Workspace/crabbuild-target/compass-main` for this checkout and
-  `/Volumes/Workspace/crabbuild-target/compass-<worktree-name>` for another
-  Compass worktree. For another repository, include that repository and
-  checkout/worktree name.
-- Set the variable on every new shell/tool invocation; do not assume an export
-  from an earlier command persists. For example:
-
-  ```bash
-  CARGO_TARGET_DIR=/Volumes/Workspace/crabbuild-target/compass-main \
-    cargo test -p compass-model --locked
-  ```
-
-- Verify the volume is mounted and the chosen directory is writable before a
-  long build. Create only the specific per-checkout directory needed. If
-  `/Volumes/Workspace` is unavailable, stop and report it rather than falling
-  back to a local `target/` directory.
-- Do not delete, clean, or reuse another repository's target directory. Run
-  `cargo clean` only with the intended `CARGO_TARGET_DIR` explicitly set and
-  only when the task actually requires reclaiming or invalidating those
-  artifacts.
-- Find repositories used to qualify Compass code graphs under
-  `/Volumes/Workspace/Github` first. When a task genuinely requires a missing
-  public repository, clone it under
-  `/Volumes/Workspace/Github/<owner>/<repository>`; do not clone qualification
-  repositories into the Compass tree, `/tmp`, or the main-disk GitHub folder.
-- Treat external qualification repositories as read-only inputs. Do not modify,
-  update, reset, or clean an existing checkout unless the task explicitly
-  requires it. Keep generated Compass artifacts outside their tracked source
-  or remove only artifacts created by the current task.
+- Never share a Cargo target directory between repositories or concurrent
+  worktrees: feature sets, build scripts, final artifacts, and locks can
+  collide.
+- Run Cargo commands serially within a checkout. Do not start a second Cargo or
+  rustc process while another build, lint, package, or test command is active.
+- Verify the selected target directory exists and is writable before a long
+  build. Do not delete, clean, or reuse another repository's target directory.
+- Avoid broad `cargo clean`. When disk reclamation is necessary, confirm the
+  checkout-local target and prefer a package or profile-specific clean.
+- Treat repositories used for qualification as read-only inputs. Their parent
+  directory may be selected by the qualification manifest or environment; do
+  not require a machine-specific mount, and do not clone them into the Compass
+  source tree.
+- Do not modify, update, reset, or clean an existing qualification checkout
+  unless the task explicitly requires it. Keep generated Compass artifacts
+  outside its tracked source, or remove only artifacts created by the task.
 
 Some Makefile targets consume binaries through a literal local `target/` path
-after Cargo finishes. Prefer direct Cargo commands with `CARGO_TARGET_DIR` for
-normal verification. Before using packaging, install, or release targets,
-inspect the target and ensure its artifact lookup also points at the selected
-external directory; never allow it to trigger a second local build silently.
+after Cargo finishes. If `CARGO_TARGET_DIR` is redirected, inspect packaging,
+install, or release targets before use so they do not silently trigger a second
+build or read artifacts from the wrong checkout.
 
 ## Product invariants
 
@@ -122,7 +101,7 @@ Route changes to the lowest crate that owns the behavior:
 | Provider fragments and semantic validation/orchestration | `compass-semantic` |
 | Provider-neutral Program IR and analysis | `compass-ir`, `compass-program`, `compass-analysis` |
 | Media, ingestion, and transcription boundaries | `compass-media`, `compass-ingest`, `compass-transcribe`, `compass-whisper` |
-| Focused external integrations | `compass-cargo`, `compass-global`, `compass-google-workspace`, `compass-graphdb`, `compass-postgres`, `compass-prs`, `compass-reflect` |
+| Focused external integrations | `compass-cargo`, `compass-global`, `compass-google-workspace`, `compass-graphdb`, `compass-graphdb-surreal`, `compass-postgres`, `compass-prs`, `compass-reflect` |
 | Shared React viewer | `packages/compass-viewer` |
 | VS Code integration | `editors/vscode` |
 | Browser-level viewer tests | `tests/viewer` |

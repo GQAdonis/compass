@@ -98,11 +98,11 @@ and requires matching ordered observations from JSON, store, and a repeated
 store execution. Timing is measured but removed before the deterministic
 response-baseline comparison.
 
-Run the gate with this checkout's external Cargo target:
+Run the gate. If Cargo output is redirected, use a target directory dedicated
+to this checkout:
 
 ```bash
-CARGO_TARGET_DIR=/Volumes/Workspace/crabbuild-target/compass-<checkout> \
-  python3 scripts/qualify_query_relevance.py
+python3 scripts/qualify_query_relevance.py
 ```
 
 The gate fails on generated-artifact, corpus/schema/digest drift,
@@ -151,8 +151,7 @@ The generic text-traversal ranker has an opt-in
 MCP defaults. Run its controlled 100,000-node comparison with:
 
 ```bash
-CARGO_TARGET_DIR=/Volumes/Workspace/crabbuild-target/compass-<checkout> \
-  scripts/qualify_text_ranker_bm25.sh
+scripts/qualify_text_ranker_bm25.sh
 ```
 
 The script builds a release-mode qualification executable and runs each
@@ -193,11 +192,11 @@ amplification, immutable-object reuse, GC state, and JSON/typed-query/
 CompassQL differential results. It also measures a small real CLI workflow:
 clean build, unchanged update, one-file update, and cold JSON/store search.
 The store workflow passes `--store sqlite`; ordinary builds remain JSON-only.
-Run it from a checkout with the required external target directory:
+Run it from a checkout. If Cargo output is redirected, use a target directory
+dedicated to this checkout:
 
 ```bash
-CARGO_TARGET_DIR=/Volumes/Workspace/crabbuild-target/compass-store-<checkout> \
-  scripts/qualify_compass_store_release.sh
+scripts/qualify_compass_store_release.sh
 ```
 
 The default graph sizes are 32, 128, and 512 generated nodes. Raw JSON and
@@ -296,6 +295,25 @@ parity plus the absence of complete graph materialization on the store path.
 JSON remains the default permanent engine; SQLite remains explicit with
 `--store sqlite` and `--engine store`.
 
+## Optional SurrealDB projection qualification
+
+The optional projection crate retains deterministic Mem integration coverage
+and descriptive SurrealKV/RocksDB semantic and recovery observations. These
+measurements are environment-specific evidence, not universal performance
+claims. Re-run the complete engine integration targets and feature-isolation
+gate after changing projection batching, schema, native reads, or dependency
+features:
+
+```bash
+cargo test -p compass-graphdb-surreal --test '*' --features mem --locked
+cargo test -p compass-graphdb-surreal --test '*' --features surrealkv --locked
+cargo test -p compass-graphdb-surreal --test '*' --features rocksdb --locked
+sh scripts/check_surreal_feature_isolation.sh
+```
+
+See `docs/implementation/surreal-persistent-probe-results.md` for the retained
+workload, recovery properties, and resource observations.
+
 ## CompassQL qualification
 
 CompassQL measures compile/plan latency, indexed fixed matches, one-hop and
@@ -385,7 +403,7 @@ materially variable wall time while peak RSS remains stable. The regression
 budget itself remains 1.10× for both duration and peak RSS.
 
 The historical pre-fixture release result is retained outside the checkout at
-`/Volumes/Workspace/crabbuild-target/compass-021-react-frontend/qualification/plan021-evidence/react-frontend-pinned-result-final.json`
+`<artifact-root>/plan021-evidence/react-frontend-pinned-result-final.json`
 (`sha256=ab7eb4c5961ac9f8cae0c7aae9fb155404e864873bde0da2519ef6d32d515082`).
 It uses release binary
 `sha256=68df549361b32f2b78fce49b45937d88bfc32609a1c174f930f268e17fe2e44e`,
@@ -399,7 +417,7 @@ independent oracle, exact source revision, and explicit
 aggregation/provenance rather than weakening the threshold.
 
 A current-revision release result is retained outside the checkout at
-`/Volumes/Workspace/crabbuild-target/compass-021-react-frontend/qualification/plan021-final-release/react-frontend-pinned-result.json`.
+`<artifact-root>/plan021-final-release/react-frontend-pinned-result.json`.
 The artifact records the exact Compass revision and release-binary digest used
 for this change. Its seven scorecards contain 232,446 independent oracle
 records and 17,986 scored facts, all 17,986 matched (precision and recall 1.0;

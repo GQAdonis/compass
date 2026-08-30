@@ -248,6 +248,41 @@ pub enum EdgeKind {
 }
 
 impl EdgeKind {
+    /// Every relationship kind in the closed `compass.graph/1` vocabulary.
+    pub const ALL: [Self; 31] = [
+        Self::Contains,
+        Self::Embeds,
+        Self::Calls,
+        Self::Imports,
+        Self::Exports,
+        Self::Extends,
+        Self::Implements,
+        Self::MixesIn,
+        Self::References,
+        Self::TypeOf,
+        Self::Returns,
+        Self::Instantiates,
+        Self::Overrides,
+        Self::Decorates,
+        Self::RoutesTo,
+        Self::Reads,
+        Self::Writes,
+        Self::Aliases,
+        Self::Registers,
+        Self::Handles,
+        Self::Publishes,
+        Self::Subscribes,
+        Self::Produces,
+        Self::Consumes,
+        Self::Schedules,
+        Self::Triggers,
+        Self::Tests,
+        Self::DependsOn,
+        Self::Documents,
+        Self::MapsTo,
+        Self::Renders,
+    ];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {

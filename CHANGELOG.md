@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add the optional `compass-graphdb-surreal` library crate for deterministic,
+  schemafull projection of immutable `compass.graph/1` generations. Explicit
+  Mem, SurrealKV, and RocksDB features use pinned SurrealDB 3.2.4; the default
+  Compass CLI, MCP server, core, and projection crate remain SurrealDB-free.
+
+- Add generation-pinned, bounded native Surreal reads for callers, callees,
+  impact, directed trails, connected structural subgraphs, and deterministic
+  relation pagination. Projection publication stages bounded idempotent batches
+  and switches the active generation only after exact validation.
+
+- Make qualification and release tooling portable across checkout-local or
+  explicitly selected Cargo target directories instead of requiring one
+  machine-specific mounted volume.
+
 - Reset all 14 registered universal-evidence producer versions to v1 and keep
   them `Qualified` under the refreshed release decision at
   `tests/qualification/universal-evidence-promotion.json`. Cached evidence

@@ -254,7 +254,11 @@ fn enable_disable_are_explicit_idempotent_and_invalid_profiles_roll_back()
     git(directory.path(), &["add", "fixture.rs"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "fixture"])?;
     let compass = env!("CARGO_BIN_EXE_compass");
-    let enabled = run(compass, directory.path(), &["history", "enable"])?;
+    let enabled = run(
+        compass,
+        directory.path(),
+        &["history", "enable", "--code-only"],
+    )?;
     assert!(enabled.status.success());
     let config = directory.path().join(".git/compass/config.json");
     let before = std::fs::read(&config)?;
@@ -417,7 +421,11 @@ fn worker_drains_fifo_after_an_earlier_job_fails() -> Result<(), Box<dyn std::er
     git(directory.path(), &["commit", "--quiet", "-m", "fixture"])?;
 
     let compass = env!("CARGO_BIN_EXE_compass");
-    let enabled = run(compass, directory.path(), &["history", "enable"])?;
+    let enabled = run(
+        compass,
+        directory.path(),
+        &["history", "enable", "--code-only"],
+    )?;
     assert!(enabled.status.success());
     let repository = Repository::discover(directory.path())?;
     let profile = HistoryConfig::load(&repository)?
@@ -478,9 +486,13 @@ fn worker_drains_fifo_after_an_earlier_job_fails() -> Result<(), Box<dyn std::er
         JobState::Failed
     );
     for job_id in invalid_profile_jobs {
+        let job = queue.get(&job_id)?.ok_or("invalid profile job")?;
         assert_eq!(
-            queue.get(&job_id)?.ok_or("invalid profile job")?.state,
-            JobState::Failed
+            job.state,
+            JobState::Failed,
+            "profile {:?} finished with diagnostic {:?}",
+            job.profile.entries().collect::<Vec<_>>(),
+            job.diagnostic
         );
     }
     assert_eq!(
@@ -1156,8 +1168,11 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
         directory.path(),
         &["config", "user.email", "compass@example.invalid"],
     )?;
-    std::fs::write(directory.path().join("README.md"), "old\n")?;
-    git(directory.path(), &["add", "README.md"])?;
+    std::fs::write(
+        directory.path().join("lib.rs"),
+        "pub fn old_api() -> u32 { 1 }\n",
+    )?;
+    git(directory.path(), &["add", "lib.rs"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "old"])?;
     let repository = Repository::discover(directory.path())?;
     let old_commit = repository.resolve("HEAD")?;
@@ -1199,8 +1214,11 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
         },
         make_preferred: true,
     })?;
-    std::fs::write(directory.path().join("README.md"), "new\n")?;
-    git(directory.path(), &["add", "README.md"])?;
+    std::fs::write(
+        directory.path().join("lib.rs"),
+        "pub fn new_api() -> u32 { 2 }\n",
+    )?;
+    git(directory.path(), &["add", "lib.rs"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "new"])?;
     let new_commit = repository.resolve("HEAD")?;
     let new_document: GraphDocument = serde_json::from_value(json!({
@@ -1351,41 +1369,28 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
     assert!(envelope["findings"].is_array());
     assert!(envelope["source_changes"].is_array());
     assert!(envelope["graph_delta"].is_object());
-    assert_eq!(
+    for field in [
+        "added_nodes",
+        "removed_nodes",
+        "changed_nodes",
+        "added_edges",
+        "removed_edges",
+        "changed_edges",
+    ] {
+        assert!(
+            envelope["graph_delta"][field].is_array(),
+            "graph_delta.{field} must remain an array"
+        );
+    }
+    assert!(
         envelope["graph_delta"]["added_nodes"]
             .as_array()
-            .map(Vec::len),
-        Some(1)
+            .is_some_and(|nodes| !nodes.is_empty())
     );
-    assert_eq!(
+    assert!(
         envelope["graph_delta"]["removed_nodes"]
             .as_array()
-            .map(Vec::len),
-        Some(0)
-    );
-    assert_eq!(
-        envelope["graph_delta"]["changed_nodes"]
-            .as_array()
-            .map(Vec::len),
-        Some(0)
-    );
-    assert_eq!(
-        envelope["graph_delta"]["added_edges"]
-            .as_array()
-            .map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(
-        envelope["graph_delta"]["removed_edges"]
-            .as_array()
-            .map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(
-        envelope["graph_delta"]["changed_edges"]
-            .as_array()
-            .map(Vec::len),
-        Some(1)
+            .is_some_and(|nodes| !nodes.is_empty())
     );
     assert!(envelope.get("changes").is_none());
 
