@@ -19,7 +19,7 @@ use compass_graph::{
     GRAPH_JSON_DELTA_MAX_SOURCE_BYTES, GRAPH_SNAPSHOT_MAX_OBJECTS,
     GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1, GraphSnapshotBuilder, GraphSnapshotGcStats,
     IncrementalClusterLimits, InferenceLevel, InventoryEvidence, PublicationOmissions,
-    SnapshotError, SnapshotSelector, SourceDigest, apply_inference_level,
+    SnapshotSelector, SourceDigest, apply_inference_level,
     build_owned_with_tiebreaker_at_inference as build_document, canonical_edge_kind,
     canonical_raw_edge_sites, cluster_incremental, deduped_node_count, extraction_from_v1,
     garbage_collect_graph_snapshots, graph_insights_with_blind_spots, graph_snapshot_needs_gc,
@@ -27,7 +27,7 @@ use compass_graph::{
     normalize_document_v1_with_evidence_best_effort_owned_at_inference,
     normalize_document_v1_with_inventory_and_source_digests_best_effort_owned_at_inference,
     normalize_document_v1_with_inventory_best_effort_at_inference, score_communities,
-    write_canonical_graph_json, write_fact_neutral_graph_json_delta_prevalidated,
+    write_canonical_graph_json_bounded, write_fact_neutral_graph_json_delta_prevalidated_bounded,
 };
 use compass_languages::{
     BindingFact, DeclarationFact, EXTRACTION_QUALITY_EXTENSION, EXTRACTION_QUALITY_PARTIAL,
@@ -91,12 +91,6 @@ const PIPELINE_RAYON_WORKER_CAP: usize = 12;
 // Keep the bound explicit and portable; stack pages remain demand-paged.
 const PIPELINE_RAYON_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 const PARALLEL_AST_FACT_DIGEST_MIN_FILES: usize = 32;
-// Calibrated on the C-003 deterministic fixture: 112,893 source bytes produced
-// 6,843,452 canonical bytes (60.62x). Rounding down avoids claiming precision
-// the measurement does not provide. Sources rejected by max_source_bytes do
-// not use this expansion because Compass publishes inventory-only coverage.
-const PREFLIGHT_GRAPH_BYTES_PER_SOURCE_BYTE: u64 = 60;
-const PREFLIGHT_PARTIAL_FILE_BYTES: u64 = 512;
 // Full mark-and-sweep walks every immutable graph object and can dominate a
 // one-file update. Keep a small, explicit number of unreachable manifests so
 // ordinary edits pay only point-update publication; the next sweep still
@@ -1981,11 +1975,12 @@ fn publish_fact_neutral_incremental(
         let receipt = write_atomic_with_digest(&graph_path, |writer| {
             let delta_started = Instant::now();
             let used_delta = if let Some(bytes) = previous_bytes.as_deref() {
-                write_fact_neutral_graph_json_delta_prevalidated(
+                write_fact_neutral_graph_json_delta_prevalidated_bounded(
                     bytes,
                     current,
                     changed_node_ids,
                     writer,
+                    max_canonical_graph_bytes(),
                 )
                 .map_err(|source| compass_files::FileError::Io {
                     path: graph_path.clone(),
@@ -2005,12 +2000,11 @@ fn publish_fact_neutral_incremental(
             if used_delta {
                 Ok(())
             } else {
-                write_canonical_graph_json(current, writer).map_err(|source| {
-                    compass_files::FileError::Io {
+                write_canonical_graph_json_bounded(current, writer, max_canonical_graph_bytes())
+                    .map_err(|source| compass_files::FileError::Io {
                         path: graph_path.clone(),
                         source,
-                    }
-                })
+                    })
             }
         })?;
         (
@@ -2716,13 +2710,6 @@ fn build_graph_inner_unscoped(
             None,
         ));
     }
-
-    enforce_preflight_graph_size(
-        &root,
-        &sources,
-        options.max_source_bytes,
-        max_canonical_graph_bytes(),
-    )?;
 
     let output_cache_root = (output_root != root).then_some(output_root.as_path());
     let cache_options = options.cache_root.as_deref().map_or_else(
@@ -3643,11 +3630,14 @@ fn build_graph_inner_unscoped(
         } else {
             let graph_path = output_dir.join("graph.json");
             let receipt = write_atomic_with_digest(&graph_path, |writer| {
-                write_canonical_graph_json(&published.document, writer).map_err(|source| {
-                    compass_files::FileError::Io {
-                        path: graph_path.clone(),
-                        source,
-                    }
+                write_canonical_graph_json_bounded(
+                    &published.document,
+                    writer,
+                    max_canonical_graph_bytes(),
+                )
+                .map_err(|source| compass_files::FileError::Io {
+                    path: graph_path.clone(),
+                    source,
                 })
             })?;
             (
@@ -4206,11 +4196,14 @@ fn build_graph_inner_unscoped(
     } else {
         let graph_path = output_dir.join("graph.json");
         let receipt = write_atomic_with_digest(&graph_path, |writer| {
-            write_canonical_graph_json(&published_document, writer).map_err(|source| {
-                compass_files::FileError::Io {
-                    path: graph_path.clone(),
-                    source,
-                }
+            write_canonical_graph_json_bounded(
+                &published_document,
+                writer,
+                max_canonical_graph_bytes(),
+            )
+            .map_err(|source| compass_files::FileError::Io {
+                path: graph_path.clone(),
+                source,
             })
         })?;
         (
@@ -4354,42 +4347,6 @@ fn build_graph_inner_unscoped(
         analysis: retained_analysis,
     });
     Ok((result, retained))
-}
-
-/// Estimate canonical payload growth from discovery metadata before any
-/// project-wide extraction begins. The calculation performs one bounded
-/// metadata lookup per admitted source and uses saturating arithmetic so an
-/// adversarial corpus cannot wrap the estimate into a successful result.
-fn enforce_preflight_graph_size(
-    root: &Path,
-    sources: &[PathBuf],
-    max_source_bytes: u64,
-    maximum: u64,
-) -> Result<u64, CoreError> {
-    let estimated = sources.iter().fold(0_u64, |total, source| {
-        let relative = source.strip_prefix(root).unwrap_or(source);
-        let path_bytes = u64::try_from(relative.as_os_str().len()).unwrap_or(u64::MAX);
-        let source_estimate =
-            fs::metadata(source).map_or(PREFLIGHT_PARTIAL_FILE_BYTES, |metadata| {
-                if metadata.is_file() && metadata.len() <= max_source_bytes {
-                    metadata
-                        .len()
-                        .saturating_mul(PREFLIGHT_GRAPH_BYTES_PER_SOURCE_BYTE)
-                        .max(PREFLIGHT_PARTIAL_FILE_BYTES)
-                } else {
-                    PREFLIGHT_PARTIAL_FILE_BYTES
-                }
-            });
-        total
-            .saturating_add(path_bytes)
-            .saturating_add(source_estimate)
-    });
-    if estimated > maximum {
-        return Err(CoreError::Snapshot(
-            SnapshotError::canonical_graph_too_large(maximum),
-        ));
-    }
-    Ok(estimated)
 }
 
 fn oversized_source_extraction(
@@ -4929,12 +4886,11 @@ fn publish_graph_and_store_from_canonical(
     let (graph_receipt, content) = rayon::join(
         || {
             write_atomic_with_digest(&graph_path, |writer| {
-                write_canonical_graph_json(graph, writer).map_err(|source| {
-                    compass_files::FileError::Io {
+                write_canonical_graph_json_bounded(graph, writer, max_canonical_graph_bytes())
+                    .map_err(|source| compass_files::FileError::Io {
                         path: graph_path.clone(),
                         source,
-                    }
-                })
+                    })
             })
         },
         || builder.prepare_content(&store, graph),
@@ -4972,8 +4928,12 @@ fn publish_graph_and_store_delta(
             let result = write_atomic_with_digest(&graph_path, |writer| {
                 let used_delta = match (previous_bytes.as_deref(), changed_node_ids) {
                     (Some(bytes), Some(changed)) => {
-                        write_fact_neutral_graph_json_delta_prevalidated(
-                            bytes, graph, changed, writer,
+                        write_fact_neutral_graph_json_delta_prevalidated_bounded(
+                            bytes,
+                            graph,
+                            changed,
+                            writer,
+                            max_canonical_graph_bytes(),
                         )
                         .map_err(|source| {
                             compass_files::FileError::Io {
@@ -4987,12 +4947,11 @@ fn publish_graph_and_store_delta(
                 if used_delta {
                     Ok(())
                 } else {
-                    write_canonical_graph_json(graph, writer).map_err(|source| {
-                        compass_files::FileError::Io {
+                    write_canonical_graph_json_bounded(graph, writer, max_canonical_graph_bytes())
+                        .map_err(|source| compass_files::FileError::Io {
                             path: graph_path.clone(),
                             source,
-                        }
-                    })
+                        })
                 }
             });
             profile_internal_duration("graph JSON delta publication", started.elapsed());
@@ -8823,7 +8782,7 @@ mod tests {
 
         let changed_graph = V1GraphDocument::load(&changed.output_dir.join("graph.json"))?;
         let mut canonical_changed = Vec::new();
-        write_canonical_graph_json(&changed_graph, &mut canonical_changed)?;
+        compass_graph::write_canonical_graph_json(&changed_graph, &mut canonical_changed)?;
         assert_eq!(
             fs::read(changed.output_dir.join("graph.json"))?,
             canonical_changed,

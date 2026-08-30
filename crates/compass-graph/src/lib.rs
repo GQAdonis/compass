@@ -42,8 +42,9 @@ pub use snapshot::{
     active_graph_snapshot, canonical_graph_document, canonical_graph_document_presorted,
     canonical_graph_json, encode_graph_index_key, garbage_collect_graph_snapshots,
     graph_snapshot_manifest_key, graph_snapshot_needs_gc, max_canonical_graph_bytes,
-    prepare_graph_snapshot, write_canonical_graph_json, write_fact_neutral_graph_json_delta,
-    write_fact_neutral_graph_json_delta_prevalidated,
+    prepare_graph_snapshot, write_canonical_graph_json, write_canonical_graph_json_bounded,
+    write_fact_neutral_graph_json_delta, write_fact_neutral_graph_json_delta_prevalidated,
+    write_fact_neutral_graph_json_delta_prevalidated_bounded,
 };
 pub use v1::{
     BuildEvidence, InventoryEvidence, SourceDigest, V1_PUBLICATION_SEMANTICS_VERSION,
