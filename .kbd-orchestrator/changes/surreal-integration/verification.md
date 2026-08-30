@@ -90,10 +90,30 @@ tool exists.
 The complete default CLI suite after the restore correction **PASSED**, exit 0,
 including all four store-operation integration tests. The operator then directed
 immediate global release installation and check-in before reduced verification.
-The SurrealKV release installation is running. No further broad workspace or
+The SurrealKV release installation completed successfully. No further broad workspace or
 all-engine suite is authorized for this priority wave. After installation and
 check-in, verify the changed Surreal CLI restore/publication path and perform
 installed-binary smoke checks. Deferred gates below remain unverified.
+
+### Urgent deployment result
+
+- Product implementation committed and pushed to the fork branch as `68d6341d`.
+- `cargo install --path crates/compass-cli --bin compass --features
+  surreal-surrealkv --profile release --locked --force` completed successfully
+  in 15m25s, retaining the configured optimized release profile and thin LTO.
+- The global executable's SHA-256 matches the worktree release artifact:
+  `1ca33dc45d207e6277d1ef63957be25460cf392b8e8b3188ef273ec95b31b747`.
+  Common Homebrew and local-bin PATH entries resolve to the same executable.
+- After installation and push, all **19 changed-path installed-binary checks
+  passed**: capabilities, persisted Surreal init, all seven typed operations,
+  profiled native CompassQL, unchanged reuse, tampered-digest rejection,
+  extraction-free repair, portable backup, digest-bound restore to a new
+  location, validation, typed/native queries without canonical JSON, and
+  oversized-manifest rejection before destination creation.
+- The machine-wide Rust slot was explicitly released after installation.
+  No broad suite or Cargo rebuild was run for these installed-binary checks.
+- This is an urgent Phase 2 deployment, not certification of deferred gates,
+  a fork-main merge, or completion of Phase 3.
 
 ## Remaining gates
 
