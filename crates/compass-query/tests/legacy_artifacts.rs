@@ -113,16 +113,20 @@ fn sqlite_checks_pinned_metadata_without_portable_json() -> Result {
 
 #[test]
 fn in_memory_and_verified_cache_paths_cannot_bypass_compatibility() -> Result {
+    use sha2::{Digest, Sha256};
+
     let dir = tempfile::tempdir()?;
     let graph = dir.path().join("graph.json");
     let modern = document("0.3.23");
-    fs::write(&graph, serde_json::to_vec(&modern)?)?;
+    let bytes = serde_json::to_vec(&modern)?;
+    let identity = format!("{:x}", Sha256::digest(&bytes));
+    fs::write(&graph, bytes)?;
     let cache = QueryEngineCache::default();
-    cache.open_verified_document(&modern, "same-identity", &graph, &dir.path().join("cache"))?;
+    cache.open_verified_document(&modern, &identity, &graph, &dir.path().join("cache"))?;
     rejected(
         cache.open_verified_document(
             &document("0.3.6"),
-            "same-identity",
+            &identity,
             &graph,
             &dir.path().join("cache"),
         ),

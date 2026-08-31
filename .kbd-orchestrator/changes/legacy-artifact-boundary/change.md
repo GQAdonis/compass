@@ -1,6 +1,7 @@
 # Phase 3 — legacy artifact rebuild boundary
 
-Status: implementation in progress; not certified or delivered to fork main.
+Status: implemented, installed, pushed, and verified with the operator-requested
+reduced checks; not independently certified or delivered to fork main.
 
 Reject recognized Compass release artifacts older than 0.3.23 at engine load.
 JSON inspects at most 64 KiB before record decoding, full digest computation,
