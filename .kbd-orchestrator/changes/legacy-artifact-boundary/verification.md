@@ -62,6 +62,8 @@ retained in a uniquely named system temporary directory, not in tracked source.
 - Independent refinement/review certification remains pending, not passed.
 - Phase 2 and Phase 3 fork-main merge and clean upstream PR delivery remain
   separate unfinished steps. Pushing a branch is not merging it into main.
+  Fork-main PRs are now open: [Phase 2 #3](https://github.com/GQAdonis/compass/pull/3),
+  then [Phase 3 #4](https://github.com/GQAdonis/compass/pull/4). Neither is merged.
 
 ## Retained failed attempt
 

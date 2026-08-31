@@ -13,8 +13,8 @@ the product commit. Independent certification and PR delivery remain separate st
 | Phase/change | Implementation | Verification | Delivery | Remaining |
 | --- | --- | --- | --- | --- |
 | 1 — preflight-blocker | Complete | Actual-size enforcement, atomic failure, five-estate qualification passed | Fork PR 2 merged; upstream PR 307 open | Upstream acceptance is external |
-| 2 — embedded + standalone Surreal | Complete: publication, typed queries, native CompassQL, MCP, operations, YAML/environment/flags | Earlier embedded evidence retained; latest server/configuration wave passed 30 installed checks and 11 integration tests | Combined release installed; commits through a7d715f7 pushed to the fork branch | Fork-main merge, clean upstream PR, deferred independent review |
-| 3 — legacy-artifact-boundary | Complete: bounded JSON preamble, native pinned metadata checks, cache guards, exact validated rebuild command, authentic 0.3.6 fixture, compatibility docs | 13 model tests, 4 native-query tests, and 14 installed CLI/MCP/rebuild checks passed; formatting/product-boundary checks passed | Product commit e5bb7e4a pushed to codex/legacy-artifact-boundary; updated release installed globally | Separate fork-main/upstream PRs and deferred independent review |
+| 2 — embedded + standalone Surreal | Complete: publication, typed queries, native CompassQL, MCP, operations, YAML/environment/flags | Earlier embedded evidence retained; latest server/configuration wave passed 30 installed checks and 11 integration tests | Combined release installed; fork-main PR #3 open | Fork-main merge, clean upstream port/PR, deferred independent review |
+| 3 — legacy-artifact-boundary | Complete: bounded JSON preamble, native pinned metadata checks, cache guards, exact validated rebuild command, authentic 0.3.6 fixture, compatibility docs | 13 model tests, 4 native-query tests, and 14 installed CLI/MCP/rebuild checks passed; formatting/product-boundary checks passed | Updated release installed globally; fork-main PR #4 open, dependent on #3 | Fork-main merge, clean upstream PR after Phase 2 port, deferred independent review |
 | Global installation | Current Phase 3 optimized release with SurrealKV and remote support | Installed/build/PATH hashes match; capabilities confirmed; exact force recovery and post-rebuild queries pass | Cargo bin, Homebrew bin, and local bin resolve to the same executable | No additional production rebuild required for the test-only fixture repair |
 
 ## Phase 3 task table
@@ -24,7 +24,7 @@ the product commit. Independent certification and PR delivery remain separate st
 | P3-01 — early compatibility and provenance | Complete |
 | P3-02 — genuine old fixture and forced rebuild | Complete |
 | P3-03 — documentation, gates, review | Documentation and reduced gates complete; broad suites and independent review deliberately deferred, not passed |
-| P3-04 — separate PR delivery | Pending; branch push is complete but main is unchanged |
+| P3-04 — separate PR delivery | Fork-main PR #4 open; merge and clean upstream PR remain pending |
 | P3-05 — final global release and installed smoke checks | Complete |
 
 The first query integration attempt passed three tests and failed one during
@@ -48,7 +48,9 @@ timeout attempts remain recorded in its separate evidence ledger.
 ## Remaining work
 
 1. Deferred deterministic refinement and independent review for Phases 2–3.
-2. Separate fork-main merges and clean upstream PRs for Phases 2–3.
+2. Merge fork-main PR #3, then #4; perform the clean upstream port and open
+   upstream PRs for Phases 2–3. The upstream applicability check found nine
+   conflicting files; see the [delivery record](../../changes/pull-request-delivery.md).
 
 The repository graph refresh completed in 180.66 seconds and reported a partial
 graph (4 nodes and 3 edges omitted); it is not evidence of complete extraction.
