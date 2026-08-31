@@ -154,6 +154,10 @@ impl QueryEngineCache {
         graph_path: &Path,
         cache_root: &Path,
     ) -> Result<CachedQueryEngine, QueryError> {
+        crate::graph_engine::validate_builder(
+            &document.graph.build.builder_version,
+            Some(graph_path),
+        )?;
         let path = fs::canonicalize(graph_path).map_err(|error| {
             QueryError::new(
                 QueryErrorKind::Internal,
@@ -288,6 +292,17 @@ pub fn open_with_store<S: Store + ?Sized>(
     program_path: Option<&Path>,
     cache_root: &Path,
 ) -> Result<CodeQueryEngine, QueryError> {
+    if let Some(reader) =
+        compass_graph::GraphSnapshotReader::open_active(store).map_err(|error| {
+            QueryError::new(
+                QueryErrorKind::CorruptArtifact,
+                "store_graph_snapshot_failed",
+                error.to_string(),
+            )
+        })?
+    {
+        crate::graph_engine::validate_reader_builder(&reader, Some(graph_path))?;
+    }
     let graph_engine = Box::new(crate::graph_engine::StoreGraphEngine::from_store(store)?);
     open_from_graph_engine(graph_path, program_path, cache_root, graph_engine)
 }
@@ -301,6 +316,15 @@ pub fn open_with_store_selector<S: Store + ?Sized>(
     program_path: Option<&Path>,
     cache_root: &Path,
 ) -> Result<CodeQueryEngine, QueryError> {
+    let reader = compass_graph::GraphSnapshotReader::open_selector(store, selector.clone())
+        .map_err(|error| {
+            QueryError::new(
+                QueryErrorKind::CorruptArtifact,
+                "store_graph_snapshot_failed",
+                error.to_string(),
+            )
+        })?;
+    crate::graph_engine::validate_reader_builder(&reader, Some(graph_path))?;
     let graph_engine = Box::new(StoreGraphEngine::from_store_selector(store, selector)?);
     open_from_graph_engine(graph_path, program_path, cache_root, graph_engine)
 }
@@ -313,6 +337,7 @@ pub fn open_with_document(
     program_path: Option<&Path>,
     cache_root: &Path,
 ) -> Result<CodeQueryEngine, QueryError> {
+    crate::graph_engine::validate_builder(&graph.graph.build.builder_version, Some(graph_path))?;
     let graph_engine = Box::new(DirectGraphEngine::from_document(graph)?);
     open_from_graph_engine(graph_path, program_path, cache_root, graph_engine)
 }
@@ -326,6 +351,7 @@ pub fn open_with_verified_document(
     program_path: Option<&Path>,
     cache_root: &Path,
 ) -> Result<CodeQueryEngine, QueryError> {
+    crate::graph_engine::validate_builder(&graph.graph.build.builder_version, Some(graph_path))?;
     let graph_engine = Box::new(DirectGraphEngine::from_verified_document(
         graph,
         graph_identity,

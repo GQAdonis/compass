@@ -5,6 +5,23 @@ sidecars. Its output root now preserves the familiar flat artifact shape so
 file-based workflows can transition while Compass's snapshot and store
 layout remains visible and clearly owned.
 
+## Rebuild artifacts produced before Compass 0.3.23
+
+Current query loaders reject pre-0.3.23 Compass release artifacts before loading
+their node/edge records. The error reports the found and minimum versions and,
+when validated snapshot provenance exists, the exact recovery command:
+
+```bash
+compass update "<source-root>" --force
+```
+
+Use the actual project source directory, not `compass-out`. If `source-root.txt`
+is absent, invalid, or names a directory no longer present, explicitly supply
+the source project's current root. Forced update bypasses reuse of the prior
+graph and republishes from source using the configured storage mode. Do not edit
+`builderVersion`, copy indexes between generations, or migrate old artifacts in
+place. Immutable historical realizations are not rewritten by this recovery.
+
 ## Enable embedded SurrealDB
 
 To use a standalone server as well, install with

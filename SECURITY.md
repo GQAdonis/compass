@@ -12,6 +12,17 @@ Security fixes target these versions:
 | Latest release | Supported with security updates |
 | Older releases | Upgrade to the latest release before requesting a fix |
 
+## Legacy artifact recovery diagnostics
+
+Legacy query artifacts are rejected from bounded builder metadata. Builder
+versions are compatibility claims, not authenticated identities. Recovery
+commands use only the selected snapshot's sibling `source-root.txt`, bounded
+to 16 KiB and checked as a regular, non-symlink file containing an absolute,
+existing directory. Control characters and parent traversal are rejected;
+displayed roots are canonicalized and shell-escaped. Invalid or absent
+provenance requires the caller to supply a root. Compass displays this command;
+it does not execute it automatically or rewrite historical artifacts.
+
 ## Submit a private report
 
 Use [GitHub private vulnerability reporting](https://github.com/crabbuild/compass/security/advisories/new). If the private reporting form isn't available, wait for the repository owner to enable it rather than publishing exploit details.
