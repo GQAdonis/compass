@@ -59,7 +59,19 @@ run('target mismatch fails closed', ['search', 'callee', '--surreal-database', '
 if (auth.COMPASS_SURREAL_PASSWORD) {
   const denied = run('bad authentication fails closed', ['search', 'callee'], { env: { ...auth, COMPASS_SURREAL_PASSWORD: 'fixture-invalid-secret' }, success: false });
   assert.ok(!denied.stderr.includes('fixture-invalid-secret'));
+  const passwordYaml = path.join(root, 'password-shadow.yaml');
+  fs.writeFileSync(passwordYaml, fs.readFileSync(yaml, 'utf8') + 'password: fixture-invalid-secret\n');
+  const selectorAuth = { ...auth, COMPASS_SURREAL_PASSWORD_ENV: 'COMPASS_TEST_SURREAL_PASSWORD' };
+  delete selectorAuth.COMPASS_SURREAL_PASSWORD;
+  assert.equal(json('environment credential selector overrides YAML password', ['search', 'callee'], { config: passwordYaml, env: selectorAuth }).schema, 'compass.query/1');
+  assert.equal(json('flag credential selector overrides environment password', ['search', 'callee', '--surreal-password-env', 'COMPASS_TEST_SURREAL_PASSWORD'], { env: { ...auth, COMPASS_SURREAL_PASSWORD: 'fixture-invalid-secret' } }).schema, 'compass.query/1');
+  const missingSelector = { ...auth };
+  delete missingSelector.COMPASS_TEST_MISSING_PASSWORD;
+  const missing = run('missing selected credential never falls back', ['search', 'callee', '--surreal-password-env', 'COMPASS_TEST_MISSING_PASSWORD'], { env: missingSelector, success: false });
+  assert.match(missing.stderr, /credential environment variable is missing/);
 }
+const conflict = run('explicit storage flags reject conflicting engine', ['update', '.', '--store', 'json', '--surreal-engine', 'remote'], { success: false });
+assert.match(conflict.stderr, /conflicting explicit flags/);
 const backup = path.join(root, 'backup');
 const restored = path.join(root, 'restored');
 json('remote portable backup', ['store', 'backup', 'compass-out', '--output', backup]);
@@ -111,7 +123,11 @@ try {
   await new Promise(resolve => child.exitCode !== null ? resolve() : child.once('exit', resolve));
   clearTimeout(timer); lines.close();
 }
-const watcher = spawn(binary, ['watch', '.', '--poll', '--surreal-config', yaml], { cwd: project, env: auth, stdio: ['ignore', 'pipe', 'pipe'] });
+// Flags precede the explicit root, with no YAML endpoint: persisted project
+// settings must be loaded from that root, not from the unrelated working dir.
+const watchEnv = { ...auth, COMPASS_SURREAL_CONFIG: path.join(root, 'empty.yaml') };
+fs.writeFileSync(watchEnv.COMPASS_SURREAL_CONFIG, '{}\n');
+const watcher = spawn(binary, ['watch', '--poll', project], { cwd: root, env: watchEnv, stdio: ['ignore', 'pipe', 'pipe'] });
 let watchOutput = '';
 watcher.stdout.on('data', chunk => { watchOutput = (watchOutput + chunk).slice(-65536); });
 watcher.stderr.on('data', chunk => { watchOutput = (watchOutput + chunk).slice(-65536); });

@@ -115,6 +115,11 @@ pub fn prepare_surreal_arguments(arguments: &mut Vec<OsString>) -> Result<(), St
         }
         index += 1;
     }
+    if matches!(flags.store.as_deref(), Some("json" | "sqlite"))
+        && (flags.engine.is_some() || flags.path.is_some() || flags.endpoint.is_some())
+    {
+        return Err("--surreal-engine, --surreal-path, and --surreal-endpoint require --store surreal; remove conflicting explicit flags".into());
+    }
     let explicit_config =
         config_path.or_else(|| std::env::var_os("COMPASS_SURREAL_CONFIG").map(PathBuf::from));
     let default_config = crate::home_directory().map(|home| home.join(".compass/surreal.yaml"));
@@ -169,6 +174,7 @@ fn project_root(arguments: &[OsString], publication: bool) -> Result<PathBuf, St
                     && !matches!(
                         value.as_ref(),
                         "--yes"
+                            | "--poll"
                             | "--force"
                             | "--timing"
                             | "--program"

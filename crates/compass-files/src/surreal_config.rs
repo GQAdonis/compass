@@ -60,6 +60,21 @@ impl SurrealSettings {
     }
 
     pub fn overlay(&mut self, newer: Self) {
+        // Direct values and environment selectors are alternative sources for
+        // the same credential. A higher-priority selector must not leave a
+        // lower-priority direct value active (or vice versa).
+        if newer.password_env.is_some() && newer.password.is_none() {
+            self.password = None;
+        }
+        if newer.password.is_some() && newer.password_env.is_none() {
+            self.password_env = None;
+        }
+        if newer.token_env.is_some() && newer.token.is_none() {
+            self.token = None;
+        }
+        if newer.token.is_some() && newer.token_env.is_none() {
+            self.token_env = None;
+        }
         if newer.endpoint.is_some() && newer.engine.is_none() {
             self.engine = Some("remote".into());
             self.path = None;

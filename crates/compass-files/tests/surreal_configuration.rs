@@ -105,3 +105,25 @@ fn higher_priority_sources_select_remote_or_embedded_without_stale_paths()
     );
     Ok(())
 }
+
+#[test]
+fn credential_selectors_replace_lower_priority_values_across_yaml_layers()
+-> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    for (credential, selector) in [("password", "password_env"), ("token", "token_env")] {
+        let lower = root.path().join("lower.yaml");
+        let higher = root.path().join("higher.yaml");
+        fs::write(&lower, format!("{credential}: obsolete-fixture-secret\n"))?;
+        fs::write(
+            &higher,
+            format!("{selector}: COMPASS_SELECTED_CREDENTIAL\n"),
+        )?;
+        let mut settings = SurrealSettings::read_yaml(&lower)?;
+        settings.overlay(SurrealSettings::read_yaml(&higher)?);
+        assert!(settings.password.is_none() && settings.token.is_none());
+        assert!(!format!("{settings:?}").contains("obsolete-fixture-secret"));
+        settings.overlay(SurrealSettings::read_yaml(&lower)?);
+        assert!(settings.password_env.is_none() && settings.token_env.is_none());
+    }
+    Ok(())
+}

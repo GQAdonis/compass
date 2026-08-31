@@ -79,6 +79,13 @@ source explicitly selects another engine. To switch back to embedded mode:
 compass update . --store surreal --surreal-engine surrealkv
 ```
 
+A higher-priority `password_env` or `token_env` replaces a lower-priority direct
+credential, and a higher-priority direct credential replaces its lower-priority
+selector. Missing selected environment variables fail closed; they do not fall
+back to an older credential. `--store json` or `--store sqlite` disables inherited
+Surreal storage settings, but combining either flag with an explicit Surreal
+engine, path, or endpoint is an error.
+
 Server defaults are namespace `compass`, database `graph`, root auth scope;
 the endpoint is required. WS/WSS are supported; HTTP/HTTPS spellings normalize
 to their WebSocket equivalents. Only loopback hosts permit plaintext. External
