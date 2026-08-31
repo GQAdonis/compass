@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reject query artifacts produced before Compass 0.3.23 at engine loading,
+  before record decoding or cache reuse. JSON uses a 64 KiB builder-version
+  preamble; SQLite and Surreal use pinned snapshot metadata without JSON
+  fallback. CLI/MCP errors include the found/minimum versions and a force-rebuild
+  command derived only from validated snapshot provenance.
+
 - Support both embedded and standalone SurrealDB with `surreal-remote` plus
   either embedded feature. YAML, `COMPASS_SURREAL_*` environment settings,
   and `--surreal-*` flags configure publication, typed queries, CompassQL,

@@ -20,6 +20,16 @@ use crate::index::{EngineSelection, QueryEngineKind};
 
 const MAX_STORE_REF_BYTES: u64 = 16 * 1024;
 
+pub(crate) fn validate_builder(version: &str, path: Option<&Path>) -> Result<(), QueryError> {
+    compass_model::validate_query_builder_version(version, path).map_err(|error| {
+        QueryError::new(
+            QueryErrorKind::UnsupportedSchema,
+            "legacy_graph_artifact",
+            error.to_string(),
+        )
+    })
+}
+
 /// Read-only graph source used by query planners and public commands.
 pub trait GraphEngine: Send + Sync {
     fn kind(&self) -> QueryEngineKind;
@@ -55,6 +65,7 @@ pub struct EffectiveGraphEngine {
 
 impl EffectiveGraphEngine {
     pub fn from_effective(effective: EffectiveGraph) -> Result<Self, QueryError> {
+        validate_builder(&effective.graph.graph.build.builder_version, None)?;
         validate_graph_schema(&effective.graph)?;
         compass_model::validate_code_graph(&effective.graph).map_err(|error| {
             QueryError::new(
@@ -92,6 +103,7 @@ impl GraphEngine for EffectiveGraphEngine {
 
 impl DirectGraphEngine {
     pub fn from_document(graph: GraphDocument) -> Result<Self, QueryError> {
+        validate_builder(&graph.graph.build.builder_version, None)?;
         validate_graph_schema(&graph)?;
         compass_model::validate_code_graph(&graph).map_err(|error| {
             QueryError::new(
@@ -120,6 +132,7 @@ impl DirectGraphEngine {
         graph: GraphDocument,
         graph_identity: String,
     ) -> Result<Self, QueryError> {
+        validate_builder(&graph.graph.build.builder_version, None)?;
         validate_graph_schema(&graph)?;
         compass_model::validate_code_graph(&graph).map_err(|error| {
             QueryError::new(
@@ -162,6 +175,13 @@ impl JsonGraphEngine {
     pub fn open(path: &Path) -> Result<Self, QueryError> {
         let (graph, graph_identity) =
             GraphDocument::load_with_artifact_digest(path).map_err(|error| {
+                if matches!(&error, compass_model::GraphError::LegacyArtifact { .. }) {
+                    return QueryError::new(
+                        QueryErrorKind::UnsupportedSchema,
+                        "legacy_graph_artifact",
+                        error.to_string(),
+                    );
+                }
                 QueryError::new(
                     QueryErrorKind::CorruptArtifact,
                     "graph_load_failed",
@@ -238,6 +258,7 @@ impl StoreGraphEngine {
                 "store has no active immutable graph snapshot",
             ));
         };
+        validate_reader_builder(&reader, None)?;
         let manifest = reader.manifest();
         let graph_bytes = reader.export_json_bytes().map_err(|error| {
             QueryError::new(
@@ -267,6 +288,7 @@ impl StoreGraphEngine {
                 error.to_string(),
             )
         })?;
+        validate_reader_builder(&reader, None)?;
         let manifest = reader.manifest();
         let graph_bytes = reader.export_json_bytes().map_err(|error| {
             QueryError::new(
@@ -389,18 +411,15 @@ pub(crate) fn open_local_store_snapshot(
         ));
     }
     let graph_identity = reader.manifest().graph_digest.clone();
-    let build_generation_identity = reader
-        .metadata_summary()
-        .map_err(|error| {
-            QueryError::new(
-                QueryErrorKind::CorruptArtifact,
-                "store_graph_snapshot_failed",
-                error.to_string(),
-            )
-        })?
-        .graph
-        .build
-        .generation_id;
+    let metadata = reader.metadata_summary().map_err(|error| {
+        QueryError::new(
+            QueryErrorKind::CorruptArtifact,
+            "store_graph_snapshot_failed",
+            error.to_string(),
+        )
+    })?;
+    validate_builder(&metadata.graph.build.builder_version, Some(graph_path))?;
+    let build_generation_identity = metadata.graph.build.generation_id;
     let partial_graph_message = reader
         .graph_diagnostic_by_code("publication_omission_summary")
         .map_err(|error| {
@@ -425,6 +444,20 @@ pub(crate) fn open_local_store_snapshot(
         build_generation_identity,
         partial_graph_message,
     })
+}
+
+pub(crate) fn validate_reader_builder<S: Store + ?Sized>(
+    reader: &GraphSnapshotReader<'_, S>,
+    path: Option<&Path>,
+) -> Result<(), QueryError> {
+    let metadata = reader.metadata_summary().map_err(|error| {
+        QueryError::new(
+            QueryErrorKind::CorruptArtifact,
+            "store_graph_snapshot_failed",
+            error.to_string(),
+        )
+    })?;
+    validate_builder(&metadata.graph.build.builder_version, path)
 }
 
 impl GraphEngine for StoreGraphEngine {

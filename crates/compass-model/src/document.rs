@@ -744,6 +744,7 @@ impl GraphDocument {
         if path.extension().and_then(|part| part.to_str()) != Some("json") {
             return Err(GraphError::InvalidExtension(path.to_path_buf()));
         }
+        crate::artifact_compatibility::validate_graph_path_preamble(path)?;
         if let Some((size, cap)) = Self::size_cap_exceeded(path) {
             return Err(GraphError::TooLarge {
                 path: crate::graph::absolute_path(path),
@@ -779,6 +780,7 @@ impl GraphDocument {
         if path.extension().and_then(|part| part.to_str()) != Some("json") {
             return Err(GraphError::InvalidExtension(path.to_path_buf()));
         }
+        crate::artifact_compatibility::validate_graph_path_preamble(path)?;
         if let Some((size, cap)) = Self::size_cap_exceeded(path) {
             return Err(GraphError::TooLarge {
                 path: crate::graph::absolute_path(path),
@@ -816,6 +818,7 @@ impl GraphDocument {
         if path.extension().and_then(|part| part.to_str()) != Some("json") {
             return Err(GraphError::InvalidExtension(path.to_path_buf()));
         }
+        crate::artifact_compatibility::validate_graph_path_preamble(path)?;
         if let Some((size, cap)) = Self::size_cap_exceeded(path) {
             return Err(GraphError::TooLarge {
                 path: crate::graph::absolute_path(path),
@@ -852,10 +855,11 @@ impl GraphDocument {
         if !path.exists() {
             return Err(GraphError::NotFound(crate::graph::absolute_path(path)));
         }
-        let file = File::open(path).map_err(|source| GraphError::Read {
+        let mut file = File::open(path).map_err(|source| GraphError::Read {
             path: crate::graph::absolute_path(path),
             source,
         })?;
+        crate::artifact_compatibility::validate_opened_graph_preamble(&mut file, path)?;
         let cap = crate::graph::graph_size_cap();
         let size = file
             .metadata()

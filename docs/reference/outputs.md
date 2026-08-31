@@ -4,6 +4,20 @@ Compass outputs range from the current `compass-out/` directory to versioned
 CompassQL results and immutable history exports. This reference describes
 consumer responsibilities and authority.
 
+## Query artifact compatibility
+
+`graph.build.builderVersion` must identify Compass 0.3.23 or newer for release
+artifacts. JSON readers inspect a bounded 64 KiB preamble before graph arrays
+or query caches; preserve the canonical header-first ordering. Native SQLite
+and Surreal readers enforce the same boundary using generation-pinned metadata,
+even when canonical JSON is absent. Rejection occurs when loading the engine,
+not on its first traversal.
+
+The sibling `source-root.txt` supplies a recovery root only if it is a bounded,
+regular non-symlink file naming a valid absolute source directory. An absent or
+invalid file requires an explicit caller-supplied root. Rebuild with
+`compass update "<source-root>" --force`; see [migration](../../MIGRATION.md).
+
 ## Current output directory
 
 Default:

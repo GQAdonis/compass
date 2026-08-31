@@ -3,6 +3,18 @@ use std::path::PathBuf;
 /// Failures that can occur before a graph is safe to query.
 #[derive(Debug, thiserror::Error)]
 pub enum GraphError {
+    #[error(
+        "graph artifact was built by Compass {found}; minimum supported builder version is {minimum}. {recovery}"
+    )]
+    LegacyArtifact {
+        found: String,
+        minimum: &'static str,
+        recovery: String,
+    },
+    #[error(
+        "graph builder metadata was not found within the {limit}-byte load preamble. {recovery}"
+    )]
+    GraphPreambleLimit { limit: u64, recovery: String },
     #[error("Graph path must be a .json file, got: {0:?}")]
     InvalidExtension(PathBuf),
     #[error("Graph file not found: {0}")]

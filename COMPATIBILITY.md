@@ -20,6 +20,31 @@ while a fresh Compass build creates `compass-out/`; the two products do not
 share caches or mutable state. See [`MIGRATION.md`](MIGRATION.md) for the
 transition procedure.
 
+## Query artifact rebuild boundary
+
+Query artifacts built by Compass releases older than **0.3.23** (including
+0.3.23 prereleases) require a source rebuild. They are not migrated in place.
+JSON loaders inspect `graph.build.builderVersion` in at most the first 64 KiB,
+before decoding graph records, hashing the complete artifact, or using cached
+indexes. Canonical Compass JSON places this header before node/edge arrays;
+large manually reordered JSON must retain the header within that prefix.
+SQLite and Surreal engines check the pinned snapshot's bounded metadata before
+querying records, without falling back to canonical JSON.
+
+The error includes the found version, minimum supported version, and
+`compass update "<source-root>" --force`. An exact root is supplied only from
+the selected snapshot's validated sibling `source-root.txt`. Missing or invalid
+provenance explicitly requires the caller to supply the project root. The
+diagnostic never guesses a root from the current directory or graph node paths.
+Forced update rebuilds from source without loading the old query artifact.
+Historical realizations remain immutable; rebuild the active project rather
+than modifying an old realization.
+
+This is a release compatibility check, not an authenticity check. Existing
+non-release producer labels and small unversioned interchange graphs retain
+their schema validation behavior. Neither label rewriting nor index copying
+is a supported substitute for rebuilding a legacy Compass release artifact.
+
 ## VS Code extension compatibility
 
 The Compass VS Code extension requires Compass CLI 0.3.0 or newer. Releases

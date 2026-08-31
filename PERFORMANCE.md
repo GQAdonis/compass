@@ -4,6 +4,17 @@ Compass performance is measured against Compass-owned baselines. Qualification
 must never trade away graph correctness, deterministic output, resource bounds,
 or complete error reporting.
 
+## Legacy artifact load bounds
+
+Before record decoding or content-cache lookup, JSON loading reads at most
+64 KiB to inspect `graph.build.builderVersion`. A recognized legacy release
+fails immediately after that field; readers do not scan the remaining large
+node/edge arrays to diagnose incompatibility. The limit includes buffered
+read-ahead. SQLite and Surreal check their existing bounded metadata records
+instead; this adds no canonical-JSON read to native query execution. Recovery
+provenance reads are independently limited to 16 KiB. These are resource bounds,
+not wall-clock performance claims.
+
 ## Embedded Surreal qualification
 
 Remote operation uses the same bounded generation-filtered reads over a

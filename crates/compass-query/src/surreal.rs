@@ -34,17 +34,22 @@ impl std::fmt::Debug for SurrealQueryEngine {
 
 impl SurrealQueryEngine {
     pub async fn open(graph_path: &Path) -> Result<Self, QueryError> {
-        Ok(Self::open_reference(read_surreal_ref(graph_path)?)
-            .await?
-            .with_graph_path(graph_path))
+        Self::open_reference_at(read_surreal_ref(graph_path)?, Some(graph_path)).await
     }
 
     pub async fn open_reference(reference: SurrealRef) -> Result<Self, QueryError> {
+        Self::open_reference_at(reference, None).await
+    }
+
+    async fn open_reference_at(
+        reference: SurrealRef,
+        graph_path: Option<&Path>,
+    ) -> Result<Self, QueryError> {
         reference.validate().map_err(projection_error)?;
         let projection = SurrealProjection::open_reference(&reference, false)
             .await
             .map_err(projection_error)?;
-        Self::from_projection(reference, projection).await
+        Self::from_projection_at(reference, projection, graph_path).await
     }
 
     /// Construct a generation-pinned query engine from an already-open local
@@ -55,15 +60,28 @@ impl SurrealQueryEngine {
         reference: SurrealRef,
         projection: SurrealProjection,
     ) -> Result<Self, QueryError> {
+        Self::from_projection_at(reference, projection, None).await
+    }
+
+    async fn from_projection_at(
+        reference: SurrealRef,
+        projection: SurrealProjection,
+        graph_path: Option<&Path>,
+    ) -> Result<Self, QueryError> {
         reference.validate().map_err(projection_error)?;
         projection
             .validate_reference(&reference)
             .await
             .map_err(projection_error)?;
+        let metadata = projection
+            .metadata_at(&reference)
+            .await
+            .map_err(projection_error)?;
+        crate::graph_engine::validate_builder(&metadata.build.builder_version, graph_path)?;
         Ok(Self {
             reference,
             projection: Arc::new(projection),
-            graph_path: PathBuf::new(),
+            graph_path: graph_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
         })
     }
 
@@ -97,6 +115,15 @@ impl SurrealQueryEngine {
             .validate_reference(&reference)
             .await
             .map_err(projection_error)?;
+        let metadata = self
+            .projection
+            .metadata_at(&reference)
+            .await
+            .map_err(projection_error)?;
+        crate::graph_engine::validate_builder(
+            &metadata.build.builder_version,
+            Some(&self.graph_path),
+        )?;
         Ok(Self {
             reference,
             projection: Arc::clone(&self.projection),
@@ -277,9 +304,11 @@ impl SurrealQueryEngineCache {
             Arc::new(
                 entry
                     .engine
+                    .as_ref()
+                    .clone()
+                    .with_graph_path(graph_path)
                     .with_reference(reference.clone())
-                    .await?
-                    .with_graph_path(graph_path),
+                    .await?,
             )
         } else {
             if entries.len() >= MAX_SURREAL_QUERY_CONNECTIONS {
@@ -292,9 +321,7 @@ impl SurrealQueryEngineCache {
                 ));
             }
             Arc::new(
-                SurrealQueryEngine::open_reference(reference.clone())
-                    .await?
-                    .with_graph_path(graph_path),
+                SurrealQueryEngine::open_reference_at(reference.clone(), Some(graph_path)).await?,
             )
         };
         entries.insert(
