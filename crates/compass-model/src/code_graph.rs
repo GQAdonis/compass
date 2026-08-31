@@ -1027,6 +1027,11 @@ pub struct EdgeRecord {
 }
 
 impl EdgeRecord {
+    /// Convert one bounded typed row to the public CompassQL property view.
+    pub fn to_query_record(&self) -> Result<crate::EdgeRecord, GraphError> {
+        legacy_edge_record(self)
+    }
+
     #[must_use]
     pub fn has_networkx_identity(&self) -> bool {
         self.id == self.key
@@ -1122,6 +1127,11 @@ impl EdgeRecord {
 }
 
 impl NodeRecord {
+    /// Convert one bounded typed row to the public CompassQL property view.
+    pub fn to_query_record(&self) -> Result<crate::NodeRecord, GraphError> {
+        legacy_node_record(self)
+    }
+
     #[must_use]
     pub fn label(&self) -> &str {
         &self.name

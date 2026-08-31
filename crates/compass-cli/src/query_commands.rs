@@ -11,7 +11,15 @@ use compass_cypher::{
 };
 use compass_files::write_text_atomic;
 use compass_output::{render_cql_json, render_cql_jsonl, render_cql_table};
-use compass_query::{PlanCache, QueryLimits, QueryRequest, execute};
+use compass_query::{
+    EngineSelection, PlanCache, QueryLimits, QueryRequest, QueryResult, execute, open_graph_engine,
+};
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+use compass_query::{SurrealCqlRequest, SurrealQueryEngine, has_published_surreal};
 use serde_json::Value;
 
 use super::{Frontend, GraphSelection, Outcome, load_indexed_selection, parse_graph_selection};
@@ -98,6 +106,7 @@ struct CqlCliRequest {
     max_path_depth: usize,
     max_expanded_relationships: u64,
     max_memory_bytes: usize,
+    engine: EngineSelection,
 }
 
 struct CliError {
@@ -145,6 +154,7 @@ fn parse_request(
     let mut max_path_depth = 32;
     let mut max_expanded_relationships = 5_000_000;
     let mut max_memory_bytes = 256 * 1024 * 1024;
+    let mut engine = EngineSelection::Default;
     let mut index = 0;
     while index < args.len() {
         let argument = &args[index];
@@ -210,6 +220,10 @@ fn parse_request(
                 )?;
                 index += 2;
             }
+            "--engine" => {
+                engine = parse_engine(required_value(args, index, "--engine")?)?;
+                index += 2;
+            }
             value if value.starts_with("--file=") => {
                 file = Some(PathBuf::from(&value[7..]));
                 index += 1;
@@ -249,6 +263,10 @@ fn parse_request(
             }
             value if value.starts_with("--max-memory-bytes=") => {
                 max_memory_bytes = parse_number(&value[19..], "--max-memory-bytes")?;
+                index += 1;
+            }
+            value if value.starts_with("--engine=") => {
+                engine = parse_engine(&value[9..])?;
                 index += 1;
             }
             value if value.starts_with('-') => {
@@ -313,6 +331,7 @@ fn parse_request(
         max_path_depth,
         max_expanded_relationships,
         max_memory_bytes,
+        engine,
     })
 }
 
@@ -329,9 +348,34 @@ fn run_source(
     source_name: &str,
     source: &str,
 ) -> Result<String, CliError> {
-    let loaded = load_indexed_selection(Frontend::Compass, &request.graph_selection)
-        .map_err(|outcome| CliError::graph(outcome.stderr))?;
-    run_source_with_graph(request, source_name, source, &loaded.graph)
+    if matches!(request.graph_selection, GraphSelection::Commit(_)) {
+        if request.engine != EngineSelection::Default {
+            return Err(CliError::usage("--engine cannot be combined with --at"));
+        }
+        let loaded = load_indexed_selection(Frontend::Compass, &request.graph_selection)
+            .map_err(|outcome| CliError::graph(outcome.stderr))?;
+        return run_source_with_graph(request, source_name, source, &loaded.graph);
+    }
+    let GraphSelection::File(requested_path) = &request.graph_selection else {
+        unreachable!("historical selection returned above")
+    };
+    let graph_path = compass_files::BuildGuard::resolve_requested_artifact(requested_path)
+        .map_err(|error| CliError::graph(format!("could not resolve graph: {error}")))?;
+    let use_surreal = request.engine == EngineSelection::Surreal
+        || (request.engine == EngineSelection::Default && published_surreal(&graph_path));
+    if use_surreal {
+        return run_source_with_surreal(request, source_name, source, &graph_path);
+    }
+    let engine = open_graph_engine(&graph_path, request.engine)
+        .map_err(|error| CliError::graph(error.to_string()))?;
+    let legacy = engine
+        .graph()
+        .clone()
+        .into_legacy_document()
+        .map_err(|error| CliError::graph(error.to_string()))?;
+    let graph = compass_model::Graph::from_document(legacy)
+        .map_err(|error| CliError::graph(error.to_string()))?;
+    run_source_with_graph(request, source_name, source, &graph)
 }
 
 fn run_source_with_graph(
@@ -356,17 +400,7 @@ fn run_source_with_graph(
             ..CompileLimits::default()
         },
     };
-    let cache = CQL_PLAN_CACHE.get_or_init(PlanCache::default);
-    let key = plan_cache_key(compile_request);
-    let (compiled, cache_hit) = if let Some(compiled) = cache.get(&key) {
-        (compiled, true)
-    } else {
-        let compiled = Arc::new(compile(compile_request).map_err(|diagnostics| {
-            CliError::usage(format_diagnostics(source_name, source, &diagnostics))
-        })?);
-        cache.insert(key, Arc::clone(&compiled));
-        (compiled, false)
-    };
+    let (compiled, cache_hit) = compile_cached(compile_request, source_name, source)?;
     let cancellation = super::process_cancellation()
         .map_err(|error| CliError::runtime(format!("could not install Ctrl+C handler: {error}")))?;
     let mut result = execute(QueryRequest {
@@ -386,6 +420,10 @@ fn run_source_with_graph(
     if let Some(profile) = &mut result.profile {
         profile.plan_cache_hit = Some(cache_hit);
     }
+    render_result(request, result)
+}
+
+fn render_result(request: &CqlCliRequest, result: QueryResult) -> Result<String, CliError> {
     let rendered = match request.format {
         OutputFormat::Table => render_cql_table(&result),
         OutputFormat::Json => {
@@ -407,12 +445,106 @@ fn run_source_with_graph(
     }
 }
 
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn run_source_with_surreal(
+    request: &CqlCliRequest,
+    source_name: &str,
+    source: &str,
+    graph_path: &Path,
+) -> Result<String, CliError> {
+    let parameter_types = request
+        .parameters
+        .iter()
+        .map(|(name, value)| (name.clone(), value.compass_type()))
+        .collect::<ParameterTypes>();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CliError::runtime(format!("could not start Surreal runtime: {error}")))?;
+    let engine = runtime
+        .block_on(SurrealQueryEngine::open(graph_path))
+        .map_err(|error| CliError::runtime(error.to_string()))?;
+    let schema = runtime
+        .block_on(engine.schema_fingerprint())
+        .map_err(|error| CliError::runtime(error.to_string()))?;
+    let compile_request = CompileRequest {
+        source_name,
+        source,
+        parameter_types: &parameter_types,
+        schema: &schema,
+        limits: CompileLimits {
+            max_path_depth: request.max_path_depth,
+            ..CompileLimits::default()
+        },
+    };
+    let (compiled, cache_hit) = compile_cached(compile_request, source_name, source)?;
+    let cancellation = super::process_cancellation()
+        .map_err(|error| CliError::runtime(format!("could not install Ctrl+C handler: {error}")))?;
+    let mut result = runtime
+        .block_on(async {
+            engine
+                .execute_cql(SurrealCqlRequest {
+                    compiled: &compiled,
+                    parameters: &request.parameters,
+                    limits: QueryLimits {
+                        deadline: Instant::now() + request.timeout,
+                        max_rows: request.max_rows,
+                        max_path_depth: request.max_path_depth,
+                        max_expanded_relationships: request.max_expanded_relationships,
+                        max_memory_bytes: request.max_memory_bytes,
+                    },
+                    cancellation,
+                })
+                .await
+        })
+        .map_err(|error| CliError::runtime(error.to_string()))?;
+    if let Some(profile) = &mut result.profile {
+        profile.plan_cache_hit = Some(cache_hit);
+    }
+    render_result(request, result)
+}
+
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
+fn run_source_with_surreal(
+    _request: &CqlCliRequest,
+    _source_name: &str,
+    _source: &str,
+    _graph_path: &Path,
+) -> Result<String, CliError> {
+    Err(CliError::runtime(
+        "this Compass binary was built without a SurrealDB engine",
+    ))
+}
+
+fn compile_cached(
+    request: CompileRequest<'_>,
+    source_name: &str,
+    source: &str,
+) -> Result<(Arc<compass_cypher::CompiledQuery>, bool), CliError> {
+    let cache = CQL_PLAN_CACHE.get_or_init(PlanCache::default);
+    let key = plan_cache_key(request);
+    if let Some(compiled) = cache.get(&key) {
+        return Ok((compiled, true));
+    }
+    let compiled = Arc::new(compile(request).map_err(|diagnostics| {
+        CliError::usage(format_diagnostics(source_name, source, &diagnostics))
+    })?);
+    cache.insert(key, Arc::clone(&compiled));
+    Ok((compiled, false))
+}
+
 fn run_repl(request: CqlCliRequest) -> Result<String, CliError> {
     if !std::io::stdin().is_terminal() {
         return Err(CliError::usage("--repl requires an interactive terminal"));
     }
-    let loaded = load_indexed_selection(Frontend::Compass, &request.graph_selection)
-        .map_err(|outcome| CliError::graph(outcome.stderr))?;
     let mut transcript = Vec::new();
     let mut buffer = String::new();
     loop {
@@ -442,7 +574,7 @@ fn run_repl(request: CqlCliRequest) -> Result<String, CliError> {
         }
         buffer.push_str(&line);
         if trimmed.ends_with(';') {
-            match run_source_with_graph(&request, "<repl>", &buffer, &loaded.graph) {
+            match run_source(&request, "<repl>", &buffer) {
                 Ok(output) => transcript.push(output),
                 Err(error) => transcript.push(error.message),
             }
@@ -596,6 +728,36 @@ fn parse_format(raw: &str) -> Result<OutputFormat, CliError> {
         "jsonl" => Ok(OutputFormat::Jsonl),
         _ => Err(CliError::usage("--format must be table, json, or jsonl")),
     }
+}
+
+fn parse_engine(raw: &str) -> Result<EngineSelection, CliError> {
+    match raw {
+        "default" => Ok(EngineSelection::Default),
+        "json" => Ok(EngineSelection::Json),
+        "store" | "sqlite" => Ok(EngineSelection::Store),
+        "surreal" => Ok(EngineSelection::Surreal),
+        _ => Err(CliError::usage(
+            "--engine must be default, json, store, or surreal",
+        )),
+    }
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn published_surreal(graph_path: &Path) -> bool {
+    has_published_surreal(graph_path)
+}
+
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
+fn published_surreal(_graph_path: &Path) -> bool {
+    false
 }
 
 fn format_diagnostics(

@@ -180,6 +180,26 @@ fn invalid_graph_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn projection_requires_non_empty_generation_and_source_tree_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut graph = semantic_graph()?;
+    graph.graph.build.generation_id.clear();
+    assert!(matches!(
+        ProjectionPlan::from_graph("repo", &graph),
+        Err(ProjectionError::EmptyGenerationId)
+    ));
+
+    let mut graph = semantic_graph()?;
+    graph.graph.build.source_tree_digest = "  ".to_owned();
+    assert!(matches!(
+        ProjectionPlan::from_graph("repo", &graph),
+        Err(ProjectionError::InvalidPlan(message))
+            if message.contains("source tree digest")
+    ));
+    Ok(())
+}
+
+#[test]
 fn projection_limits_are_positive_and_match_qualification_defaults() {
     assert!(matches!(
         ProjectionLimits::new(0, 1, 1),

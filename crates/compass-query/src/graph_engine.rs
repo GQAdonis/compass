@@ -453,6 +453,11 @@ pub fn open_graph_engine(
             Ok(Box::new(JsonGraphEngine::open(graph_path)?))
         }
         EngineSelection::Store => Ok(Box::new(StoreGraphEngine::open(graph_path)?)),
+        EngineSelection::Surreal => Err(QueryError::new(
+            QueryErrorKind::InvalidParameter,
+            "surreal_requires_native_engine",
+            "Surreal queries use the generation-pinned native engine",
+        )),
     }
 }
 

@@ -49,19 +49,14 @@ class OracleError(RuntimeError):
     """A bounded source-oracle failure."""
 
 
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+TARGET_ROOT = Path(os.environ.get("CARGO_TARGET_DIR", WORKSPACE_ROOT / "target")).expanduser()
+if not TARGET_ROOT.is_absolute():
+    TARGET_ROOT = WORKSPACE_ROOT / TARGET_ROOT
+PROVIDER_BIN_ROOT = TARGET_ROOT.resolve() / "providers" / "bin"
 PROVIDER_DEFAULTS = {
-    "swift": Path(
-        "/Volumes/Workspace/crabbuild-target/compass-main/providers/bin/compass-swift-oracle"
-    ),
-    "dart": Path(
-        "/Volumes/Workspace/crabbuild-target/compass-main/providers/bin/compass-dart-oracle"
-    ),
-    "scala": Path(
-        "/Volumes/Workspace/crabbuild-target/compass-main/providers/bin/compass-scala-oracle"
-    ),
-    "groovy": Path(
-        "/Volumes/Workspace/crabbuild-target/compass-main/providers/bin/compass-groovy-oracle"
-    ),
+    language: PROVIDER_BIN_ROOT / f"compass-{language}-oracle"
+    for language in ("swift", "dart", "scala", "groovy")
 }
 
 

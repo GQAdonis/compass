@@ -11,17 +11,18 @@ case "${1:-}" in
     ;;
 esac
 
-if [ -z "${CARGO_TARGET_DIR:-}" ]; then
-  echo "CARGO_TARGET_DIR must name this checkout's directory under /Volumes/Workspace/crabbuild-target" >&2
+workspace_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$workspace_root/target}
+case "$CARGO_TARGET_DIR" in
+  /*) ;;
+  *) CARGO_TARGET_DIR="$workspace_root/$CARGO_TARGET_DIR" ;;
+esac
+export CARGO_TARGET_DIR
+mkdir -p "$CARGO_TARGET_DIR"
+if [ ! -d "$CARGO_TARGET_DIR" ] || [ ! -w "$CARGO_TARGET_DIR" ]; then
+  echo "CARGO_TARGET_DIR is not writable: $CARGO_TARGET_DIR" >&2
   exit 2
 fi
-case "$CARGO_TARGET_DIR" in
-  /Volumes/Workspace/crabbuild-target/*) ;;
-  *)
-    echo "CARGO_TARGET_DIR must be below /Volumes/Workspace/crabbuild-target" >&2
-    exit 2
-    ;;
-esac
 
 cargo test -p compass-ocr -p compass-media --lib --locked
 cargo test -p compass-core document --lib --locked

@@ -2,7 +2,12 @@
 set -euo pipefail
 
 QUALIFY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/Volumes/Workspace/crabbuild-target/compass-main}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$QUALIFY_ROOT/target}"
+case "$CARGO_TARGET_DIR" in
+  /*) ;;
+  *) CARGO_TARGET_DIR="$QUALIFY_ROOT/$CARGO_TARGET_DIR" ;;
+esac
+export CARGO_TARGET_DIR
 
 usage() {
   echo "usage: $0 --fixtures-only" >&2
@@ -10,8 +15,9 @@ usage() {
 }
 
 [[ "${1:-}" == "--fixtures-only" && "$#" -eq 1 ]] || usage
-[[ -d /Volumes/Workspace && -w /Volumes/Workspace/crabbuild-target ]] || {
-  echo "[agent-graph] /Volumes/Workspace/crabbuild-target is unavailable" >&2
+mkdir -p "$CARGO_TARGET_DIR"
+[[ -d "$CARGO_TARGET_DIR" && -w "$CARGO_TARGET_DIR" ]] || {
+  echo "[agent-graph] target directory is not writable: $CARGO_TARGET_DIR" >&2
   exit 1
 }
 

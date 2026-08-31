@@ -3,12 +3,74 @@ use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
-use crate::code_graph::{EdgeKind, GraphDocument};
+use crate::code_graph::{EdgeKind, GraphDocument, NodeRecord};
 use crate::provenance::{EvidenceConfidence, EvidenceOrigin};
 
 pub const OPERATION_ROLE_TOKENS: &[&str] = &[
     "builder", "factory", "handler", "manager", "provider", "service",
 ];
+
+/// Canonical searchable terms shared by every persisted query projection.
+/// Alias terms are added by the graph-level publisher after relation identity
+/// has been resolved; this function covers the node's own typed fields.
+#[must_use]
+pub fn searchable_node_terms(node: &NodeRecord) -> BTreeSet<String> {
+    let mut terms = BTreeSet::new();
+    terms.extend(token_search_terms(&node.name));
+    terms.extend(token_search_terms(&node.qualified_name));
+    terms.extend(identifier_search_terms(&node.name));
+    terms.extend(identifier_search_terms(&node.qualified_name));
+    terms.extend(token_search_terms(node.kind.as_str()));
+    for role in &node.roles {
+        terms.extend(token_search_terms(&format!("{role:?}")));
+    }
+    if let Some(language) = &node.language {
+        terms.extend(token_search_terms(language));
+    }
+    if let Some(framework) = &node.framework {
+        terms.extend(token_search_terms(framework));
+    }
+    if let Some(source) = &node.source {
+        terms.extend(token_search_terms(&source.file));
+    }
+    if let Some(community) = &node.community {
+        terms.extend(token_search_terms(&community.id.to_string()));
+        if let Some(label) = &community.label {
+            terms.extend(token_search_terms(label));
+        }
+    }
+    if let Some(path) = node
+        .details
+        .as_ref()
+        .and_then(|details| serde_json::to_value(details).ok())
+        .and_then(|value| {
+            value
+                .get("data")
+                .and_then(|data| data.get("path"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+    {
+        terms.extend(token_search_terms(&path));
+    }
+    terms
+}
+
+/// Diacritic-insensitive full-token terms used by persisted search indexes.
+pub fn token_search_terms(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|term| !term.is_empty())
+        .filter_map(|term| {
+            let normalized = term
+                .trim()
+                .nfkd()
+                .filter(|character| !is_combining_mark(*character))
+                .collect::<String>()
+                .to_lowercase();
+            (!normalized.is_empty()).then_some(normalized)
+        })
+}
 
 /// Return deterministic normalized full and identifier-subword terms.
 ///

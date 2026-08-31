@@ -1,9 +1,17 @@
-# Optional Surreal graph projection
+# Optional Surreal graph projection foundation
 
-`compass-graphdb-surreal` is an additive library integration. It projects one
-validated, immutable `compass.graph/1` document into SurrealDB while the normal
-JSON/SQLite realization remains canonical and fully supported. No CLI or MCP
-route selects this adapter yet.
+This document records the earlier C-014 library foundation and its original
+pointer-based `compass.graph.surreal/1` contract. It is historical implementation
+evidence, not the current CLI/MCP support matrix.
+
+The fully wired implementation uses `compass.graph.surreal/2` and
+`compass.surreal.ref/1`. Core stages and validates complete node, relationship,
+and file payloads before filesystem publication; queries pin the reference's
+generation, not the mutable pointer. CLI, MCP, typed query semantics, lazy
+native CompassQL, configuration v2, and portable backup/restore are described
+in the [embedded Surreal guide](../guides/surrealdb.md). Default builds remain
+SurrealDB-free. The sections below describe the foundation unless explicitly
+noted otherwise.
 
 ## Dependency and engine boundary
 

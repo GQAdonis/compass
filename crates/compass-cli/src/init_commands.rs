@@ -5,17 +5,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use compass_core::{GraphStorage, InferenceLevel};
+use compass_core::{GraphStorage, InferenceLevel, SurrealStorageEngine};
 use compass_files::{
     BuildScope, DetectOptions, Detection, PROJECT_CONFIG_RELATIVE_PATH, ProjectConfig,
-    ScopeMatcher, detect,
+    ProjectStorage, ProjectStore, ProjectSurrealEngine, ScopeMatcher, detect,
 };
 
 use crate::ide_contract::{PROGRESS_SCHEMA, ProgressEvent, ProgressState, ProgressWriter};
-use crate::parse_inference_level;
 use crate::{
     BuildOperation, Frontend, Outcome, command_build_with_precomputed_detection, write_outcome,
 };
+use crate::{parse_inference_level, parse_surreal_engine, surreal_engine_available};
 
 struct InitOptions {
     root: PathBuf,
@@ -26,6 +26,8 @@ struct InitOptions {
     timing: bool,
     program: bool,
     graph_storage: GraphStorage,
+    surreal_engine: SurrealStorageEngine,
+    surreal_path: Option<PathBuf>,
     inference_level: InferenceLevel,
 }
 
@@ -231,12 +233,47 @@ fn run_init_with_builder(
         return 1;
     }
 
-    let config = match ProjectConfig::new(BuildScope {
+    let mut config = ProjectConfig::new(BuildScope {
         include: options.includes,
         exclude: options.excludes,
-    })
-    .normalize(&root)
-    {
+    });
+    config.storage = ProjectStorage {
+        store: Some(match options.graph_storage {
+            GraphStorage::Json => ProjectStore::Json,
+            GraphStorage::Sqlite => ProjectStore::Sqlite,
+            GraphStorage::Surreal => ProjectStore::Surreal,
+        }),
+        surreal_engine: (options.graph_storage == GraphStorage::Surreal).then_some(
+            match options.surreal_engine {
+                SurrealStorageEngine::SurrealKv => ProjectSurrealEngine::SurrealKv,
+                SurrealStorageEngine::RocksDb => ProjectSurrealEngine::RocksDb,
+                SurrealStorageEngine::Remote => ProjectSurrealEngine::Remote,
+            },
+        ),
+        surreal_path: options.surreal_path.clone(),
+        surreal_endpoint: (options.surreal_engine == SurrealStorageEngine::Remote)
+            .then(|| {
+                compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|s| s.endpoint.clone())
+            })
+            .flatten(),
+        surreal_namespace: (options.surreal_engine == SurrealStorageEngine::Remote)
+            .then(|| {
+                compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|s| s.namespace.clone())
+            })
+            .flatten(),
+        surreal_database: (options.surreal_engine == SurrealStorageEngine::Remote)
+            .then(|| {
+                compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|s| s.database.clone())
+            })
+            .flatten(),
+    };
+    let config = match config.normalize(&root) {
         Ok(config) => config,
         Err(error) => {
             let _ = writeln!(stderr, "error: {error}");
@@ -342,8 +379,26 @@ fn run_init_with_builder(
     if options.program {
         build_arguments.push("--program".to_owned());
     }
-    if options.graph_storage == GraphStorage::Sqlite {
-        build_arguments.extend(["--store".to_owned(), "sqlite".to_owned()]);
+    build_arguments.extend([
+        "--store".to_owned(),
+        match options.graph_storage {
+            GraphStorage::Json => "json",
+            GraphStorage::Sqlite => "sqlite",
+            GraphStorage::Surreal => "surreal",
+        }
+        .to_owned(),
+    ]);
+    if options.graph_storage == GraphStorage::Surreal {
+        build_arguments.extend([
+            "--surreal-engine".to_owned(),
+            options.surreal_engine.as_str().to_owned(),
+        ]);
+        if let Some(path) = &options.surreal_path {
+            build_arguments.extend([
+                "--surreal-path".to_owned(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
     }
     append_inference_level_argument(&mut build_arguments, options.inference_level);
     let outcome = build(&root, &build_arguments, detection, operation_started);
@@ -425,9 +480,12 @@ fn parse(args: &[String]) -> Result<InitOptions, String> {
         timing: false,
         program: false,
         graph_storage: GraphStorage::default(),
+        surreal_engine: SurrealStorageEngine::default(),
+        surreal_path: None,
         inference_level: InferenceLevel::default(),
     };
     let mut root_seen = false;
+    let mut surreal_engine_explicit = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -438,12 +496,40 @@ fn parse(args: &[String]) -> Result<InitOptions, String> {
             "--store" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
-                    return Err("error: --store requires json or sqlite".to_owned());
+                    return Err("error: --store requires json, sqlite, or surreal".to_owned());
                 };
                 options.graph_storage = parse_graph_storage(value)?;
             }
             value if value.starts_with("--store=") => {
                 options.graph_storage = parse_graph_storage(&value[8..])?;
+            }
+            "--surreal-engine" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    return Err(
+                        "error: --surreal-engine requires surrealkv, rocksdb, or remote".to_owned(),
+                    );
+                };
+                options.surreal_engine = parse_surreal_engine(value)?;
+                surreal_engine_explicit = true;
+            }
+            value if value.starts_with("--surreal-engine=") => {
+                options.surreal_engine = parse_surreal_engine(&value[17..])?;
+                surreal_engine_explicit = true;
+            }
+            "--surreal-path" => {
+                index += 1;
+                let Some(value) = args.get(index).filter(|value| !value.is_empty()) else {
+                    return Err("error: --surreal-path requires a path".to_owned());
+                };
+                options.surreal_path = Some(PathBuf::from(value));
+            }
+            value if value.starts_with("--surreal-path=") => {
+                let value = &value[15..];
+                if value.is_empty() {
+                    return Err("error: --surreal-path requires a path".to_owned());
+                }
+                options.surreal_path = Some(PathBuf::from(value));
             }
             "--inference-level" => {
                 index += 1;
@@ -494,6 +580,21 @@ fn parse(args: &[String]) -> Result<InitOptions, String> {
         }
         index += 1;
     }
+    if options.graph_storage != GraphStorage::Surreal
+        && (options.surreal_path.is_some() || surreal_engine_explicit)
+    {
+        return Err(
+            "error: --surreal-engine and --surreal-path require --store surreal".to_owned(),
+        );
+    }
+    if options.graph_storage == GraphStorage::Surreal
+        && !surreal_engine_available(options.surreal_engine)
+    {
+        return Err(format!(
+            "error: Surreal {} support is unavailable in this Compass build",
+            options.surreal_engine.as_str()
+        ));
+    }
     Ok(options)
 }
 
@@ -501,8 +602,9 @@ fn parse_graph_storage(value: &str) -> Result<GraphStorage, String> {
     match value {
         "json" => Ok(GraphStorage::Json),
         "sqlite" => Ok(GraphStorage::Sqlite),
+        "surreal" => Ok(GraphStorage::Surreal),
         _ => Err(format!(
-            "error: --store must be json or sqlite (found {value})"
+            "error: --store must be json, sqlite, or surreal (found {value})"
         )),
     }
 }

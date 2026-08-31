@@ -13,17 +13,21 @@ categories.workspace = true
 
 [features]
 default = []
-mem = ["dep:surrealdb", "surrealdb/kv-mem"]
-surrealkv = ["dep:surrealdb", "surrealdb/kv-surrealkv"]
-rocksdb = ["dep:surrealdb", "surrealdb/kv-rocksdb"]
+mem = ["dep:surrealdb", "dep:tokio", "surrealdb/kv-mem"]
+remote = ["dep:surrealdb", "dep:tokio", "dep:rustls", "surrealdb/protocol-ws", "surrealdb/rustls"]
+surrealkv = ["dep:surrealdb", "dep:tokio", "surrealdb/kv-surrealkv"]
+rocksdb = ["dep:surrealdb", "dep:tokio", "surrealdb/kv-rocksdb"]
 
 [dependencies]
+compass-files = { path = "../compass-files", version = "0.3.23" }
 compass-model = { path = "../compass-model", version = "0.3.23" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 surrealdb = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
 compass-query = { path = "../compass-query", version = "0.3.23" }

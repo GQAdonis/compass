@@ -324,7 +324,7 @@ mapping.
 ### `compass-graphdb-surreal`
 
 Owns the optional SurrealDB projection boundary. Its default feature set builds
-only a deterministic projection plan; explicit `mem`, `surrealkv`, or `rocksdb`
+only a deterministic projection plan; explicit `mem`, `surrealkv`, `rocksdb`, or `remote`
 features add the pinned SDK runtime, schemafull relation tables, and atomic
 generation activation. It contains no CLI or MCP presentation logic.
 

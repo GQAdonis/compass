@@ -7,6 +7,12 @@ use compass_model::query_contract::{
 use compass_query::{
     EngineSelection, NaturalQueryRequest, open_with_engine, open_with_verified_document,
 };
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+use compass_query::{SurrealQueryEngine, has_published_surreal};
 
 use crate::Outcome;
 
@@ -50,9 +56,10 @@ fn execute(operation: &str, args: &[String]) -> Result<CodeQueryResponse, String
         Some("default") => EngineSelection::Default,
         Some("json") => EngineSelection::Json,
         Some("store") => EngineSelection::Store,
+        Some("surreal") => EngineSelection::Surreal,
         Some(value) => {
             return Err(format!(
-                "--engine must be default, json, or store (found {value})"
+                "--engine must be default, json, store, or surreal (found {value})"
             ));
         }
         None => EngineSelection::Default,
@@ -69,6 +76,20 @@ fn execute(operation: &str, args: &[String]) -> Result<CodeQueryResponse, String
         .map(PathBuf::from)
         .map(resolve_snapshot_artifact)
         .transpose()?;
+    let limits = limits(args)?;
+    if revision.is_none() {
+        let graph = if graph_option.is_some() {
+            resolve_snapshot_artifact(requested_graph.clone())?
+        } else {
+            compass_files::BuildGuard::resolve_artifact(&output, "graph.json")
+                .map_err(|error| error.to_string())?
+        };
+        let use_surreal = engine == EngineSelection::Surreal
+            || (engine == EngineSelection::Default && published_surreal(&graph));
+        if use_surreal {
+            return execute_surreal(operation, args, &positional, &graph, limits);
+        }
+    }
     let engine = if let Some(revision) = revision {
         let (realization, document) = super::history_commands::load_typed_graph_at(revision)?;
         let current = std::env::current_dir().map_err(|error| error.to_string())?;
@@ -100,7 +121,6 @@ fn execute(operation: &str, args: &[String]) -> Result<CodeQueryResponse, String
         open_with_engine(&graph, program.as_deref(), &cache, engine)
             .map_err(|error| error.to_string())?
     };
-    let limits = limits(args)?;
     match operation {
         "ask" => engine.query_natural(NaturalQueryRequest {
             question: required(&positional, 0, "ask <QUESTION>")?.to_owned(),
@@ -141,6 +161,131 @@ fn execute(operation: &str, args: &[String]) -> Result<CodeQueryResponse, String
         _ => unreachable!(),
     }
     .map_err(|error| error.to_string())
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn published_surreal(graph: &std::path::Path) -> bool {
+    has_published_surreal(graph)
+}
+
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
+fn published_surreal(_graph: &std::path::Path) -> bool {
+    false
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn execute_surreal(
+    operation: &str,
+    args: &[String],
+    positional: &[String],
+    graph: &std::path::Path,
+    limits: CodeQueryLimits,
+) -> Result<CodeQueryResponse, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("create Surreal runtime: {error}"))?;
+    runtime.block_on(async {
+        let engine = SurrealQueryEngine::open(graph)
+            .await
+            .map_err(|error| error.to_string())?;
+        let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
+        match operation {
+            "ask" => {
+                engine
+                    .query_natural(NaturalQueryRequest {
+                        question: required(positional, 0, "ask <QUESTION>")?.to_owned(),
+                        include_heuristic,
+                        limits,
+                    })
+                    .await
+            }
+            "search" => {
+                engine
+                    .search(SearchRequest {
+                        query: required(positional, 0, "search <QUERY>")?.to_owned(),
+                        limits,
+                    })
+                    .await
+            }
+            "callers" => {
+                engine
+                    .callers(CallRequest {
+                        symbol: required(positional, 0, "callers <SYMBOL>")?.to_owned(),
+                        include_heuristic,
+                        limits,
+                    })
+                    .await
+            }
+            "callees" => {
+                engine
+                    .callees(CallRequest {
+                        symbol: required(positional, 0, "callees <SYMBOL>")?.to_owned(),
+                        include_heuristic,
+                        limits,
+                    })
+                    .await
+            }
+            "impact" => {
+                engine
+                    .impact(ImpactRequest {
+                        symbol: required(positional, 0, "impact <SYMBOL>")?.to_owned(),
+                        include_heuristic,
+                        limits,
+                    })
+                    .await
+            }
+            "explore" => {
+                engine
+                    .explore(ExploreRequest {
+                        symbols: positional.to_vec(),
+                        root: option(args, "--root").unwrap_or_default().to_owned(),
+                        include_heuristic,
+                        limits,
+                    })
+                    .await
+            }
+            "node" => {
+                engine
+                    .node_trail(NodeTrailRequest {
+                        source: required(positional, 0, "node <SOURCE> <TARGET>")?.to_owned(),
+                        target: required(positional, 1, "node <SOURCE> <TARGET>")?.to_owned(),
+                        include_heuristic,
+                        limits,
+                    })
+                    .await
+            }
+            _ => unreachable!(),
+        }
+        .map_err(|error| error.to_string())
+    })
+}
+
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
+fn execute_surreal(
+    _operation: &str,
+    _args: &[String],
+    _positional: &[String],
+    _graph: &std::path::Path,
+    _limits: CodeQueryLimits,
+) -> Result<CodeQueryResponse, String> {
+    Err("Surreal query support is unavailable in this Compass build".to_owned())
 }
 
 fn resolve_snapshot_artifact(path: PathBuf) -> Result<PathBuf, String> {

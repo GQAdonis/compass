@@ -170,13 +170,13 @@ const PAGES: &[Page] = &[
         "context",
         "Compose bounded, verified evidence for a coding task",
         ["compass context <explain|modify|debug|test> <TARGET> [OPTIONS]"],
-        "Arguments:\n  <INTENT>                 Task intent: explain, modify, debug, or test\n  <TARGET>                 Exact symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>           Graph JSON [default: compass-out/graph.json]\n  --program <PATH>         Optional Program IR bundle\n  --root <PATH>            Repository root for digest-verified source [default: current directory]\n  --memory <PATH>          Reflection memory directory [default: GRAPH_DIR/memory]\n  --engine <default|json|store> Query backend [default: default]\n  --format <text|json>     Output format [default: text]\n  --agent-overlay <ID>     Exact Agent Graph overlay; requires --agent-revision\n  --agent-revision <DIGEST> Exact immutable Overlay Revision\n  --agent-profile <PROFILE> augment or curated [default: augment]\n  --agent-state-root <PATH> Explicit Agent Graph state root outside Git\n  --max-depth <N>          Maximum impact depth\n  --max-nodes <N>          Maximum nodes per evidence query\n  --max-edges <N>          Maximum edges per evidence query\n  --max-paths <N>          Maximum paths per evidence query\n  --max-candidates <N>     Maximum target candidates\n  --max-source-bytes <N>   Maximum verified source bytes\n  --max-knowledge-items <N> Maximum linked memory/Agent records\n  --max-response-bytes <N> Maximum composed response bytes\n\nExamples:\n  compass context explain crate::Parser::parse\n  compass context modify symbol-id --format json\n\nNotes:\n  Fuzzy candidates are suggestions only. Compass composes structural evidence only after one exact identity resolves; ambiguity is never resolved by first match. Agent knowledge requires both exact overlay selectors and remains separate from Base provenance."
+        "Arguments:\n  <INTENT>                 Task intent: explain, modify, debug, or test\n  <TARGET>                 Exact symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>           Graph JSON [default: compass-out/graph.json]\n  --program <PATH>         Optional Program IR bundle\n  --root <PATH>            Repository root for digest-verified source [default: current directory]\n  --memory <PATH>          Reflection memory directory [default: GRAPH_DIR/memory]\n  --engine <default|json|store|surreal> Query backend [default: default]\n  --format <text|json>     Output format [default: text]\n  --agent-overlay <ID>     Exact Agent Graph overlay; requires --agent-revision\n  --agent-revision <DIGEST> Exact immutable Overlay Revision\n  --agent-profile <PROFILE> augment or curated [default: augment]\n  --agent-state-root <PATH> Explicit Agent Graph state root outside Git\n  --max-depth <N>          Maximum impact depth\n  --max-nodes <N>          Maximum nodes per evidence query\n  --max-edges <N>          Maximum edges per evidence query\n  --max-paths <N>          Maximum paths per evidence query\n  --max-candidates <N>     Maximum target candidates\n  --max-source-bytes <N>   Maximum verified source bytes\n  --max-knowledge-items <N> Maximum linked memory/Agent records\n  --max-response-bytes <N> Maximum composed response bytes\n\nExamples:\n  compass context explain crate::Parser::parse\n  compass context modify symbol-id --format json\n\nNotes:\n  Fuzzy candidates are suggestions only. Compass composes structural evidence only after one exact identity resolves; ambiguity is never resolved by first match. Agent knowledge requires both exact overlay selectors and remains separate from Base provenance."
     ),
     page!(
         "ask",
         "Route a natural-language question to a typed code-graph query",
         ["compass ask <QUESTION> [OPTIONS]"],
-        "Arguments:\n  <QUESTION>                    Natural-language code-graph question\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --at <REV>                    Use an immutable trusted revision graph\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-depth <N>               Traversal radius\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --max-paths <N>               Path bound\n  --max-candidates <N>          Candidate bound\n  --include-heuristic           Include heuristic evidence\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass ask \"who calls PaymentService.charge?\"\n  compass ask \"what does CheckoutController.create call?\" --format json\n  compass ask \"path from CheckoutController.create to PaymentGateway.charge\"\n  compass ask \"who calls PaymentService.charge?\" --at HEAD~2 --format json\n\nNotes:\n  High-confidence callers, callees, impact, and path questions route to the matching typed operation. Contradictory or low-confidence input falls back to bounded symbol search. --at is mutually exclusive with --graph, --program, --cache, and --engine. The response uses compass.query/1."
+        "Arguments:\n  <QUESTION>                    Natural-language code-graph question\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --at <REV>                    Use an immutable trusted revision graph\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store|surreal> Graph storage engine [default: default]\n  --max-depth <N>               Traversal radius\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --max-paths <N>               Path bound\n  --max-candidates <N>          Candidate bound\n  --include-heuristic           Include heuristic evidence\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass ask \"who calls PaymentService.charge?\"\n  compass ask \"what does CheckoutController.create call?\" --format json\n  compass ask \"path from CheckoutController.create to PaymentGateway.charge\"\n  compass ask \"who calls PaymentService.charge?\" --at HEAD~2 --format json\n\nNotes:\n  High-confidence callers, callees, impact, and path questions route to the matching typed operation. Contradictory or low-confidence input falls back to bounded symbol search. --at is mutually exclusive with --graph, --program, --cache, and --engine. The response uses compass.query/1."
     ),
     page!(
         "call-graph",
@@ -314,37 +314,37 @@ const PAGES: &[Page] = &[
         "search",
         "Search typed code symbols by name",
         ["compass search <QUERY> [OPTIONS]"],
-        "Arguments:\n  <QUERY>                       Symbol name or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-candidates <N>          Candidate bound\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass search PaymentService\n  compass search checkout --format json\n\nNotes:\n  Search uses the versioned compass.query/1 response contract in both formats."
+        "Arguments:\n  <QUERY>                       Symbol name or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store|surreal> Graph storage engine [default: default]\n  --max-candidates <N>          Candidate bound\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass search PaymentService\n  compass search checkout --format json\n\nNotes:\n  Search uses the versioned compass.query/1 response contract in both formats."
     ),
     page!(
         "callers",
         "List direct callers of a typed symbol",
         ["compass callers <SYMBOL> [OPTIONS]"],
-        "Arguments:\n  <SYMBOL>                      Symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass callers PaymentService.charge\n  compass callers sym:checkout --format json"
+        "Arguments:\n  <SYMBOL>                      Symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store|surreal> Graph storage engine [default: default]\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass callers PaymentService.charge\n  compass callers sym:checkout --format json"
     ),
     page!(
         "callees",
         "List direct callees of a typed symbol",
         ["compass callees <SYMBOL> [OPTIONS]"],
-        "Arguments:\n  <SYMBOL>                      Symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass callees CheckoutController.create\n  compass callees sym:checkout --format json"
+        "Arguments:\n  <SYMBOL>                      Symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store|surreal> Graph storage engine [default: default]\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass callees CheckoutController.create\n  compass callees sym:checkout --format json"
     ),
     page!(
         "impact",
         "Compute the bounded transitive impact of a symbol",
         ["compass impact <SYMBOL> [OPTIONS]"],
-        "Arguments:\n  <SYMBOL>                      Changed symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-depth <N>               Traversal radius\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Traverse heuristic evidence\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass impact PaymentGateway --max-depth 3\n  compass impact sym:gateway --include-heuristic --format json"
+        "Arguments:\n  <SYMBOL>                      Changed symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store|surreal> Graph storage engine [default: default]\n  --max-depth <N>               Traversal radius\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Traverse heuristic evidence\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass impact PaymentGateway --max-depth 3\n  compass impact sym:gateway --include-heuristic --format json"
     ),
     page!(
         "explore",
         "Return related source grouped by file with connecting paths",
         ["compass explore <SYMBOL> [SYMBOL...] [OPTIONS]"],
-        "Arguments:\n  <SYMBOL...>                   Symbol IDs, names, or qualified names\n\nOptions:\n  --root <PATH>                 Repository root used to read source\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-paths <N>               Path bound\n  --max-source-bytes <N>        Source-byte bound\n  --max-response-bytes <N>      Serialized response bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass explore CheckoutController PaymentGateway --root .\n  compass explore sym:a sym:b --root . --format json"
+        "Arguments:\n  <SYMBOL...>                   Symbol IDs, names, or qualified names\n\nOptions:\n  --root <PATH>                 Repository root used to read source\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store|surreal> Graph storage engine [default: default]\n  --max-paths <N>               Path bound\n  --max-source-bytes <N>        Source-byte bound\n  --max-response-bytes <N>      Serialized response bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass explore CheckoutController PaymentGateway --root .\n  compass explore sym:a sym:b --root . --format json"
     ),
     page!(
         "node",
         "Show a bounded evidence trail between two symbols",
         ["compass node <SOURCE> <TARGET> [OPTIONS]"],
-        "Arguments:\n  <SOURCE>                      Trail origin symbol\n  <TARGET>                      Trail destination symbol\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-depth <N>               Traversal radius\n  --max-paths <N>               Path bound\n  --include-heuristic           Include heuristic evidence\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass node route:/checkout CheckoutController.create\n  compass node sym:a sym:b --include-heuristic --format json"
+        "Arguments:\n  <SOURCE>                      Trail origin symbol\n  <TARGET>                      Trail destination symbol\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store|surreal> Graph storage engine [default: default]\n  --max-depth <N>               Traversal radius\n  --max-paths <N>               Path bound\n  --include-heuristic           Include heuristic evidence\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass node route:/checkout CheckoutController.create\n  compass node sym:a sym:b --include-heuristic --format json"
     ),
     page!(
         "query",
@@ -1142,6 +1142,54 @@ fn render_page(page: &Page, style: HelpStyle) -> String {
     } else {
         details
     };
+    let mut details = details
+        .replace("<default|json|store>", "<default|json|store|surreal>")
+        .replace("<json|sqlite>", "<json|sqlite|surreal>");
+    if matches!(page.path, "init" | "update" | "extract" | "watch") {
+        details = details.replace(
+            "Graph storage [default: sqlite]",
+            "Graph storage [default: sqlite]\n  --surreal-engine <ENGINE>   surrealkv, rocksdb, or remote [default: surrealkv]\n  --surreal-path <PATH>       Embedded database location [default: compass-out/surreal]",
+        );
+    }
+    if matches!(
+        page.path.split_whitespace().next(),
+        Some(
+            "init"
+                | "update"
+                | "extract"
+                | "watch"
+                | "ask"
+                | "search"
+                | "callers"
+                | "callees"
+                | "impact"
+                | "explore"
+                | "node"
+                | "query"
+                | "context"
+                | "serve"
+                | "store"
+        )
+    ) {
+        details.push_str("\n\nSurreal connection (optional):\n  --surreal-config <YAML>       Configuration file (default: ~/.compass/surreal.yaml)\n  --surreal-endpoint <URL>      Standalone server; ws/wss or http/https\n  --surreal-namespace <NAME>    Server namespace [default: compass]\n  --surreal-database <NAME>     Server database [default: graph]\n  --surreal-auth-level <LEVEL>  root, namespace, or database [default: root]\n  --surreal-username <USER>     Authentication username\n  --surreal-password-env <VAR>  Read password from a named environment variable\n  --surreal-token-env <VAR>     Read bearer token from a named environment variable\n  --surreal-password <VALUE>   Direct password (prefer environment to process arguments)\n  --surreal-token <VALUE>      Direct bearer token (prefer environment)\n  Precedence: flags > COMPASS_SURREAL_* environment > YAML > project > defaults.\n  Remote references must match the configured target; no query fallback.");
+    }
+    if page.path == "query" {
+        details = details.replace(
+            "--graph <PATH>                  Read a graph JSON file",
+            "--graph <PATH>                  Read the selected active graph artifact\n  --engine <default|json|store|surreal> Query engine [default: default]",
+        );
+    }
+    if page.path == "store" {
+        details = details
+            .replace(
+                "--format <text|json>     Output format [default: text]",
+                "--format <text|json>     Output format [default: text]\n  --engine <sqlite|surreal>  Select an operational backend; default prefers surreal.ref",
+            )
+            .replace(
+                "Backup and restore are SQLite local operations.",
+                "Backup and restore support SQLite and portable, digest-bound Surreal projection bundles.",
+            );
+    }
     if !details.is_empty() {
         output.push_str("\n\n");
         output.push_str(&details);

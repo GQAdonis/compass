@@ -5,6 +5,39 @@ sidecars. Its output root now preserves the familiar flat artifact shape so
 file-based workflows can transition while Compass's snapshot and store
 layout remains visible and clearly owned.
 
+## Enable embedded SurrealDB
+
+To use a standalone server as well, install with
+`--features surreal-surrealkv,surreal-remote`. Configure a dedicated namespace
+and database through `--surreal-config connection.yaml`, environment settings,
+or flags, then run `compass update . --store surreal --surreal-engine remote`.
+The server is contacted over its API; never point `--surreal-path` at a running
+server's storage files. Existing embedded references need no migration.
+See the [Surreal guide](docs/guides/surrealdb.md) for exact YAML and environment
+names, precedence, credentials, and cross-engine portable restore.
+
+SurrealDB remains an opt-in compile feature. Reinstall a SurrealKV-enabled CLI,
+then republish the active project:
+
+```bash
+cargo install --locked --path crates/compass-cli --bin compass \
+  --features surreal-surrealkv --force
+compass update . --force --store surreal --surreal-engine surrealkv
+compass store validate compass-out --engine surreal --format json
+```
+
+Project configuration version 2 persists the storage selection. Version-1
+configuration files still load with their previous behavior; run `compass init
+--force --store surreal` only when you intentionally want to rewrite the saved
+configuration. SQLite and JSON artifacts are not migrated in place. Compass
+stages a new immutable Surreal generation from the canonical graph and writes
+`compass.surreal.ref/1` only after validation. Explicit Surreal queries fail
+closed until that reference is present and valid.
+
+The fully wired projection is `compass.graph.surreal/2`. Existing
+library-only `compass.graph.surreal/1` generations are not migrated in place;
+rerun the forced update above to create a new typed/indexed generation.
+
 ## Rebuild SQLite adjacency sidecars
 
 Store snapshots now declare edge-ID-ordered directional adjacency so bounded

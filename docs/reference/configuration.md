@@ -128,6 +128,57 @@ and hosted quotas are deferred. Local disk availability remains an operational
 limit. See the [operations guide](../guides/operations.md)
 for the support window and rebuild procedure.
 
+### Embedded and standalone SurrealDB
+
+Surreal storage is optional and requires a CLI built with
+`surreal-surrealkv`, `surreal-rocksdb`, or `surreal-remote`:
+
+```bash
+compass update . --store surreal \
+  --surreal-engine surrealkv \
+  --surreal-path compass-out/surreal
+```
+
+The same flags are accepted by `init`, `extract`, and `watch`. SurrealKV is the
+default embedded engine. The default path is the checkout-local shared store
+beneath `compass-out`. `--surreal-engine remote` instead uses a standalone
+server via `--surreal-endpoint`, `--surreal-namespace`, and `--surreal-database`.
+The same connection settings apply to typed queries, CompassQL, MCP, and store
+operations. YAML (`--surreal-config`, `COMPASS_SURREAL_CONFIG`, or the automatic
+`~/.compass/surreal.yaml`) and `COMPASS_SURREAL_*` variables are supported.
+Flags override environment, YAML, persisted project storage, then defaults.
+See the [complete connection configuration](../guides/surrealdb.md) for all
+fields, authentication scope, secret handling, and TLS constraints.
+
+New project configuration files use version 2 and may persist this selection:
+
+```toml
+version = 2
+
+[build]
+include = ["src/"]
+exclude = []
+
+[storage]
+store = "surreal"          # json, sqlite, or surreal
+surreal_engine = "surrealkv" # surrealkv or rocksdb
+surreal_path = "compass-out/surreal"
+```
+
+Persisted `surreal_path` values may be project-relative or absolute but may not
+contain `..`. Treat a repository-provided absolute setting as an explicit local
+storage grant; override it with `--surreal-path` before building an untrusted
+checkout.
+
+Explicit CLI flags have highest precedence, followed by environment, YAML,
+`[storage]`, and the existing SQLite default. Version-1 configuration files remain valid and
+retain their old storage behavior. Surreal engine/path settings are invalid
+unless `store = "surreal"`.
+
+Remote project storage uses `surreal_engine = "remote"`, `surreal_endpoint`,
+`surreal_namespace`, and `surreal_database` instead of `surreal_path`.
+Credentials are never written to project configuration, references, or backups.
+
 ## Build configuration
 
 Initialize a reviewable repository scope with:
@@ -154,7 +205,7 @@ evidence and can be reused across levels.
 Compass writes:
 
 ```toml
-version = 1
+version = 2
 
 [build]
 include = ["src/"]

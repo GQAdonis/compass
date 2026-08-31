@@ -84,6 +84,8 @@ bindings before exposing a store snapshot. `compass store restore` is
 fail-closed, restores only into a new destination, and removes an incomplete
 destination on validation failure. Stop writers before copying a redb file;
 the SQLite backup command checkpoints WAL for this purpose.
+Backup manifests are limited to 64 KiB at both metadata inspection and streaming
+read, before either adapter decodes them or creates a restore destination.
 
 The namespace is an isolation and lifecycle key, not an authorization
 mechanism. A future hosted adapter must add authentication, authorization,
@@ -93,6 +95,56 @@ not link cloud SDKs into the CLI. Never attach a store database or raw backup
 to a public issue: it can disclose repository names, paths, source anchors,
 and graph structure. Share a sanitized `compass store status --format json`
 response instead.
+
+The optional SurrealDB backend accepts only validated `compass.graph/1`
+documents and exposes no arbitrary SurrealQL API. `surreal.ref` and projection
+bundles are untrusted, bounded inputs whose schema, graph digest, projection
+fingerprint, repository, generation, counts, engine, and location binding are
+validated before reads. Record identities are deterministic digests, statement
+values are parameter-bound, table selection is a closed enum, query work is
+bounded, and filesystem publication occurs only after the exact staged
+generation is validated. Queries pin the reference generation and never trust
+an unbound or mismatched graph digest: reference-aware staging persists the
+publisher's admitted digest in the immutable manifest, including after portable
+restore. Generation garbage collection scopes its candidate read to the
+publishing repository and excludes retained generations before applying the
+batch limit, so it cannot reclaim another checkout's data in a shared store.
+Queries never trust
+the database's mutable active pointer; query, status, validation, and backup
+opens do not issue schema-definition statements. Backup/restore exports typed
+projection records instead of copying opaque database directories.
+
+The optional `surreal-remote` feature introduces an explicit network and credential
+boundary. Server URLs reject userinfo, query strings, fragments, and unexpected
+paths. Plaintext is allowed only for loopback hosts; other hosts require
+certificate-validated TLS. HTTP(S) endpoint spellings select the equivalent
+WebSocket RPC transport. Each connection/authentication has a 30-second deadline;
+each query RPC has a 120-second outer deadline and WebSocket messages are limited
+to 128 MiB, in addition to the existing semantic row/byte/deadline limits.
+References must match independently configured endpoint, namespace, and database
+before connection or authentication. Authentication errors redact credentials.
+Prefer protected environment variables or password/token environment selectors;
+YAML may contain secrets only in an operator-protected file, never committed.
+YAML reads are capped at 64 KiB and parser diagnostics omit input contents.
+CLI password/token arguments are supported but visible to process inspectors.
+Process configuration is immutable; restart Compass/MCP to rotate credentials.
+Use a dedicated Compass database and least-privilege database user. Publication
+defines Compass tables/indexes only there. Automatic remote generation GC is
+disabled because local snapshots cannot establish other machines' reader
+liveness; an administrator must coordinate remote reclamation. No launch-agent
+configuration or running server's database files are modified.
+
+Embedded physical connections are shared only within the process by canonical
+store path and engine, with independent namespace/database sessions and exact
+generation references. A dedicated runtime retains at most 16 store owners
+until process exit, preventing caller-runtime teardown from stranding database
+locks. A caller cannot switch the engine of an already open path. This local
+resource ownership is not a tenant authorization boundary.
+
+An explicit embedded storage path may be project-relative or absolute, but it
+may not resolve to the output container itself or beneath its immutable
+`snapshots/` tree. Compass resolves the existing path prefix before this check
+so a symlinked parent cannot redirect database writes into a published snapshot.
 
 ## Document and OCR boundary
 

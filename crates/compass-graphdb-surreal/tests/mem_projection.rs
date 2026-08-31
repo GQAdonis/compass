@@ -185,8 +185,11 @@ async fn idempotent_reactivation_rejects_changed_generation_metadata()
     let plan = ProjectionPlan::from_graph("repository", &semantic_graph('a')?)?;
     projection.activate(&plan).await?;
 
-    let mut changed = plan.clone();
-    changed.source_tree_digest = digest('b');
+    // Construct an internally valid competing plan so rejection exercises the
+    // persisted immutable-generation boundary, not metadata validation.
+    let mut changed_graph = semantic_graph('a')?;
+    changed_graph.graph.build.source_tree_digest = digest('b');
+    let changed = ProjectionPlan::from_graph("repository", &changed_graph)?;
     assert!(matches!(
         projection.activate(&changed).await,
         Err(ProjectionError::InvalidPlan(message))

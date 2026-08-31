@@ -497,6 +497,7 @@ fn incremental_mixed_origin_edges_use_fresh_ast_relationship_sites() -> Result<(
     options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
+    options.inference_level = compass_graph::InferenceLevel::Max;
     let initial = build_graph_with_layers(&options, None, &[])?;
     let mut initial_graph =
         compass_model::code_graph::GraphDocument::load(&initial.output_dir.join("graph.json"))?;
@@ -567,6 +568,7 @@ fn incremental_deleted_mixed_occurrence_keeps_only_revalidated_semantic_evidence
     options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
+    options.inference_level = compass_graph::InferenceLevel::Max;
     let initial_layer = semantic_layer(initial_semantic)?;
     let initial = build_graph_with_layers(&options, Some(&initial_layer), &[])?;
     let initial_graph =
@@ -643,6 +645,7 @@ fn incremental_deleted_mixed_occurrence_keeps_only_revalidated_semantic_evidence
     clean_options.no_viz = true;
     clean_options.force = true;
     clean_options.purpose = BuildPurpose::Extract;
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     let final_layer = semantic_layer(final_semantic)?;
     let clean = build_graph_with_layers(&clean_options, Some(&final_layer), &[])?;
     let clean_graph =
@@ -669,6 +672,7 @@ fn incremental_deleted_remapped_mixed_occurrence_rebinds_trusted_semantic_residu
     options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
+    options.inference_level = compass_graph::InferenceLevel::Max;
     let initial_layer = semantic_layer(initial_semantic)?;
     let initial = build_graph_with_layers(&options, Some(&initial_layer), &[])?;
     let graph_path = initial.output_dir.join("graph.json");
@@ -784,6 +788,7 @@ fn incremental_deleted_remapped_mixed_occurrence_rebinds_trusted_semantic_residu
     clean_options.no_viz = true;
     clean_options.force = true;
     clean_options.purpose = BuildPurpose::Extract;
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     let final_layer = semantic_layer(final_semantic)?;
     let clean = build_graph_with_layers(&clean_options, Some(&final_layer), &[])?;
     let clean_graph =
@@ -815,6 +820,7 @@ fn incremental_mixed_occurrence_cardinality_matches_exact_sites_and_preserves_re
     options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
+    options.inference_level = compass_graph::InferenceLevel::Max;
     let initial_layer = semantic_layer(initial_semantic)?;
     let initial = build_graph_with_layers(&options, Some(&initial_layer), &[])?;
     let initial_graph =
@@ -989,6 +995,7 @@ fn incremental_mixed_occurrence_cardinality_matches_exact_sites_and_preserves_re
     clean_options.no_viz = true;
     clean_options.force = true;
     clean_options.purpose = BuildPurpose::Extract;
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     let final_layer = semantic_layer(final_semantic)?;
     let clean = build_graph_with_layers(&clean_options, Some(&final_layer), &[])?;
     let clean_graph =
@@ -1015,6 +1022,7 @@ fn incremental_mixed_origin_alias_edges_use_canonical_fresh_relationship_sites()
     options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
+    options.inference_level = compass_graph::InferenceLevel::Max;
     let initial_layer = semantic_layer(initial_semantic)?;
     let initial = build_graph_with_layers(&options, Some(&initial_layer), &[])?;
     let initial_graph =
@@ -1065,6 +1073,7 @@ fn incremental_mixed_origin_alias_edges_use_canonical_fresh_relationship_sites()
     clean_options.no_viz = true;
     clean_options.force = true;
     clean_options.purpose = BuildPurpose::Extract;
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     let final_layer = semantic_layer(final_semantic)?;
     let clean = build_graph_with_layers(&clean_options, Some(&final_layer), &[])?;
     let clean_graph =
@@ -1088,6 +1097,7 @@ fn refreshed_mixed_edge_drops_stale_incremental_endpoint_remap_evidence()
     options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
+    options.inference_level = compass_graph::InferenceLevel::Max;
     let initial_layer = semantic_layer(initial_semantic)?;
     let initial = build_graph_with_layers(&options, Some(&initial_layer), &[])?;
     let graph_path = initial.output_dir.join("graph.json");
@@ -1161,6 +1171,7 @@ fn refreshed_mixed_edge_drops_stale_incremental_endpoint_remap_evidence()
     clean_options.no_viz = true;
     clean_options.force = true;
     clean_options.purpose = BuildPurpose::Extract;
+    clean_options.inference_level = compass_graph::InferenceLevel::Max;
     let final_layer = semantic_layer(final_semantic)?;
     let clean = build_graph_with_layers(&clean_options, Some(&final_layer), &[])?;
     let clean_graph =
@@ -1252,6 +1263,7 @@ fn incremental_ast_endpoint_remap_retains_exact_typed_rewrite_evidence()
     options.inference_level = compass_graph::InferenceLevel::Max;
     options.no_cluster = true;
     options.no_viz = true;
+    options.inference_level = compass_graph::InferenceLevel::Max;
 
     let initial_layer = semantic_layer(supplemental)?;
     let initial = build_graph_with_layers(&options, Some(&initial_layer), &[])?;
