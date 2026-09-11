@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.24 - 2026-09-11
+
 - Add `compass ensure` as an idempotent agent-session and linked-worktree
   bootstrap. It preserves worktree-local mutable graph output, reuses the
   incremental update pipeline, and reports whether the graph was initialized,
