@@ -26,10 +26,30 @@ const ANALYSIS_KIND: &[u8] = &[4];
 const METADATA_SCHEMA: &[u8] = &[1];
 const METADATA_KIND: &[u8] = &[5];
 const MOVED_NODE_FIELDS: [&str; 3] = ["community", "community_name", "norm_label"];
-const NODE_COMPATIBILITY_FIELDS: [&str; 14] = [
+const NODE_COMPATIBILITY_FIELDS: &[&str] = &[
     "label",
     "qualified_name",
     "file_type",
+    "document_format",
+    "document_kind",
+    "document_role",
+    "block_index",
+    "document_ordinal",
+    "document_section",
+    "uri",
+    "document_content",
+    "document_significance",
+    "table_columns",
+    "table_headers",
+    "table_alignments",
+    "table_body_row_count",
+    "table_omitted_row_count",
+    "table_omitted_column_count",
+    "table_truncated",
+    "table_row_index",
+    "table_identity_cell_index",
+    "table_cells",
+    "document_references",
     "source_file",
     "source_location",
     "line_start",
@@ -1162,7 +1182,7 @@ fn compat_edge(edge: &compass_model::code_graph::EdgeRecord) -> Result<EdgeRecor
 fn trusted_node_value(node: &NodeRecord) -> Value {
     let mut object = node.attributes.clone();
     for field in NODE_COMPATIBILITY_FIELDS {
-        object.remove(field);
+        object.remove(*field);
     }
     object.insert("id".to_owned(), Value::String(node.id.clone()));
     Value::Object(object)

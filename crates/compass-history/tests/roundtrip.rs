@@ -57,25 +57,13 @@ fn trusted_graph_partitions_store_full_typed_node_records() -> Result<(), Box<dy
         "generated":false,
         "extractionStatus":"extracted"
     }]);
-    graph["nodes"] = json!([{
-        "id":"symbol:test",
-        "kind":"function",
-        "name":"test",
-        "qualifiedName":"fixture.test",
-        "source":{
-            "file":"src/lib.rs",
-            "startByte":0,
-            "endByte":4,
-            "startLine":1,
-            "startColumn":0,
-            "endLine":1,
-            "endColumn":4
-        },
-        "evidence":[{
-            "origin":"config",
-            "extractor":"fixture",
-            "confidence":"exact",
-            "anchors":[{
+    graph["nodes"] = json!([
+        {
+            "id":"symbol:test",
+            "kind":"function",
+            "name":"test",
+            "qualifiedName":"fixture.test",
+            "source":{
                 "file":"src/lib.rs",
                 "startByte":0,
                 "endByte":4,
@@ -83,28 +71,91 @@ fn trusted_graph_partitions_store_full_typed_node_records() -> Result<(), Box<dy
                 "startColumn":0,
                 "endLine":1,
                 "endColumn":4
+            },
+            "evidence":[{
+                "origin":"config",
+                "extractor":"fixture",
+                "confidence":"exact",
+                "anchors":[{
+                    "file":"src/lib.rs",
+                    "startByte":0,
+                    "endByte":4,
+                    "startLine":1,
+                    "startColumn":0,
+                    "endLine":1,
+                    "endColumn":4
+                }]
+            }],
+            "coverage":[{
+                "capability":"node:function",
+                "producer":"fixture",
+                "status":"partial",
+                "reason":"fixture"
+            }],
+            "diagnostics":[{
+                "severity":"warning",
+                "code":"fixture",
+                "message":"fixture warning"
             }]
-        }],
-        "coverage":[{
-            "capability":"node:function",
-            "producer":"fixture",
-            "status":"partial",
-            "reason":"fixture"
-        }],
-        "diagnostics":[{
-            "severity":"warning",
-            "code":"fixture",
-            "message":"fixture warning"
-        }]
-    }]);
+        },
+        {
+            "id":"resource:guide",
+            "kind":"resource",
+            "name":"Guide",
+            "qualifiedName":"Guide",
+            "details":{
+                "type":"resource",
+                "data":{
+                    "resourceKind":"document",
+                    "uri":"#guide"
+                }
+            },
+            "source":{
+                "file":"src/lib.rs",
+                "startByte":0,
+                "endByte":4,
+                "startLine":1,
+                "startColumn":0,
+                "endLine":1,
+                "endColumn":4
+            },
+            "evidence":[{
+                "origin":"config",
+                "extractor":"fixture",
+                "confidence":"exact",
+                "anchors":[{
+                    "file":"src/lib.rs",
+                    "startByte":0,
+                    "endByte":4,
+                    "startLine":1,
+                    "startColumn":0,
+                    "endLine":1,
+                    "endColumn":4
+                }]
+            }]
+        }
+    ]);
     std::fs::write(
         directory.path().join("graph.json"),
         canonical_json_bytes(&graph)?,
     )?;
     let partition = GraphArtifacts::load(directory.path())?.partition(&completion())?;
-    let record = VersionedValue::from_bytes(&partition.nodes[0].1)?;
-    assert_eq!(record.schema, "compass.graph.node.v1");
-    let payload: Value = serde_json::from_slice(&record.payload)?;
+    for (_, encoded) in &partition.nodes {
+        let record = VersionedValue::from_bytes(encoded)?;
+        assert_eq!(record.schema, "compass.graph.node.v1");
+        let _: compass_model::code_graph::NodeRecord = serde_json::from_slice(&record.payload)?;
+    }
+    let payload = partition
+        .nodes
+        .iter()
+        .map(|(_, encoded)| VersionedValue::from_bytes(encoded))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|record| serde_json::from_slice::<Value>(&record.payload))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|payload| payload["id"] == "symbol:test")
+        .ok_or("missing symbol payload")?;
     assert_eq!(payload["evidence"][0]["origin"], "config");
     assert_eq!(payload["coverage"][0]["status"], "partial");
     assert_eq!(payload["diagnostics"][0]["code"], "fixture");
