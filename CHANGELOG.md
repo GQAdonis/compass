@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Make `compass review` text and Markdown easier to scan by shortening commit
+  and report references, using plain-language status labels, and summarizing
+  witness relationships without printing opaque graph-node IDs. Canonical JSON
+  and SARIF retain every exact identity and remain unchanged.
+
 ## 0.3.24 - 2026-09-11
 
 - Add `compass ensure` as an idempotent agent-session and linked-worktree
