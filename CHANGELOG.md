@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.25 - 2026-09-13
+
 - Raise the immutable-history aggregate authoritative-evidence limit from
   512 MiB to 5 GiB so large repositories can publish, validate, and compare
   complete realizations while retaining the existing per-record and record-count
@@ -14,20 +16,17 @@
 
 - Replace production community detection for typed graphs with deterministic
   native Leiden over a versioned typed-evidence topology. Publish strict,
-  digest-bound `compass.community-quality/1` evidence, preserve frozen
-  influence and full-quality fallback during incremental updates, and retain
-  fixed resolution as the default while the bounded three-candidate selector
-  awaits complete pinned-corpus qualification. Community membership and
-  graph-local IDs may change; Base Graph nodes, relationships, direction,
-  multiplicity, provenance, and `compass.graph/1` remain unchanged.
+  digest-bound `compass.community-quality/1` evidence while preserving frozen
+  influence and full-quality fallback during incremental updates.
 
-- Reduce fixed-resolution Leiden modularity evaluation from repeated
-  per-community edge scans to one canonical edge pass, reuse dense move
-  scratch space and graph invariants, defer partition copies, and canonicalize
-  typed topology after allocation-light accumulation. On the pinned FastAPI
-  release qualification, Leiden has a lower median than compatibility Louvain
-  on both inference profiles while preserving byte-identical partition and
-  quality output.
+- Speed up fixed-resolution Leiden modularity evaluation by reusing graph
+  invariants and scratch space, reducing repeated community scans, and making
+  Leiden faster than the compatibility Louvain implementation on the pinned
+  release qualification corpus.
+
+- Improve community detection quality with typed Leiden while retaining fixed
+  resolution as the default; the bounded three-candidate selector remains
+  gated on complete pinned-corpus qualification.
 
 ## 0.3.24 - 2026-09-11
 
