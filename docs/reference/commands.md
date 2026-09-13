@@ -84,6 +84,34 @@ Inference defaults to `low` and publishes exact relationships only. Use
 explicitly qualified external references, or explicit `max` to retain all
 inferred relationships including deferred receivers.
 
+### `ensure`
+
+Ensure the active checkout or linked worktree has a current local graph:
+
+```text
+compass ensure [PATH] [UPDATE_OPTIONS]
+```
+
+With no `PATH`, `ensure` resolves the active Git worktree root even when the
+agent starts in a nested directory. It uses the same incremental, atomic
+pipeline and build profile as `update`. It reports whether the worktree-local
+graph was `initialized`, `updated`, or already `current`. Run it once when an
+agent session starts, resumes in a different worktree, or acquires a new
+working directory. Do not pass `--force` during normal session bootstrap;
+compatible manifests and caches make repeated calls inexpensive.
+
+Keep the default `compass-out/` below each worktree. Multiple worktrees may
+contain different uncommitted changes and must not write one shared mutable
+output directory. Repository-wide immutable history and its verified-content
+cache remain shared through the Git common directory.
+
+Clustered builds use deterministic fixed-resolution Leiden over the typed
+evidence topology. Omitting `--resolution` uses `1`; `--resolution N` uses the
+single positive finite value `N`. Higher values generally create smaller
+communities. The three-candidate automatic selector is qualification-only and
+is not enabled by omitting this option. `--no-cluster` skips community
+membership, analysis, labels, and `community-quality.json`.
+
 ### `extract`
 
 Expose the full build surface:
@@ -168,7 +196,7 @@ On Intel (`x86_64`) macOS, managed OCR is unavailable because the pinned ONNX
 runtime has no self-contained distribution; `models install` fails before any
 download, while native document processing and `--ocr off` remain available.
 
-`update`, `extract`, and watch rebuilds may succeed with a warning that Compass
+`ensure`, `update`, `extract`, and watch rebuilds may succeed with a warning that Compass
 published a partial graph. The warning reports exact omitted node, omitted
 edge, and identity-collision counts. The retained `graph.json` remains strictly
 valid and queryable; record examples and the exact summary are in
@@ -222,6 +250,12 @@ compass cluster-only [PATH]
   [--min-community-size=N]
 ```
 
+For a typed `compass.graph/1` input this uses the same fixed-resolution Leiden
+profile as a normal build and atomically republishes graph-bound
+`community-quality.json`. A schema-less legacy graph retains compatibility
+Louvain behavior and does not publish quality evidence. The command never
+interprets a missing older quality artifact as successful evidence.
+
 ### `label`
 
 Generate/update semantic community labels:
@@ -245,6 +279,9 @@ compass label [PATH]
 and in the bounded architecture report. It does not remove nodes, edges, or
 community assignments from the graph; omitted communities remain queryable and
 are included in the report's coverage disclosure. The default is `3`.
+
+When labeling first reclusters a typed graph, its resolution behavior and
+quality artifact are the same as `cluster-only`.
 
 ## Read and query
 

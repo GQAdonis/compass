@@ -94,6 +94,14 @@ history profiles, and cache identities.
 
 ## Evolving contracts
 
+Immutable history now accepts up to 5 GiB of aggregate authoritative key and
+value bytes per realization, raised from 512 MiB. The history schema and
+canonical encoding are unchanged, as are the per-key, per-value, per-tree,
+JSON-depth, job, and diagnostic bounds. Readers from older Compass releases
+continue to reject a realization whose authoritative content exceeds 512 MiB;
+deploy a reader containing this limit widening before sharing larger
+realizations.
+
 The closed route-stage vocabulary used by `compass.graph/1`,
 `compass.query/1`, and `compass.framework-context/1` now includes the additive
 `dependency` and `security` values. The query contract manifest and fingerprint
@@ -654,6 +662,12 @@ human-readable names. Stable entity identities remain in the canonical finding
 `source_entities` and `target_entities` fields, so this presentation change
 does not alter finding fingerprints or machine traceability.
 
+Human-facing review projections use short revision and fingerprint references,
+plain-language status labels, and relationship-only witness summaries. Exact
+revision IDs, graph entity IDs, fingerprints, and witness endpoints remain in
+canonical JSON and SARIF. Text and Markdown are presentation formats and must
+not be parsed as machine contracts.
+
 This is additive in the `0.3.x` line. Existing `compass prs`, graph, history,
 and MCP contracts are unchanged; `compass diff` gains only the optional typed
 topology field above. Consumers that adopt the new
@@ -671,6 +685,38 @@ omission. This addition does not change
 The `extract --code-only` profile excludes document extractors from structural
 node and edge publication while retaining the scanned file inventory and its
 status records.
+
+## Community detection profile cutover
+
+Typed clustered graphs use the complete profile
+`seeded-leiden-modularity/v1` + `typed-evidence-undirected/v1` +
+`community-quality/v1` + `fixed-resolution/v1`, seed `42`, and
+`community-limits/v1`. The default resolution is fixed at `1`; an explicit
+`--resolution N` remains a single fixed positive finite resolution. The
+bounded three-candidate selector has identity `bounded-multiresolution/v1` but
+remains qualification-only until its complete pinned-corpus release matrix
+passes the latency, memory, stability, and quality gates.
+
+This is a compatibility-sensitive membership cutover without a
+`compass.graph/1` schema change. Community numeric IDs, membership, labels,
+reports, and architecture groupings may change. Base Graph node and edge
+identity, direction, multiplicity, anchors, provenance, and canonical encoding
+do not change as a consequence of clustering. The complete profile enters the
+configuration digest and current/history build profiles, so old output is
+rebuilt coherently rather than partially reused.
+
+Clustered typed builds add strict `compass.community-quality/1` at
+`community-quality.json`. Readers must validate its self-digest, graph
+generation, exact canonical graph digest, and profile identity and reject
+unknown majors or fields. Missing evidence on an older, schema-less legacy, or
+unclustered graph means unavailable. Direct reclustering of a schema-less
+legacy graph retains `seeded-louvain/v1` compatibility and publishes no quality
+sidecar.
+
+Historical realizations and their sidecars are immutable. Compass never
+substitutes Louvain results under a Leiden profile or interprets one profile's
+member IDs as another profile's result. Existing `cohesion` remains the public
+density projection, now calculated by the shared quality evaluator.
 
 ## Compass Store release contract
 

@@ -93,6 +93,41 @@
   snapshots. Production validation and reference generation now verify chunks
   without retaining the canonical payload in one allocation, while the public
   full-read API and store formats remain compatible.
+
+## 0.3.25 - 2026-09-13
+
+- Raise the immutable-history aggregate authoritative-evidence limit from
+  512 MiB to 5 GiB so large repositories can publish, validate, and compare
+  complete realizations while retaining the existing per-record and record-count
+  bounds.
+
+- Make `compass review` text and Markdown easier to scan by shortening commit
+  and report references, using plain-language status labels, and summarizing
+  witness relationships without printing opaque graph-node IDs. Canonical JSON
+  and SARIF retain every exact identity and remain unchanged.
+
+- Replace production community detection for typed graphs with deterministic
+  native Leiden over a versioned typed-evidence topology. Publish strict,
+  digest-bound `compass.community-quality/1` evidence while preserving frozen
+  influence and full-quality fallback during incremental updates.
+
+- Speed up fixed-resolution Leiden modularity evaluation by reusing graph
+  invariants and scratch space, reducing repeated community scans, and making
+  Leiden faster than the compatibility Louvain implementation on the pinned
+  release qualification corpus.
+
+- Improve community detection quality with typed Leiden while retaining fixed
+  resolution as the default; the bounded three-candidate selector remains
+  gated on complete pinned-corpus qualification.
+
+## 0.3.24 - 2026-09-11
+
+- Add `compass ensure` as an idempotent agent-session and linked-worktree
+  bootstrap. It preserves worktree-local mutable graph output, reuses the
+  incremental update pipeline, and reports whether the graph was initialized,
+  updated, or already current. Installed assistant guidance now directs agents
+  to run it when a session starts or moves between worktrees.
+
 - Reset all 14 registered universal-evidence producer versions to v1 and keep
   them `Qualified` under the refreshed release decision at
   `tests/qualification/universal-evidence-promotion.json`. Cached evidence
@@ -106,7 +141,6 @@
   edge-ordered adjacency capability; older sidecars remain valid recovery
   inputs but directional store queries fail with an explicit rebuild
   instruction instead of returning a backend-dependent truncated subset.
-
 - Refactor universal language metadata around `UniversalEvidenceProducer` and
   `UniversalEvidencePipeline`. `UniversalCandidate`/`UniversalComplete` are
   now the clearer lifecycle states `Qualifying`/`Qualified`; the serialized
