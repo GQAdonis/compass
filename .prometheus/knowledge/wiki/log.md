@@ -1,5 +1,9 @@
 # Update Log
 
+## 2026-09-13
+* **Update**: [Compass scoping and bounds executor completion status](/compass-scoping-and-bounds-executor-completion-status.md)
+* **Update**: [Compass scoping and bounds executor session completion](/compass-scoping-and-bounds-executor-completion-status.md)
+
 ## 2026-08-28
 * **Update**: [Compass scoping and bounds executor session complete](/compass-scoping-and-bounds-executor-completion-status.md)
 * **Ingest**: [Karpathy session 0c9f8df23506](/karpathy-session-0c9f8df23506c16a.md)

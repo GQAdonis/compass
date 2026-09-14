@@ -5,8 +5,8 @@
 * [Compass scoping and bounds completion capture](/compass-scoping-and-bounds-completion-capture.md)
 * [Compass scoping and bounds executor completion](/compass-scoping-and-bounds-executor-completion.md)
 * [Compass scoping and bounds executor completion record](/compass-scoping-and-bounds-executor-completion-record.md)
+* [Compass scoping and bounds executor completion status](/compass-scoping-and-bounds-executor-completion-status.md)
 * [Compass scoping and bounds executor session](/compass-scoping-and-bounds-executor-session.md)
-* [Compass scoping and bounds executor session complete](/compass-scoping-and-bounds-executor-completion-status.md)
 
 ## SessionRecord
 
