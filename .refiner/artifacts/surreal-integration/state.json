@@ -1,0 +1,18 @@
+{
+  "refinement_id": "6bb5850a-588c-472b-8b8d-52f22af1c47c",
+  "artifact_name": "surreal-integration",
+  "artifact_type": "code",
+  "content_type": "direct:code",
+  "started_at": "2026-08-30T22:17:40Z",
+  "updated_at": "2026-08-30T22:17:40Z",
+  "current_iteration": 0,
+  "max_iterations": 5,
+  "goals": [],
+  "constraints": [],
+  "phases_completed": [],
+  "convergence_status": "running",
+  "iteration_history": [],
+  "workflow_triggers": [],
+  "checkpoints": [],
+  "prior_cycle_id": null
+}

@@ -2,6 +2,12 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+use std::io::Read;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -9,6 +15,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ahash::{AHashMap, AHashSet};
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+use compass_files::write_bytes_atomic;
 use compass_files::{
     BuildGuard, BuildScope, Cache, CacheOptions, DetectOptions, Detection, IgnorePolicy, Manifest,
     ManifestKind, detect, source_is_generated, write_atomic_with_digest, write_json_atomic,
@@ -18,9 +30,10 @@ use compass_graph::{
     BuildEvidence, CommunityExecution, CommunityLimits, CommunityProfile, CommunityQualityArtifact,
     CommunityRequest, CommunityResult, EntityTiebreaker, GRAPH_DIAGNOSTICS_EXTENSION,
     GRAPH_JSON_DELTA_MAX_SOURCE_BYTES, GRAPH_SNAPSHOT_MAX_OBJECTS,
-    GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1, GraphSnapshotBuilder, GraphSnapshotGcStats, InferenceLevel,
-    InventoryEvidence, PublicationOmissions, ResolutionPolicy, SnapshotError, SnapshotSelector,
-    SourceDigest, apply_inference_level, build_communities,
+    GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1, GraphSnapshotBuilder, GraphSnapshotGcStats,
+    IncrementalClusterLimits, InferenceLevel, InventoryEvidence, PublicationOmissions,
+    ResolutionPolicy, SnapshotError, SnapshotSelector, SourceDigest, apply_inference_level,
+    build_communities,
     build_owned_with_tiebreaker_at_inference as build_document, canonical_edge_kind,
     canonical_raw_edge_sites, deduped_node_count, extraction_from_v1,
     garbage_collect_graph_snapshots, graph_insights_with_blind_spots, graph_snapshot_needs_gc,
@@ -28,7 +41,7 @@ use compass_graph::{
     normalize_document_v1_with_evidence_best_effort_owned_at_inference,
     normalize_document_v1_with_inventory_and_source_digests_best_effort_owned_at_inference,
     normalize_document_v1_with_inventory_best_effort_at_inference, score_communities,
-    write_canonical_graph_json, write_fact_neutral_graph_json_delta_prevalidated,
+    write_canonical_graph_json_bounded, write_fact_neutral_graph_json_delta_prevalidated_bounded,
 };
 use compass_languages::{
     BindingFact, DeclarationFact, EXTRACTION_QUALITY_EXTENSION, EXTRACTION_QUALITY_PARTIAL,
@@ -92,19 +105,17 @@ const PIPELINE_RAYON_WORKER_CAP: usize = 12;
 // Keep the bound explicit and portable; stack pages remain demand-paged.
 const PIPELINE_RAYON_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
 const PARALLEL_AST_FACT_DIGEST_MIN_FILES: usize = 32;
-// Calibrated on the C-003 deterministic fixture: 112,893 source bytes produced
-// 6,843,452 canonical bytes (60.62x). Rounding down avoids claiming precision
-// the measurement does not provide. Sources rejected by max_source_bytes do
-// not use this expansion because Compass publishes inventory-only coverage.
-const PREFLIGHT_GRAPH_BYTES_PER_SOURCE_BYTE: u64 = 60;
-const PREFLIGHT_PARTIAL_FILE_BYTES: u64 = 512;
 // Full mark-and-sweep walks every immutable graph object and can dominate a
 // one-file update. Keep a small, explicit number of unreachable manifests so
 // ordinary edits pay only point-update publication; the next sweep still
 // retains exactly the staging and active snapshots.
 const SHARED_STORE_GC_MANIFEST_THRESHOLD: usize = 8;
-const STORE_SNAPSHOT_EXCLUSIONS: [&str; 3] =
-    [STORE_FILE_NAME, "store.sqlite3-wal", "store.sqlite3-shm"];
+const STORE_SNAPSHOT_EXCLUSIONS: [&str; 4] = [
+    STORE_FILE_NAME,
+    "store.sqlite3-wal",
+    "store.sqlite3-shm",
+    "surreal",
+];
 const ROOT_ARTIFACTS: [&str; 8] = [
     "GRAPH_REPORT.md",
     "orientation.json",
@@ -135,6 +146,11 @@ pub struct BuildOptions {
     /// default query index for bounded, large-graph reads; `--store json`
     /// opts out when only the portable artifact is wanted.
     pub graph_storage: GraphStorage,
+    /// Embedded engine used when `graph_storage` is Surreal.
+    pub surreal_engine: SurrealStorageEngine,
+    /// Explicit embedded database path. `None` resolves to
+    /// `<output-root>/surreal`, outside immutable snapshot directories.
+    pub surreal_path: Option<PathBuf>,
     /// Maximum inferred relationship class admitted to the published graph.
     ///
     /// Extraction caches retain complete evidence regardless of this policy;
@@ -188,11 +204,35 @@ pub enum GraphStorage {
     Json,
     #[default]
     Sqlite,
+    Surreal,
 }
 
 impl GraphStorage {
     const fn publishes_store(self) -> bool {
         matches!(self, Self::Sqlite)
+    }
+
+    const fn publishes_surreal(self) -> bool {
+        matches!(self, Self::Surreal)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SurrealStorageEngine {
+    #[default]
+    SurrealKv,
+    RocksDb,
+    Remote,
+}
+
+impl SurrealStorageEngine {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SurrealKv => "surrealkv",
+            Self::RocksDb => "rocksdb",
+            Self::Remote => "remote",
+        }
     }
 }
 
@@ -405,6 +445,8 @@ impl BuildOptions {
             no_cluster: false,
             no_viz: false,
             graph_storage: GraphStorage::default(),
+            surreal_engine: SurrealStorageEngine::default(),
+            surreal_path: None,
             inference_level: InferenceLevel::default(),
             gitignore: true,
             ignore_policy: IgnorePolicy::CurrentCheckout,
@@ -1986,11 +2028,12 @@ fn publish_fact_neutral_incremental(
         let receipt = write_atomic_with_digest(&graph_path, |writer| {
             let delta_started = Instant::now();
             let used_delta = if let Some(bytes) = previous_bytes.as_deref() {
-                write_fact_neutral_graph_json_delta_prevalidated(
+                write_fact_neutral_graph_json_delta_prevalidated_bounded(
                     bytes,
                     current,
                     changed_node_ids,
                     writer,
+                    max_canonical_graph_bytes(),
                 )
                 .map_err(|source| compass_files::FileError::Io {
                     path: graph_path.clone(),
@@ -2010,12 +2053,11 @@ fn publish_fact_neutral_incremental(
             if used_delta {
                 Ok(())
             } else {
-                write_canonical_graph_json(current, writer).map_err(|source| {
-                    compass_files::FileError::Io {
+                write_canonical_graph_json_bounded(current, writer, max_canonical_graph_bytes())
+                    .map_err(|source| compass_files::FileError::Io {
                         path: graph_path.clone(),
                         source,
-                    }
-                })
+                    })
             }
         })?;
         (
@@ -2576,7 +2618,7 @@ fn build_graph_inner_unscoped(
         None
     };
     let verified_output =
-        verified_state.is_some() && storage_artifacts_complete(options.graph_storage, &output_dir);
+        verified_state.is_some() && storage_artifacts_complete(options, &output_dir);
     if !has_program_artifacts {
         let verified = verified_state;
         if let Some(state) = verified.filter(|state| state.stats.files == sources.len()) {
@@ -2587,7 +2629,31 @@ fn build_graph_inner_unscoped(
                 remove_if_exists(&output_dir.join(GRAPH_OVERVIEW_FILE))?;
             }
             remove_if_exists(&output_dir.join("needs_update"))?;
-            let store_ready = storage_artifacts_complete(options.graph_storage, &output_dir);
+            let mut store_ready = storage_artifacts_complete(options, &output_dir);
+            let mut storage_repaired = false;
+            if options.graph_storage.publishes_surreal() && !store_ready {
+                publish_build_state(
+                    options,
+                    &output_dir,
+                    &manifest_path,
+                    state.stats.files,
+                    state.stats.nodes,
+                    state.stats.edges,
+                    state.stats.communities,
+                    PublicationOmissions {
+                        nodes: state.stats.omitted_nodes,
+                        edges: state.stats.omitted_edges,
+                        identity_collisions: state.stats.identity_collisions,
+                        examples_omitted: 0,
+                    },
+                    None,
+                    None,
+                    false,
+                    &mut timings,
+                )?;
+                store_ready = true;
+                storage_repaired = true;
+            }
             let published_output_dir = commit_snapshot(
                 guard,
                 &output_container,
@@ -2618,7 +2684,7 @@ fn build_graph_inner_unscoped(
                         || saved_resolution_degraded(&output_dir),
                     resolution_degraded: saved_resolution_degraded(&output_dir),
                     html_written: output_dir.join("graph.html").is_file(),
-                    outputs_changed: false,
+                    outputs_changed: storage_repaired,
                     program_modules: state.stats.program_modules,
                     program_summaries: state.stats.program_summaries,
                     program_syntax_analyzed: 0,
@@ -2673,7 +2739,7 @@ fn build_graph_inner_unscoped(
             stats.omissions(),
             unchanged_program.as_ref(),
             None,
-            storage_artifacts_complete(options.graph_storage, &output_dir),
+            storage_artifacts_complete(options, &output_dir),
             &mut timings,
         )?;
         let published_output_dir = commit_snapshot(
@@ -2726,13 +2792,6 @@ fn build_graph_inner_unscoped(
             None,
         ));
     }
-
-    enforce_preflight_graph_size(
-        &root,
-        &sources,
-        options.max_source_bytes,
-        max_canonical_graph_bytes(),
-    )?;
 
     let output_cache_root = (output_root != root).then_some(output_root.as_path());
     let cache_options = options.cache_root.as_deref().map_or_else(
@@ -3529,7 +3588,7 @@ fn build_graph_inner_unscoped(
             omissions,
             program.as_ref(),
             None,
-            storage_artifacts_complete(options.graph_storage, &output_dir),
+            storage_artifacts_complete(options, &output_dir),
             &mut timings,
         )?;
         let published_output_dir = commit_snapshot(
@@ -3653,11 +3712,14 @@ fn build_graph_inner_unscoped(
         } else {
             let graph_path = output_dir.join("graph.json");
             let receipt = write_atomic_with_digest(&graph_path, |writer| {
-                write_canonical_graph_json(&published.document, writer).map_err(|source| {
-                    compass_files::FileError::Io {
-                        path: graph_path.clone(),
-                        source,
-                    }
+                write_canonical_graph_json_bounded(
+                    &published.document,
+                    writer,
+                    max_canonical_graph_bytes(),
+                )
+                .map_err(|source| compass_files::FileError::Io {
+                    path: graph_path.clone(),
+                    source,
                 })
             })?;
             (
@@ -3811,7 +3873,7 @@ fn build_graph_inner_unscoped(
         BuildPurpose::Extract => {
             output_dir.join("graph.json").is_file()
                 && output_dir.join("analysis.json").is_file()
-                && storage_artifacts_complete(options.graph_storage, &output_dir)
+                && storage_artifacts_complete(options, &output_dir)
         }
     };
     let unchanged_layers = semantic.is_none()
@@ -4224,11 +4286,14 @@ fn build_graph_inner_unscoped(
     } else {
         let graph_path = output_dir.join("graph.json");
         let receipt = write_atomic_with_digest(&graph_path, |writer| {
-            write_canonical_graph_json(&published_document, writer).map_err(|source| {
-                compass_files::FileError::Io {
-                    path: graph_path.clone(),
-                    source,
-                }
+            write_canonical_graph_json_bounded(
+                &published_document,
+                writer,
+                max_canonical_graph_bytes(),
+            )
+            .map_err(|source| compass_files::FileError::Io {
+                path: graph_path.clone(),
+                source,
             })
         })?;
         (
@@ -4391,42 +4456,6 @@ fn build_graph_inner_unscoped(
     Ok((result, retained))
 }
 
-/// Estimate canonical payload growth from discovery metadata before any
-/// project-wide extraction begins. The calculation performs one bounded
-/// metadata lookup per admitted source and uses saturating arithmetic so an
-/// adversarial corpus cannot wrap the estimate into a successful result.
-fn enforce_preflight_graph_size(
-    root: &Path,
-    sources: &[PathBuf],
-    max_source_bytes: u64,
-    maximum: u64,
-) -> Result<u64, CoreError> {
-    let estimated = sources.iter().fold(0_u64, |total, source| {
-        let relative = source.strip_prefix(root).unwrap_or(source);
-        let path_bytes = u64::try_from(relative.as_os_str().len()).unwrap_or(u64::MAX);
-        let source_estimate =
-            fs::metadata(source).map_or(PREFLIGHT_PARTIAL_FILE_BYTES, |metadata| {
-                if metadata.is_file() && metadata.len() <= max_source_bytes {
-                    metadata
-                        .len()
-                        .saturating_mul(PREFLIGHT_GRAPH_BYTES_PER_SOURCE_BYTE)
-                        .max(PREFLIGHT_PARTIAL_FILE_BYTES)
-                } else {
-                    PREFLIGHT_PARTIAL_FILE_BYTES
-                }
-            });
-        total
-            .saturating_add(path_bytes)
-            .saturating_add(source_estimate)
-    });
-    if estimated > maximum {
-        return Err(CoreError::Snapshot(
-            SnapshotError::canonical_graph_too_large(maximum),
-        ));
-    }
-    Ok(estimated)
-}
-
 fn oversized_source_extraction(
     path: &Path,
     max_source_bytes: u64,
@@ -4557,8 +4586,31 @@ fn build_profile(options: &BuildOptions) -> BuildProfile {
         graph_storage: match options.graph_storage {
             GraphStorage::Json => "json",
             GraphStorage::Sqlite => "sqlite",
+            GraphStorage::Surreal => "surreal",
         }
         .to_owned(),
+        surreal_engine: (options.graph_storage == GraphStorage::Surreal)
+            .then(|| options.surreal_engine.as_str().to_owned()),
+        surreal_path: (options.graph_storage == GraphStorage::Surreal).then(|| {
+            if options.surreal_engine == SurrealStorageEngine::Remote {
+                return compass_files::surreal_settings()
+                    .ok()
+                    .and_then(|settings| {
+                        serde_json::to_string(&(
+                            &settings.endpoint,
+                            &settings.namespace,
+                            &settings.database,
+                        ))
+                        .ok()
+                    })
+                    .unwrap_or_default();
+            }
+            options
+                .surreal_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "<default>".to_owned())
+        }),
         inference_level: options.inference_level.as_str().to_owned(),
         max_source_bytes: options.max_source_bytes,
         document_processing_identity: options.prepared_documents.cache_identity.clone(),
@@ -4586,6 +4638,7 @@ fn current_orientation_health(
         match options.graph_storage {
             GraphStorage::Json => "json",
             GraphStorage::Sqlite => "sqlite",
+            GraphStorage::Surreal => "surreal",
         }
     );
     if options.inference_level != InferenceLevel::Max {
@@ -4643,9 +4696,17 @@ fn publish_build_state(
         let metrics = ensure_store_snapshot(output_dir)?;
         record_store_metrics(timings, metrics);
     }
+    if options.graph_storage.publishes_surreal() {
+        ensure_surreal_projection(options, output_dir)?;
+    } else {
+        remove_if_exists(&output_dir.join("surreal.ref"))?;
+    }
     let mut required = vec![output_dir.join(OUTPUT_STATS_FILE)];
     if publish_store {
         required.push(output_dir.join(STORE_REF_FILE_NAME));
+    }
+    if options.graph_storage.publishes_surreal() {
+        required.push(output_dir.join("surreal.ref"));
     }
     match options.purpose {
         BuildPurpose::Update => {
@@ -4696,6 +4757,234 @@ fn publish_build_state(
     state.save(output_dir)
 }
 
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn ensure_surreal_projection(options: &BuildOptions, output_dir: &Path) -> Result<(), CoreError> {
+    use compass_graphdb_surreal::{
+        ProjectionPlan, SURREAL_REF_FILE_NAME, SurrealProjection, SurrealRef,
+    };
+
+    let graph_path = output_dir.join("graph.json");
+    let (graph, graph_digest) =
+        compass_model::code_graph::GraphDocument::load_with_artifact_digest(&graph_path)?;
+    let (repository_id, reference_engine, location, output_container) =
+        surreal_storage_binding(options)?;
+    let plan = ProjectionPlan::from_graph(repository_id, &graph)
+        .map_err(|error| CoreError::InvalidBuildState(error.to_string()))?;
+    let graph_digest = if graph_digest.starts_with("sha256:") {
+        graph_digest
+    } else {
+        format!("sha256:{graph_digest}")
+    };
+    let selected_engine = reference_engine.as_str();
+    let reference = if options.surreal_engine == SurrealStorageEngine::Remote {
+        SurrealRef::from_remote_plan(&plan, graph_digest)
+    } else {
+        SurrealRef::from_plan(&plan, reference_engine, &location, graph_digest)
+    }
+    .map_err(|error| CoreError::InvalidBuildState(error.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            CoreError::InvalidBuildState(format!("create Surreal runtime: {error}"))
+        })?;
+    runtime.block_on(async {
+        let projection = SurrealProjection::open_reference(&reference, true)
+            .await
+            .map_err(|error| {
+                CoreError::InvalidBuildState(format!("open {selected_engine} projection: {error}"))
+            })?;
+        projection
+            .stage_for_reference(&plan, &reference)
+            .await
+            .map_err(|error| {
+                CoreError::InvalidBuildState(format!("stage Surreal projection: {error}"))
+            })?;
+        projection
+            .validate_reference(&reference)
+            .await
+            .map_err(|error| {
+                CoreError::InvalidBuildState(format!("validate Surreal projection: {error}"))
+            })?;
+
+        let mut retained = vec![reference.clone()];
+        let mut references_complete = true;
+        for directory in BuildGuard::complete_snapshot_directories(&output_container)? {
+            let path = directory.join(SURREAL_REF_FILE_NAME);
+            match compass_files::read_bytes_bounded(
+                &path,
+                compass_graphdb_surreal::MAX_SURREAL_REF_BYTES,
+            ) {
+                Ok(bytes) => match SurrealRef::decode(&bytes) {
+                    Ok(value)
+                        if value.location == reference.location
+                            && value.repository_id == reference.repository_id
+                            && value.engine == reference.engine
+                            && value.namespace == reference.namespace
+                            && value.database == reference.database =>
+                    {
+                        retained.push(value)
+                    }
+                    Ok(_) => {}
+                    Err(_) => references_complete = false,
+                },
+                Err(compass_files::FileError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => references_complete = false,
+            }
+        }
+        // Another machine may retain a reference to this remote database. Local
+        // snapshot discovery cannot establish global liveness for remote GC.
+        if references_complete && options.surreal_engine != SurrealStorageEngine::Remote {
+            projection
+                .garbage_collect_generations(&reference.repository_id, &retained, 16)
+                .await
+                .map_err(|error| {
+                    CoreError::InvalidBuildState(format!("collect Surreal generations: {error}"))
+                })?;
+        }
+        Ok::<(), CoreError>(())
+    })?;
+    write_bytes_atomic(
+        &output_dir.join(SURREAL_REF_FILE_NAME),
+        &reference.encode().map_err(|error| {
+            CoreError::InvalidBuildState(format!("encode surreal.ref: {error}"))
+        })?,
+    )?;
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn surreal_storage_binding(
+    options: &BuildOptions,
+) -> Result<
+    (
+        String,
+        compass_graphdb_surreal::SurrealEngine,
+        PathBuf,
+        PathBuf,
+    ),
+    CoreError,
+> {
+    use compass_graphdb_surreal::SurrealEngine;
+
+    let root = fs::canonicalize(&options.root).map_err(|source| compass_files::FileError::Io {
+        path: options.root.clone(),
+        source,
+    })?;
+    let repository_id = format!(
+        "sha256:{:x}",
+        Sha256::digest(root.to_string_lossy().as_bytes())
+    );
+    let output_name = std::env::var("COMPASS_OUT").unwrap_or_else(|_| "compass-out".to_owned());
+    let output_root = options
+        .output_root
+        .as_deref()
+        .map_or_else(|| root.clone(), absolutize);
+    let output_container = output_root.join(output_name);
+    if options.surreal_engine == SurrealStorageEngine::Remote {
+        if options.surreal_path.is_some() {
+            return Err(CoreError::InvalidBuildState(
+                "remote SurrealDB requires an endpoint, not a filesystem path".into(),
+            ));
+        }
+        let settings = compass_files::surreal_settings().map_err(CoreError::InvalidBuildState)?;
+        let endpoint = settings.endpoint.as_ref().ok_or_else(|| {
+            CoreError::InvalidBuildState("remote Surreal endpoint is not configured".into())
+        })?;
+        return Ok((
+            repository_id,
+            SurrealEngine::Remote,
+            PathBuf::from(endpoint),
+            output_container,
+        ));
+    }
+    let location = options.surreal_path.as_ref().map_or_else(
+        || output_container.join("surreal"),
+        |path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                root.join(path)
+            }
+        },
+    );
+    let resolved_output_container =
+        fs::canonicalize(&output_container).map_err(|source| compass_files::FileError::Io {
+            path: output_container.clone(),
+            source,
+        })?;
+    let resolved_location = resolve_existing_path_prefix(&location)?;
+    if resolved_location == resolved_output_container
+        || resolved_location.starts_with(resolved_output_container.join("snapshots"))
+    {
+        return Err(CoreError::InvalidBuildState(format!(
+            "SurrealDB storage path must be a shared location outside immutable snapshots: {}",
+            location.display()
+        )));
+    }
+    let engine = match options.surreal_engine {
+        SurrealStorageEngine::SurrealKv => SurrealEngine::SurrealKv,
+        SurrealStorageEngine::RocksDb => SurrealEngine::RocksDb,
+        SurrealStorageEngine::Remote => SurrealEngine::Remote,
+    };
+    Ok((repository_id, engine, location, output_container))
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn resolve_existing_path_prefix(path: &Path) -> Result<PathBuf, CoreError> {
+    let mut existing = path;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let name = existing.file_name().ok_or_else(|| {
+            CoreError::InvalidBuildState(format!(
+                "SurrealDB storage path has no existing ancestor: {}",
+                path.display()
+            ))
+        })?;
+        missing.push(name.to_os_string());
+        existing = existing.parent().ok_or_else(|| {
+            CoreError::InvalidBuildState(format!(
+                "SurrealDB storage path has no existing ancestor: {}",
+                path.display()
+            ))
+        })?;
+    }
+    let mut resolved =
+        fs::canonicalize(existing).map_err(|source| compass_files::FileError::Io {
+            path: existing.to_path_buf(),
+            source,
+        })?;
+    for name in missing.into_iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
+}
+
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
+fn ensure_surreal_projection(_options: &BuildOptions, _output_dir: &Path) -> Result<(), CoreError> {
+    Err(CoreError::InvalidBuildState(
+        "Surreal storage is unavailable; rebuild Compass with surreal-surrealkv, surreal-rocksdb, or surreal-remote"
+            .to_owned(),
+    ))
+}
+
 fn commit_snapshot(
     guard: BuildGuard,
     output_container: &Path,
@@ -4716,6 +5005,9 @@ fn commit_snapshot(
         }
         remove_if_exists(&guard.staging_directory().join(STORE_REF_FILE_NAME))?;
     }
+    if !graph_storage.publishes_surreal() {
+        remove_if_exists(&guard.staging_directory().join("surreal.ref"))?;
+    }
     if publish_store && !store_ready {
         let metrics = ensure_store_snapshot(guard.staging_directory())?;
         record_store_metrics(timings, metrics);
@@ -4723,6 +5015,9 @@ fn commit_snapshot(
     let mut artifacts = vec!["graph.json", "manifest.json", BUILD_STATE_FILE];
     if publish_store {
         artifacts.push(STORE_REF_FILE_NAME);
+    }
+    if graph_storage.publishes_surreal() {
+        artifacts.push("surreal.ref");
     }
     if guard.staging_directory().join("program.json").is_file() {
         artifacts.push("program.json");
@@ -4979,12 +5274,11 @@ fn publish_graph_and_store_from_canonical(
     let (graph_receipt, content) = rayon::join(
         || {
             write_atomic_with_digest(&graph_path, |writer| {
-                write_canonical_graph_json(graph, writer).map_err(|source| {
-                    compass_files::FileError::Io {
+                write_canonical_graph_json_bounded(graph, writer, max_canonical_graph_bytes())
+                    .map_err(|source| compass_files::FileError::Io {
                         path: graph_path.clone(),
                         source,
-                    }
-                })
+                    })
             })
         },
         || builder.prepare_content(&store, graph),
@@ -5022,8 +5316,12 @@ fn publish_graph_and_store_delta(
             let result = write_atomic_with_digest(&graph_path, |writer| {
                 let used_delta = match (previous_bytes.as_deref(), changed_node_ids) {
                     (Some(bytes), Some(changed)) => {
-                        write_fact_neutral_graph_json_delta_prevalidated(
-                            bytes, graph, changed, writer,
+                        write_fact_neutral_graph_json_delta_prevalidated_bounded(
+                            bytes,
+                            graph,
+                            changed,
+                            writer,
+                            max_canonical_graph_bytes(),
                         )
                         .map_err(|source| {
                             compass_files::FileError::Io {
@@ -5037,12 +5335,11 @@ fn publish_graph_and_store_delta(
                 if used_delta {
                     Ok(())
                 } else {
-                    write_canonical_graph_json(graph, writer).map_err(|source| {
-                        compass_files::FileError::Io {
+                    write_canonical_graph_json_bounded(graph, writer, max_canonical_graph_bytes())
+                        .map_err(|source| compass_files::FileError::Io {
                             path: graph_path.clone(),
                             source,
-                        }
-                    })
+                        })
                 }
             });
             profile_internal_duration("graph JSON delta publication", started.elapsed());
@@ -7057,13 +7354,102 @@ fn update_artifacts_complete(options: &BuildOptions, output_dir: &Path) -> bool 
     if options.graph_storage.publishes_store() {
         required.push(STORE_REF_FILE_NAME);
     }
+    if options.graph_storage.publishes_surreal() {
+        required.push("surreal.ref");
+    }
     required
         .into_iter()
         .all(|name| output_dir.join(name).is_file())
 }
 
-fn storage_artifacts_complete(graph_storage: GraphStorage, output_dir: &Path) -> bool {
-    !graph_storage.publishes_store() || store_artifact_complete(output_dir)
+fn storage_artifacts_complete(options: &BuildOptions, output_dir: &Path) -> bool {
+    match options.graph_storage {
+        GraphStorage::Json => true,
+        GraphStorage::Sqlite => store_artifact_complete(output_dir),
+        GraphStorage::Surreal => surreal_artifact_complete(options, output_dir),
+    }
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn surreal_artifact_complete(options: &BuildOptions, output_dir: &Path) -> bool {
+    use compass_graphdb_surreal::SurrealProjection;
+
+    let path = output_dir.join(compass_graphdb_surreal::SURREAL_REF_FILE_NAME);
+    let Some(reference) =
+        compass_files::read_bytes_bounded(&path, compass_graphdb_surreal::MAX_SURREAL_REF_BYTES)
+            .ok()
+            .and_then(|bytes| compass_graphdb_surreal::SurrealRef::decode(&bytes).ok())
+    else {
+        return false;
+    };
+    let Ok((repository_id, engine, location, _output_container)) = surreal_storage_binding(options)
+    else {
+        return false;
+    };
+    if reference.repository_id != repository_id
+        || reference.engine != engine
+        || location.to_str() != Some(reference.location.as_str())
+    {
+        return false;
+    }
+    let Ok(graph_digest) = surreal_graph_artifact_digest(&output_dir.join("graph.json")) else {
+        return false;
+    };
+    if reference.graph_digest != graph_digest {
+        return false;
+    }
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    runtime.block_on(async {
+        let projection = SurrealProjection::open_reference(&reference, false).await;
+        match projection {
+            Ok(projection) => projection.validate_contents(&reference).await.is_ok(),
+            Err(_) => false,
+        }
+    })
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn surreal_graph_artifact_digest(path: &Path) -> std::io::Result<String> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() || metadata.len() > max_canonical_graph_bytes() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "canonical graph is missing, not a regular file, or exceeds the graph-size cap",
+        ));
+    }
+    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+#[cfg(not(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+)))]
+fn surreal_artifact_complete(_options: &BuildOptions, _output_dir: &Path) -> bool {
+    false
 }
 
 fn store_artifact_complete(output_dir: &Path) -> bool {
@@ -8899,7 +9285,7 @@ mod tests {
 
         let changed_graph = V1GraphDocument::load(&changed.output_dir.join("graph.json"))?;
         let mut canonical_changed = Vec::new();
-        write_canonical_graph_json(&changed_graph, &mut canonical_changed)?;
+        compass_graph::write_canonical_graph_json(&changed_graph, &mut canonical_changed)?;
         assert_eq!(
             fs::read(changed.output_dir.join("graph.json"))?,
             canonical_changed,

@@ -123,6 +123,18 @@ cd compass
 cargo install --locked --path crates/compass-cli --bin compass
 ```
 
+To build both embedded SurrealKV and standalone SurrealDB server support:
+
+```bash
+cargo install --locked --path crates/compass-cli --bin compass \
+  --features surreal-surrealkv,surreal-remote
+```
+
+SurrealDB remains absent from default binaries. The optional RocksDB engine is
+enabled with `surreal-rocksdb`; embedded Surreal artifacts carry the licensing
+conditions in `THIRD_PARTY_NOTICES.md`. See the
+[embedded and server SurrealDB guide](docs/guides/surrealdb.md).
+
 You can also use the repository installer:
 
 ```bash

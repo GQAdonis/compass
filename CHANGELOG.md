@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Reject query artifacts produced before Compass 0.3.23 at engine loading,
+  before record decoding or cache reuse. JSON uses a 64 KiB builder-version
+  preamble; SQLite and Surreal use pinned snapshot metadata without JSON
+  fallback. CLI/MCP errors include the found/minimum versions and a force-rebuild
+  command derived only from validated snapshot provenance.
+
+- Support both embedded and standalone SurrealDB with `surreal-remote` plus
+  either embedded feature. YAML, `COMPASS_SURREAL_*` environment settings,
+  and `--surreal-*` flags configure publication, typed queries, CompassQL,
+  MCP, validation, backup, and restore. Server references pin the same immutable
+  generation contract without storing credentials. Non-loopback endpoints
+  require TLS; connection and query RPCs have finite deadlines.
+
+- Wire optional embedded SurrealDB through project configuration v2,
+  `init`/`update`/`extract`/`watch` publication, generation-pinned typed CLI and
+  MCP queries, native CompassQL, capabilities, validation, and portable
+  digest-bound backup/restore. `--store surreal` defaults to SurrealKV;
+  RocksDB remains optional. Current-project `--engine default` now prefers a
+  valid `surreal.ref`, then SQLite, then JSON, while explicit Surreal selection
+  fails closed and historical `--at` queries remain unchanged. The fully wired
+  typed/indexed projection is `compass.graph.surreal/2`; the earlier
+  library-only v1 projection requires republishing. Reference-aware staging
+  binds graph digests in immutable manifests; orphan GC is repository-scoped
+  even when multiple checkouts explicitly share an embedded store.
+  Portable CLI restore preserves that binding at the new store location;
+  backup manifests are stream-bounded to 64 KiB before restore.
+
 - Add one deterministic `distribution.toml` inventory and native package
   generators for Codex, Claude Code, and OpenCode. Exports now include the
   harness manifests, credential-free MCP configuration, complete copied skill
@@ -75,13 +102,13 @@
   Existing history APIs, encoded bytes, persisted formats, and round trips
   remain compatible.
 
-- Honor `COMPASS_MAX_GRAPH_BYTES` consistently across canonical graph
-  preflight, snapshot publication, validation, and reads while retaining the
-  2 GiB default and failing closed on invalid override values.
-
-- Add a deterministic, bounded canonical graph-size preflight after discovery,
-  so inputs estimated above the snapshot limit fail before project-wide
-  extraction with the existing actionable scope-reduction guidance.
+- Remove the source-byte multiplier used as a fatal canonical graph preflight.
+  `COMPASS_MAX_GRAPH_BYTES` is now enforced against the actual canonical bytes
+  streamed into atomic staging for full, SQLite-backed, and fact-neutral delta
+  publications. A real overrun leaves the previous graph and store reference
+  active. Add a five-estate qualification command and measured expansion
+  distribution; source-to-graph ratios remain diagnostic evidence and are not
+  an admission rule.
 
 - Make oversized canonical graph failures actionable by naming `--exclude`
   and `.compassignore` as safe ways to reduce publication scope. The CLI keeps

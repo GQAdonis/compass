@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use compass_cypher::{
-    Clause, Column, CompassValue, CompiledQuery, Direction, MatchClause, NodePattern, NodeRef,
-    Parameters, PathRef, PathSelector, Pattern, ProjectionClause, QueryPart, QueryProfileMode,
+    Clause, Column, CompassValue, CompiledQuery, MatchClause, NodePattern, NodeRef, Parameters,
+    PathRef, PathSelector, Pattern, ProjectionClause, QueryPart, QueryProfileMode,
     RelationshipPattern, RelationshipRef, Row,
 };
 use compass_model::{EdgeIndex, Graph, NodeIndex};
@@ -15,6 +15,7 @@ use super::error::{QueryError, QueryErrorKind};
 use super::eval::{
     canonical_row, canonical_value, equal_values, eval, project_rows, property_value, truthy,
 };
+use super::graph_access::{NodeSelection, QueryGraph};
 use super::profile::{OperatorProfile, QueryProfile};
 
 pub(super) type BindingRow = BTreeMap<String, CompassValue>;
@@ -66,6 +67,26 @@ pub struct QueryResult {
 }
 
 pub fn execute(request: QueryRequest<'_>) -> Result<QueryResult, QueryError> {
+    execute_on_storage(StorageQueryRequest {
+        compiled: request.compiled,
+        graph: request.graph,
+        parameters: request.parameters,
+        limits: request.limits,
+        cancellation: request.cancellation,
+    })
+}
+
+pub(crate) struct StorageQueryRequest<'a> {
+    pub compiled: &'a CompiledQuery,
+    pub graph: &'a dyn QueryGraph,
+    pub parameters: &'a Parameters,
+    pub limits: QueryLimits,
+    pub cancellation: &'a AtomicBool,
+}
+
+pub(crate) fn execute_on_storage(
+    request: StorageQueryRequest<'_>,
+) -> Result<QueryResult, QueryError> {
     if request.limits.max_path_depth > 32 {
         return Err(QueryError::new(
             QueryErrorKind::Internal,
@@ -89,7 +110,7 @@ pub fn execute(request: QueryRequest<'_>) -> Result<QueryResult, QueryError> {
             .map(|record| format!("{}: {}", record.rule, record.reason))
             .collect(),
         columns: request.compiled.columns.clone(),
-        schema_fingerprint: request.graph.schema_fingerprint().to_hex(),
+        schema_fingerprint: request.graph.schema_fingerprint(),
     };
     if request.compiled.profile == QueryProfileMode::Explain {
         return Ok(QueryResult {
@@ -179,7 +200,7 @@ pub fn execute(request: QueryRequest<'_>) -> Result<QueryResult, QueryError> {
 }
 
 pub(super) struct ExecutionContext<'a> {
-    pub(super) graph: &'a Graph,
+    pub(super) graph: &'a dyn QueryGraph,
     pub(super) parameters: &'a Parameters,
     pub(super) limits: QueryLimits,
     cancellation: &'a AtomicBool,
@@ -433,7 +454,7 @@ fn match_pattern(
             states.push(PathState {
                 row: next,
                 current: node,
-                nodes: vec![node_ref(context.graph, node)],
+                nodes: vec![node_ref(context.graph, node)?],
                 relationships: Vec::new(),
                 used_edges: BTreeSet::new(),
             });
@@ -526,7 +547,7 @@ fn match_shortest_chain(
         }
         let mut next_frontier = Vec::new();
         for state in frontier {
-            for (edge, neighbor) in adjacent_edges(state.current, relationship, context.graph) {
+            for (edge, neighbor) in context.graph.adjacent(state.current, relationship)? {
                 if state.used_edges.contains(&edge) {
                     continue;
                 }
@@ -537,8 +558,8 @@ fn match_shortest_chain(
                 let mut next = state.clone();
                 next.current = neighbor;
                 next.relationships
-                    .push(relationship_ref(context.graph, edge));
-                next.nodes.push(node_ref(context.graph, neighbor));
+                    .push(relationship_ref(context.graph, edge)?);
+                next.nodes.push(node_ref(context.graph, neighbor)?);
                 next.used_edges.insert(edge);
                 next_frontier.push(next);
             }
@@ -597,30 +618,26 @@ fn start_candidates(
         let value = eval(expression, row, None, context)?;
         if key == "id" {
             if let CompassValue::String(id) = value {
-                return Ok(context.graph.node_index(&id).into_iter().collect());
+                return context.graph.select_nodes(NodeSelection::Id(&id));
             }
         } else if key == "source_file" {
             if let CompassValue::String(source_file) = value {
-                return Ok(context
+                return context
                     .graph
-                    .query_index()
-                    .nodes_with_source_file(&source_file)
-                    .to_vec());
+                    .select_nodes(NodeSelection::SourceFile(&source_file));
             }
         } else if key == "label"
             && let CompassValue::String(label) = value
         {
-            return Ok(context
+            return context
                 .graph
-                .query_index()
-                .nodes_with_display_label(&label)
-                .to_vec());
+                .select_nodes(NodeSelection::DisplayLabel(&label));
         }
     }
     if let Some(label) = pattern.labels.first() {
-        return Ok(context.graph.query_index().nodes_with_label(label).to_vec());
+        return context.graph.select_nodes(NodeSelection::Label(label));
     }
-    Ok((0..context.graph.node_count()).collect())
+    context.graph.select_nodes(NodeSelection::All)
 }
 
 fn bind_and_match_node(
@@ -629,20 +646,21 @@ fn bind_and_match_node(
     pattern: &NodePattern,
     context: &mut ExecutionContext<'_>,
 ) -> Result<Option<BindingRow>, QueryError> {
-    let reference = node_ref(context.graph, node);
+    let reference = node_ref(context.graph, node)?;
     if let Some(variable) = &pattern.variable
         && !bind_value(&mut row, variable, CompassValue::Node(reference.clone()))
     {
         return Ok(None);
     }
-    let record = context.graph.node(node);
+    let record = context.graph.node(node)?;
     if pattern
         .labels
         .iter()
-        .any(|label| compass_model::cypher_node_label(record) != *label)
+        .any(|label| compass_model::cypher_node_label(&record) != *label)
     {
         return Ok(None);
     }
+    drop(record);
     let target = CompassValue::Node(reference);
     for (property, expression) in &pattern.properties {
         let actual = property_value(&target, property, context)?;
@@ -707,7 +725,7 @@ fn expand_depth_first(
     if depth == pattern.max_hops {
         return Ok(());
     }
-    for (edge, neighbor) in adjacent_edges(state.current, pattern, context.graph) {
+    for (edge, neighbor) in context.graph.adjacent(state.current, pattern)? {
         if state.used_edges.contains(&edge) {
             continue;
         }
@@ -715,11 +733,11 @@ fn expand_depth_first(
         if !relationship_properties_match(&state, edge, pattern, context)? {
             continue;
         }
-        let reference = relationship_ref(context.graph, edge);
+        let reference = relationship_ref(context.graph, edge)?;
         let mut next = state.clone();
         next.current = neighbor;
         next.relationships.push(reference);
-        next.nodes.push(node_ref(context.graph, neighbor));
+        next.nodes.push(node_ref(context.graph, neighbor)?);
         next.used_edges.insert(edge);
         expand_depth_first(next, pattern, depth + 1, output, context)?;
     }
@@ -732,7 +750,7 @@ fn relationship_properties_match(
     pattern: &RelationshipPattern,
     context: &mut ExecutionContext<'_>,
 ) -> Result<bool, QueryError> {
-    let target = CompassValue::Relationship(relationship_ref(context.graph, edge));
+    let target = CompassValue::Relationship(relationship_ref(context.graph, edge)?);
     for (property, expression) in &pattern.properties {
         let actual = property_value(&target, property, context)?;
         let expected = eval(expression, &state.row, None, context)?;
@@ -741,75 +759,6 @@ fn relationship_properties_match(
         }
     }
     Ok(true)
-}
-
-fn adjacent_edges(
-    node: NodeIndex,
-    pattern: &RelationshipPattern,
-    graph: &Graph,
-) -> Vec<(EdgeIndex, NodeIndex)> {
-    let mut output = Vec::new();
-    let outgoing = |node: NodeIndex| -> Vec<EdgeIndex> {
-        if graph.is_directed() && !pattern.types.is_empty() {
-            pattern
-                .types
-                .iter()
-                .flat_map(|relation| graph.query_index().outgoing_with_type(node, relation))
-                .copied()
-                .collect()
-        } else {
-            graph.outgoing_edges(node).collect()
-        }
-    };
-    let incoming = |node: NodeIndex| -> Vec<EdgeIndex> {
-        if graph.is_directed() && !pattern.types.is_empty() {
-            pattern
-                .types
-                .iter()
-                .flat_map(|relation| graph.query_index().incoming_with_type(node, relation))
-                .copied()
-                .collect()
-        } else {
-            graph.incoming_edges(node).collect()
-        }
-    };
-    if matches!(
-        pattern.direction,
-        Direction::Outgoing | Direction::Undirected
-    ) {
-        for edge in outgoing(node) {
-            if let Some((source, target)) = graph.edge_endpoints(edge) {
-                let neighbor = if source == node { target } else { source };
-                if relation_matches(edge, pattern, graph) {
-                    output.push((edge, neighbor));
-                }
-            }
-        }
-    }
-    if matches!(
-        pattern.direction,
-        Direction::Incoming | Direction::Undirected
-    ) {
-        for edge in incoming(node) {
-            if let Some((source, target)) = graph.edge_endpoints(edge) {
-                let neighbor = if target == node { source } else { target };
-                if relation_matches(edge, pattern, graph) {
-                    output.push((edge, neighbor));
-                }
-            }
-        }
-    }
-    output.sort_unstable();
-    output.dedup();
-    output
-}
-
-fn relation_matches(edge: EdgeIndex, pattern: &RelationshipPattern, graph: &Graph) -> bool {
-    pattern.types.is_empty()
-        || pattern
-            .types
-            .iter()
-            .any(|relation| compass_model::cypher_relationship_type(graph.edge(edge)) == *relation)
 }
 
 fn bind_optional_nulls(row: &mut BindingRow, clause: &MatchClause) {
@@ -840,21 +789,24 @@ fn bind_value(row: &mut BindingRow, name: &str, value: CompassValue) -> bool {
     }
 }
 
-fn node_ref(graph: &Graph, node: NodeIndex) -> NodeRef {
-    NodeRef {
+fn node_ref(graph: &dyn QueryGraph, node: NodeIndex) -> Result<NodeRef, QueryError> {
+    Ok(NodeRef {
         index: node,
-        id: Arc::from(graph.node(node).id.as_str()),
-    }
+        id: Arc::from(graph.node(node)?.id.as_str()),
+    })
 }
 
-fn relationship_ref(graph: &Graph, edge: EdgeIndex) -> RelationshipRef {
-    let record = graph.edge(edge);
-    RelationshipRef {
+fn relationship_ref(
+    graph: &dyn QueryGraph,
+    edge: EdgeIndex,
+) -> Result<RelationshipRef, QueryError> {
+    let record = graph.edge(edge)?;
+    Ok(RelationshipRef {
         index: edge,
         source: Arc::from(record.source.as_str()),
         target: Arc::from(record.target.as_str()),
-        relation: Arc::from(compass_model::cypher_relationship_type(record)),
-    }
+        relation: Arc::from(compass_model::cypher_relationship_type(&record)),
+    })
 }
 
 fn projection_clause(clause: &Clause) -> Option<&ProjectionClause> {

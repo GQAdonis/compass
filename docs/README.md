@@ -41,6 +41,7 @@ to yours:
 - [Integrate Compass with other tools](guides/integrating-compass.md)
 - [Set up a coding assistant](guides/assistant-setup.md)
 - [Use versioned graph history](guides/versioned-history.md)
+- [Publish and query an embedded SurrealDB projection](guides/surrealdb.md)
 - [Process PDF and Office documents](reference/document-formats.md)
 - [Review pull requests in GitHub](guides/github-pr-review.md)
 - [Operate watch, serve, hooks, and providers](guides/operations.md)
@@ -72,6 +73,7 @@ to yours:
 | [Integrating Compass](guides/integrating-compass.md) | Stable, machine-readable data in another tool |
 | [Assistant setup](guides/assistant-setup.md) | A native Compass skill installed at the right scope |
 | [Versioned history](guides/versioned-history.md) | Immutable graphs and diffs for exact Git commits |
+| [Embedded SurrealDB](guides/surrealdb.md) | Generation-pinned native publication, queries, backup, and repair |
 | [GitHub PR review](guides/github-pr-review.md) | Evidence-qualified reports, safe comments, and deterministic gates |
 | [Operations](guides/operations.md) | Safe operation of long-running and optional surfaces |
 

@@ -30,6 +30,8 @@ mod semantic_commands;
 mod semantic_diff_commands;
 mod semantic_diff_render;
 mod store_commands;
+mod surreal_settings;
+pub use surreal_settings::prepare_surreal_arguments;
 mod task_context_commands;
 mod upgrade_commands;
 
@@ -50,15 +52,16 @@ use compass_analysis::{
 use compass_core::{
     BuildFileProgress, BuildOptions, BuildPurpose, BuildResult, BuildTimings,
     ClusterExistingOptions, CoreDocumentProcessingOptions, ExportInputs, GraphStorage,
-    InferenceLevel, LoadedGraph, SemanticLayer, WatchBackend, WatchBuildReason, WatchOptions,
-    WatchStatus, build_graph_with_layers, build_graph_with_layers_and_progress,
-    build_graph_with_layers_and_tiebreaker, cluster_existing_graph, default_graph_path,
-    diagnose_graph_file, diagnose_graph_quality, format_diagnostic_json, format_diagnostic_report,
-    format_quality_json, format_quality_report, merge_graphs, watch_local_graph,
+    InferenceLevel, LoadedGraph, SemanticLayer, SurrealStorageEngine, WatchBackend,
+    WatchBuildReason, WatchOptions, WatchStatus, build_graph_with_layers,
+    build_graph_with_layers_and_progress, build_graph_with_layers_and_tiebreaker,
+    cluster_existing_graph, default_graph_path, diagnose_graph_file, diagnose_graph_quality,
+    format_diagnostic_json, format_diagnostic_report, format_quality_json, format_quality_report,
+    merge_graphs, watch_local_graph,
 };
 use compass_files::{
-    BuildScope, DetectOptions, Detection, Manifest, ManifestKind, ProjectConfig, detect,
-    write_text_atomic,
+    BuildScope, DetectOptions, Detection, Manifest, ManifestKind, ProjectConfig, ProjectStore,
+    ProjectSurrealEngine, detect, write_text_atomic,
 };
 use compass_global::{GlobalPaths, global_add};
 use compass_graph::god_nodes;
@@ -546,6 +549,19 @@ pub fn run_mcp(arguments: &[OsString], stdout: &mut impl Write, stderr: &mut imp
     if options.session_timeout_used && options.transport == "http" {
         let _result = writeln!(stderr, "{SESSION_TIMEOUT_DEPRECATION}");
     }
+    if options.engine == compass_query::EngineSelection::Surreal
+        && !cfg!(any(
+            feature = "surreal-surrealkv",
+            feature = "surreal-rocksdb",
+            feature = "surreal-remote"
+        ))
+    {
+        let _result = writeln!(
+            stderr,
+            "error: this Compass binary was built without a SurrealDB engine"
+        );
+        return 2;
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -568,11 +584,13 @@ pub fn run_mcp(arguments: &[OsString], stdout: &mut impl Write, stderr: &mut imp
             json_response: options.json_response,
             stateless: options.stateless,
             session_timeout: options.session_timeout,
+            engine: options.engine,
         }))
     } else {
-        runtime.block_on(compass_mcp::serve_stdio_configured(
+        runtime.block_on(compass_mcp::serve_stdio_configured_with_engine(
             options.graph_path,
             options.agent_graph,
+            options.engine,
         ))
     };
     match result {
@@ -598,6 +616,7 @@ struct McpOptions {
     stateless: bool,
     session_timeout: Option<Duration>,
     session_timeout_used: bool,
+    engine: compass_query::EngineSelection,
 }
 
 fn parse_mcp_options(args: &[String]) -> Result<Option<McpOptions>, String> {
@@ -624,6 +643,7 @@ fn parse_mcp_options(args: &[String]) -> Result<Option<McpOptions>, String> {
     let mut stateless = true;
     let session_timeout = None;
     let mut session_timeout_used = false;
+    let mut engine = compass_query::EngineSelection::Default;
     let mut index = 0_usize;
     while index < args.len() {
         let value = &args[index];
@@ -636,6 +656,9 @@ fn parse_mcp_options(args: &[String]) -> Result<Option<McpOptions>, String> {
                         "error: argument --transport: invalid choice: '{transport}' (choose from 'stdio', 'http')"
                     ));
                 }
+            }
+            "--engine" => {
+                engine = parse_mcp_engine(mcp_value(args, &mut index, "--engine")?)?;
             }
             "--host" => host = mcp_value(args, &mut index, "--host")?.to_owned(),
             "--port" => {
@@ -685,6 +708,9 @@ fn parse_mcp_options(args: &[String]) -> Result<Option<McpOptions>, String> {
                         "error: argument --transport: invalid choice: '{transport}' (choose from 'stdio', 'http')"
                     ));
                 }
+            }
+            _ if value.starts_with("--engine=") => {
+                engine = parse_mcp_engine(&value[9..])?;
             }
             _ if value.starts_with("--host=") => host = value[7..].to_owned(),
             _ if value.starts_with("--port=") => {
@@ -762,7 +788,20 @@ fn parse_mcp_options(args: &[String]) -> Result<Option<McpOptions>, String> {
         stateless,
         session_timeout,
         session_timeout_used,
+        engine,
     }))
+}
+
+fn parse_mcp_engine(raw: &str) -> Result<compass_query::EngineSelection, String> {
+    match raw {
+        "default" => Ok(compass_query::EngineSelection::Default),
+        "json" => Ok(compass_query::EngineSelection::Json),
+        "store" | "sqlite" => Ok(compass_query::EngineSelection::Store),
+        "surreal" => Ok(compass_query::EngineSelection::Surreal),
+        _ => Err(format!(
+            "error: argument --engine: invalid choice: '{raw}' (choose from 'default', 'json', 'store', 'surreal')"
+        )),
+    }
 }
 
 fn mcp_value<'a>(args: &'a [String], index: &mut usize, option: &str) -> Result<&'a str, String> {
@@ -788,7 +827,7 @@ fn parse_session_timeout(raw: &str) -> Result<Option<Duration>, String> {
 }
 
 fn mcp_help() -> String {
-    "Usage: compass serve [GRAPH_PATH] [--graph PATH] [--transport stdio|http] [--host HOST] [--port PORT] [--api-key KEY] [--write-api-key KEY] [--agent-graph-project PATH] [--agent-graph-writes] [--agent-graph-masks] [--agent-graph-principal ID] [--agent-graph-state-root PATH] [--path PATH] [--json-response] [--stateless] [--session-timeout SECONDS]\n\nHTTP uses stateless MCP 2026-07-28. --stateless is retained as a compatibility spelling. --session-timeout is deprecated, ignored, and will be removed in Compass 0.5.0.".to_owned()
+    "Usage: compass serve [GRAPH_PATH] [--graph PATH] [--engine default|json|store|surreal] [--transport stdio|http] [--host HOST] [--port PORT] [--api-key KEY] [--write-api-key KEY] [--agent-graph-project PATH] [--agent-graph-writes] [--agent-graph-masks] [--agent-graph-principal ID] [--agent-graph-state-root PATH] [--path PATH] [--json-response] [--stateless] [--session-timeout SECONDS]\n\nThe default MCP engine selects surreal.ref, then SQLite, then JSON. Explicit Surreal selection fails closed when the reference is unavailable or corrupt. HTTP uses stateless MCP 2026-07-28. --stateless is retained as a compatibility spelling. --session-timeout is deprecated, ignored, and will be removed in Compass 0.5.0.".to_owned()
 }
 
 /// Run Compass's long-lived native watcher, streaming status as changes arrive.
@@ -1124,6 +1163,9 @@ fn parse_watch_options(args: &[String]) -> Result<Option<WatchOptions>, String> 
     let mut excludes = Vec::new();
     let mut program_artifacts = Vec::new();
     let mut graph_storage = GraphStorage::default();
+    let mut graph_storage_explicit = false;
+    let mut surreal_engine = None;
+    let mut surreal_path = None;
     let mut inference_level = InferenceLevel::default();
     let mut force_polling = false;
     let mut index = 0;
@@ -1152,12 +1194,44 @@ fn parse_watch_options(args: &[String]) -> Result<Option<WatchOptions>, String> 
             }
             "--store" if index + 1 < args.len() => {
                 graph_storage = parse_graph_storage(&args[index + 1])?;
+                graph_storage_explicit = true;
                 index += 1;
             }
             value if value.starts_with("--store=") => {
                 graph_storage = parse_graph_storage(&value[8..])?;
+                graph_storage_explicit = true;
             }
-            "--store" => return Err("error: --store requires json or sqlite".to_owned()),
+            "--store" => {
+                return Err("error: --store requires json, sqlite, or surreal".to_owned());
+            }
+            "--surreal-engine" if index + 1 < args.len() => {
+                surreal_engine = Some(parse_surreal_engine(&args[index + 1])?);
+                index += 1;
+            }
+            value if value.starts_with("--surreal-engine=") => {
+                surreal_engine = Some(parse_surreal_engine(&value[17..])?);
+            }
+            "--surreal-engine" => {
+                return Err(
+                    "error: --surreal-engine requires surrealkv, rocksdb, or remote".to_owned(),
+                );
+            }
+            "--surreal-path" if index + 1 < args.len() => {
+                if args[index + 1].is_empty() {
+                    return Err("error: --surreal-path requires a path".to_owned());
+                }
+                surreal_path = Some(PathBuf::from(&args[index + 1]));
+                index += 1;
+            }
+            value if value.starts_with("--surreal-path=") => {
+                if value[15..].is_empty() {
+                    return Err("error: --surreal-path requires a path".to_owned());
+                }
+                surreal_path = Some(PathBuf::from(&value[15..]));
+            }
+            "--surreal-path" => {
+                return Err("error: --surreal-path requires a path".to_owned());
+            }
             "--inference-level" if index + 1 < args.len() => {
                 inference_level = parse_inference_level(&args[index + 1])?;
                 index += 1;
@@ -1208,15 +1282,54 @@ fn parse_watch_options(args: &[String]) -> Result<Option<WatchOptions>, String> 
         return Err("error: --no-program conflicts with --program-artifact".to_owned());
     }
     let mut options = WatchOptions::new(root.unwrap_or_else(|| PathBuf::from(".")));
-    options.build.scope = ProjectConfig::load(&options.build.root)
-        .map_err(|error| format!("error: {error}"))?
-        .map_or_else(BuildScope::default, |config| config.build);
+    let project_config =
+        ProjectConfig::load(&options.build.root).map_err(|error| format!("error: {error}"))?;
+    options.build.scope = project_config
+        .as_ref()
+        .map_or_else(BuildScope::default, |config| config.build.clone());
     options.debounce = debounce;
     options.force_polling = force_polling;
     options.build.output_root = output_root;
     options.build.no_cluster = no_cluster;
     options.build.no_viz = no_viz;
-    options.build.graph_storage = graph_storage;
+    options.build.graph_storage = if graph_storage_explicit {
+        graph_storage
+    } else {
+        project_config
+            .as_ref()
+            .and_then(|config| config.storage.store)
+            .map_or(graph_storage, project_store_to_graph_storage)
+    };
+    if (surreal_path.is_some() || surreal_engine.is_some())
+        && options.build.graph_storage != GraphStorage::Surreal
+    {
+        return Err(
+            "error: --surreal-engine and --surreal-path require --store surreal".to_owned(),
+        );
+    }
+    if options.build.graph_storage == GraphStorage::Surreal {
+        options.build.surreal_engine = surreal_engine
+            .or_else(|| {
+                project_config
+                    .as_ref()
+                    .and_then(|config| config.storage.surreal_engine)
+                    .map(project_surreal_engine_to_core)
+            })
+            .unwrap_or_default();
+        options.build.surreal_path = surreal_path.or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|config| config.storage.surreal_path.clone())
+        });
+    }
+    if options.build.graph_storage == GraphStorage::Surreal
+        && !surreal_engine_available(options.build.surreal_engine)
+    {
+        return Err(format!(
+            "error: Surreal {} support is unavailable in this Compass build",
+            options.build.surreal_engine.as_str()
+        ));
+    }
     options.build.inference_level = inference_level;
     options.build.gitignore = gitignore;
     options.build.extra_excludes = excludes;
@@ -1772,6 +1885,9 @@ fn command_build_with_validation_inner(
     let mut no_program = false;
     let mut program_requested = false;
     let mut graph_storage = GraphStorage::default();
+    let mut graph_storage_explicit = false;
+    let mut surreal_engine = None;
+    let mut surreal_path = None;
     let mut inference_level = InferenceLevel::default();
     let mut gitignore = true;
     let mut code_only = false;
@@ -1963,6 +2079,7 @@ fn command_build_with_validation_inner(
                     Ok(value) => value,
                     Err(error) => return extract_parse_failure(frontend, error),
                 };
+                graph_storage_explicit = true;
                 index += 1;
             }
             value if value.starts_with("--store=") => {
@@ -1970,11 +2087,56 @@ fn command_build_with_validation_inner(
                     Ok(value) => value,
                     Err(error) => return extract_parse_failure(frontend, error),
                 };
+                graph_storage_explicit = true;
             }
             "--store" => {
                 return extract_parse_failure(
                     frontend,
-                    "error: --store requires json or sqlite".to_owned(),
+                    "error: --store requires json, sqlite, or surreal".to_owned(),
+                );
+            }
+            "--surreal-engine" if index + 1 < args.len() => {
+                surreal_engine = match parse_surreal_engine(&args[index + 1]) {
+                    Ok(value) => Some(value),
+                    Err(error) => return extract_parse_failure(frontend, error),
+                };
+                index += 1;
+            }
+            value if value.starts_with("--surreal-engine=") => {
+                surreal_engine = match parse_surreal_engine(&value[17..]) {
+                    Ok(value) => Some(value),
+                    Err(error) => return extract_parse_failure(frontend, error),
+                };
+            }
+            "--surreal-engine" => {
+                return extract_parse_failure(
+                    frontend,
+                    "error: --surreal-engine requires surrealkv, rocksdb, or remote".to_owned(),
+                );
+            }
+            "--surreal-path" if index + 1 < args.len() => {
+                if args[index + 1].is_empty() {
+                    return extract_parse_failure(
+                        frontend,
+                        "error: --surreal-path requires a path".to_owned(),
+                    );
+                }
+                surreal_path = Some(PathBuf::from(&args[index + 1]));
+                index += 1;
+            }
+            value if value.starts_with("--surreal-path=") => {
+                if value[15..].is_empty() {
+                    return extract_parse_failure(
+                        frontend,
+                        "error: --surreal-path requires a path".to_owned(),
+                    );
+                }
+                surreal_path = Some(PathBuf::from(&value[15..]));
+            }
+            "--surreal-path" => {
+                return extract_parse_failure(
+                    frontend,
+                    "error: --surreal-path requires a path".to_owned(),
                 );
             }
             "--inference-level" if index + 1 < args.len() => {
@@ -2089,7 +2251,7 @@ fn command_build_with_validation_inner(
                     extract_help()
                 } else {
                     format!(
-                        "Usage: compass {} [path] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite] [--inference-level low|medium|high|max] [--max-source-bytes N] [--max-workers N] [--no-cluster] [--force] [--no-viz] [--timing] [--resolution N]\nCommunity resolution: omission uses fixed resolution 1; --resolution N uses exactly N. Automatic multi-resolution selection is qualification-only.",
+                        "Usage: compass {} [path] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--max-source-bytes N] [--max-workers N] [--no-cluster] [--force] [--no-viz] [--timing] [--resolution N]\nCommunity resolution: omission uses fixed resolution 1; --resolution N uses exactly N. Automatic multi-resolution selection is qualification-only.",
                         operation.label()
                     )
                 });
@@ -2142,11 +2304,13 @@ fn command_build_with_validation_inner(
         root
     };
     let mut options = BuildOptions::new(&root);
-    options.scope = match ProjectConfig::load(&root) {
-        Ok(Some(config)) => config.build,
-        Ok(None) => BuildScope::default(),
+    let project_config = match ProjectConfig::load(&root) {
+        Ok(config) => config,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
+    options.scope = project_config
+        .as_ref()
+        .map_or_else(BuildScope::default, |config| config.build.clone());
     options.scan_filesystem = has_explicit_root || !extract;
     options.output_root = output_root;
     options.cache_root = std::env::var_os("COMPASS_HISTORY_CACHE_ROOT")
@@ -2156,7 +2320,44 @@ fn command_build_with_validation_inner(
     options.reuse_cache_on_force = reuse_cache_on_force;
     options.no_cluster = no_cluster;
     options.no_viz = no_viz;
-    options.graph_storage = graph_storage;
+    options.graph_storage = if graph_storage_explicit {
+        graph_storage
+    } else {
+        project_config
+            .as_ref()
+            .and_then(|config| config.storage.store)
+            .map_or(graph_storage, project_store_to_graph_storage)
+    };
+    if (surreal_path.is_some() || surreal_engine.is_some())
+        && options.graph_storage != GraphStorage::Surreal
+    {
+        return Outcome::failure(
+            "error: --surreal-engine and --surreal-path require --store surreal".to_owned(),
+        );
+    }
+    if options.graph_storage == GraphStorage::Surreal {
+        options.surreal_engine = surreal_engine
+            .or_else(|| {
+                project_config
+                    .as_ref()
+                    .and_then(|config| config.storage.surreal_engine)
+                    .map(project_surreal_engine_to_core)
+            })
+            .unwrap_or_default();
+        options.surreal_path = surreal_path.or_else(|| {
+            project_config
+                .as_ref()
+                .and_then(|config| config.storage.surreal_path.clone())
+        });
+    }
+    if options.graph_storage == GraphStorage::Surreal
+        && !surreal_engine_available(options.surreal_engine)
+    {
+        return Outcome::failure(format!(
+            "error: Surreal {} support is unavailable in this Compass build",
+            options.surreal_engine.as_str()
+        ));
+    }
     options.inference_level = inference_level;
     options.gitignore = gitignore;
     if environment_truthy("COMPASS_HISTORY_BUILD") {
@@ -2449,9 +2650,45 @@ fn parse_graph_storage(value: &str) -> Result<GraphStorage, String> {
     match value {
         "json" => Ok(GraphStorage::Json),
         "sqlite" => Ok(GraphStorage::Sqlite),
+        "surreal" => Ok(GraphStorage::Surreal),
         _ => Err(format!(
-            "error: --store must be json or sqlite (found {value})"
+            "error: --store must be json, sqlite, or surreal (found {value})"
         )),
+    }
+}
+
+fn parse_surreal_engine(value: &str) -> Result<SurrealStorageEngine, String> {
+    match value {
+        "surrealkv" => Ok(SurrealStorageEngine::SurrealKv),
+        "rocksdb" => Ok(SurrealStorageEngine::RocksDb),
+        "remote" => Ok(SurrealStorageEngine::Remote),
+        _ => Err(format!(
+            "error: --surreal-engine must be surrealkv, rocksdb, or remote (found {value})"
+        )),
+    }
+}
+
+fn project_store_to_graph_storage(value: ProjectStore) -> GraphStorage {
+    match value {
+        ProjectStore::Json => GraphStorage::Json,
+        ProjectStore::Sqlite => GraphStorage::Sqlite,
+        ProjectStore::Surreal => GraphStorage::Surreal,
+    }
+}
+
+fn project_surreal_engine_to_core(value: ProjectSurrealEngine) -> SurrealStorageEngine {
+    match value {
+        ProjectSurrealEngine::SurrealKv => SurrealStorageEngine::SurrealKv,
+        ProjectSurrealEngine::RocksDb => SurrealStorageEngine::RocksDb,
+        ProjectSurrealEngine::Remote => SurrealStorageEngine::Remote,
+    }
+}
+
+fn surreal_engine_available(engine: SurrealStorageEngine) -> bool {
+    match engine {
+        SurrealStorageEngine::SurrealKv => cfg!(feature = "surreal-surrealkv"),
+        SurrealStorageEngine::RocksDb => cfg!(feature = "surreal-rocksdb"),
+        SurrealStorageEngine::Remote => cfg!(feature = "surreal-remote"),
     }
 }
 
@@ -3075,7 +3312,7 @@ fn executable_on_path(name: &str) -> bool {
 }
 
 fn extract_help() -> String {
-    "Usage: compass extract [PATH] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite] [--inference-level low|medium|high|max] [--code-only] [--cargo] [--google-workspace] [--postgres DSN] [--backend NAME] [--model MODEL] [--mode deep] [--ocr off|auto|always] [--ocr-profile NAME] [--ocr-language BCP47] [--token-budget N] [--max-concurrency N] [--max-workers N] [--max-source-bytes N] [--api-timeout SECONDS] [--allow-partial] [--dedup-llm] [--timing] [--out DIR] [--no-cluster] [--force] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--resolution N] [--exclude-hubs N]\nCommunity resolution: omission uses fixed resolution 1; --resolution N uses exactly N. Automatic multi-resolution selection is qualification-only.\nProvider selection: --backend/--model override COMPASS_BACKEND/COMPASS_MODEL. Built-ins: claude, kimi, ollama, gemini, openai, deepseek, azure, bedrock, claude-cli. Set the selected provider's documented credential variable; custom providers use `compass provider add`. Credentials are never written to Compass artifacts.".to_owned()
+    "Usage: compass extract [PATH] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--code-only] [--cargo] [--google-workspace] [--postgres DSN] [--backend NAME] [--model MODEL] [--mode deep] [--ocr off|auto|always] [--ocr-profile NAME] [--ocr-language BCP47] [--token-budget N] [--max-concurrency N] [--max-workers N] [--max-source-bytes N] [--api-timeout SECONDS] [--allow-partial] [--dedup-llm] [--timing] [--out DIR] [--no-cluster] [--force] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--resolution N] [--exclude-hubs N]\nCommunity resolution: omission uses fixed resolution 1; --resolution N uses exactly N. Automatic multi-resolution selection is qualification-only.\nProvider selection: --backend/--model override COMPASS_BACKEND/COMPASS_MODEL. Built-ins: claude, kimi, ollama, gemini, openai, deepseek, azure, bedrock, claude-cli. Set the selected provider's documented credential variable; custom providers use `compass provider add`. Credentials are never written to Compass artifacts.".to_owned()
 }
 
 fn saved_graph_root() -> Option<PathBuf> {
@@ -6066,7 +6303,7 @@ fn graph_load_outcome(error: GraphError) -> Outcome {
 }
 
 fn watch_help() -> String {
-    "Usage: compass watch [PATH] [--program] [--program-artifact PATH] [--no-program] [--debounce SECONDS] [--store json|sqlite] [--inference-level low|medium|high|max] [--out DIR] [--no-cluster] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--poll]"
+    "Usage: compass watch [PATH] [--program] [--program-artifact PATH] [--no-program] [--debounce SECONDS] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--out DIR] [--no-cluster] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--poll]"
         .to_owned()
 }
 

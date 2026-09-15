@@ -4,6 +4,75 @@ Compass performance is measured against Compass-owned baselines. Qualification
 must never trade away graph correctness, deterministic output, resource bounds,
 or complete error reporting.
 
+## Legacy artifact load bounds
+
+Before record decoding or content-cache lookup, JSON loading reads at most
+64 KiB to inspect `graph.build.builderVersion`. A recognized legacy release
+fails immediately after that field; readers do not scan the remaining large
+node/edge arrays to diagnose incompatibility. The limit includes buffered
+read-ahead. SQLite and Surreal check their existing bounded metadata records
+instead; this adds no canonical-JSON read to native query execution. Recovery
+provenance reads are independently limited to 16 KiB. These are resource bounds,
+not wall-clock performance claims.
+
+## Embedded Surreal qualification
+
+Remote operation uses the same bounded generation-filtered reads over a
+process-lived WebSocket connection. Network latency is not represented by the
+embedded measurements below; no remote throughput claim is implied. Remote
+connections are capped at 16, router capacity at 256, response messages at
+128 MiB, connection establishment at 30 seconds, and each RPC at 120 seconds.
+Remote GC is not inferred from local snapshot retention.
+
+SurrealDB is a non-default build profile, so its compile time, binary size,
+database size, publication latency, query latency, and peak RSS are reported
+separately from the default SQLite/JSON baseline. SurrealKV is the production
+profile; RocksDB is an optional comparison profile. Do not combine their Cargo
+builds or share a target directory across worktrees.
+
+Release qualification publishes one canonical graph to JSON, SQLite, and
+Surreal, then runs every supported CompassQL/OpenCypher scenario and typed
+operation against the same generation. Ordered rows, values, stable errors,
+limits, and profiles must agree. The Surreal run also records staged rows,
+idempotent repair, orphan generations reclaimed, projection bytes, and the
+size of the shared embedded store. Explicit Surreal runs are disqualified if
+they open `graph.json` or `store.ref` as a fallback.
+
+Surreal CompassQL operates on indexed ordinal scans and per-node expansions,
+not a whole-graph materialization. Its bounded record cache is per query
+(256 entries; an 8 MiB estimated-size cap). Storage buffers are independent
+of the common executor's semantic-row memory budget, as on JSON/SQLite;
+small query budgets must not reject a node solely because its persisted
+payload is larger than a binding row. Identity-only selectors are bounded by
+the admitted projection (at most one million nodes and 2.5 million relations).
+Projection metadata has a 4 MiB header cap; source-file verification reads
+individual generation/path records. Schema fingerprint construction streams
+record schema facts during publication, without building another adjacency
+index. These are resource bounds, not measured latency claims.
+
+Embedded connections have a process-wide owner on a dedicated two-worker
+runtime with at most four blocking workers and 256 queued requests per router.
+Publication, watch, and MCP sessions reuse physical connections by canonical
+store path; replacing a caller runtime cannot strand a lock. At most 16 physical
+stores may be opened per process. Owners retain locks until process exit:
+restart a long-running process to release unused stores. Namespace/database
+selections are session-local; generation pinning remains reference-local.
+
+Use the phase-end integration commands documented in `AGENTS.md`, including:
+
+```bash
+cargo test -p compass-query --test '*' --features surreal-surrealkv --locked
+cargo test -p compass-cli --test '*' --features surreal-surrealkv --locked
+cargo test -p compass-mcp --test '*' --features surreal-surrealkv --locked
+cargo test -p compass-graphdb-surreal --test '*' --features rocksdb --locked
+```
+
+The default-feature isolation gate must also prove that `compass-cli`,
+`compass-core`, `compass-query`, and `compass-mcp` have no SurrealDB dependency
+path. Measurements must state the exact engine, Compass commit, SurrealDB
+3.2.4 pin, Rust toolchain, feature set, target directory, corpus, and warm/cold
+state.
+
 The reproducible real-repository harness, operator commands, correctness gates,
 and optional explicit Graphify comparison are documented in
 [`benchmarks/performance/README.md`](benchmarks/performance/README.md).
@@ -67,6 +136,54 @@ production extraction completed in 1.00 s, of which internal Leiden detection
 used 42 ms; the matching `--no-cluster` observation completed in 0.68 s. Those
 two full-build values are single observations and do not substitute for the
 multi-corpus release matrix.
+
+## Canonical graph size qualification
+
+`COMPASS_MAX_GRAPH_BYTES` is enforced against the canonical JSON bytes emitted
+into atomic staging. Compass does not predict canonical graph size from source
+bytes: measured expansion varies with language, structural density, inventory
+coverage, and extraction evidence, so a single linear multiplier is not a safe
+admission model. If the emitted stream crosses the bound, publication aborts
+and the previously active artifact set remains intact.
+
+Measure the five-estate corpus after producing one completed `graph.json` per
+estate. The command reads only the bounded metadata prefix, sums the persisted
+`byteSize` values for admitted files, and reports per-estate ratios plus the
+minimum, median, and maximum distribution:
+
+```bash
+python3 scripts/qualify_graph_size_ratios.py \
+  --estate ara-scanworks-ui /path/to/ara-scanworks-ui/compass-out/graph.json \
+  --estate ara-pm /path/to/ara-pm/compass-out/graph.json \
+  --estate captivebrowser-133 /path/to/captivebrowser-133/compass-out/graph.json \
+  --estate venus /path/to/venus/compass-out/graph.json \
+  --estate solaris-platform /path/to/solaris-platform/compass-out/graph.json \
+  --json-output target/qualification/graph-size-ratios.json \
+  --markdown-output target/qualification/graph-size-ratios.md
+```
+
+The report schema is `compass.qualification.graph-size-ratios/1`. Generated
+reports stay under `target/`; a retained observation must identify the Compass
+commit, corpus revision, and host separately. Ratios are sizing evidence only
+and must never be converted into a fatal preflight estimate.
+
+The 2026-08-30 qualification used the release binary from this change, JSON
+storage, and identical `--no-viz --no-cluster --no-program` settings for every
+estate. Admitted source bytes are the persisted `byteSize` values in each
+completed artifact, not a filesystem-wide estimate:
+
+| Estate | Admitted files | Admitted source bytes | Canonical graph bytes | Ratio |
+| --- | ---: | ---: | ---: | ---: |
+| `ara-pm` | 952 | 39,468,272 | 14,274,716 | 0.361676× |
+| `ara-scanworks-ui` | 494 | 6,688,344 | 3,721,796 | 0.556460× |
+| `captivebrowser-133` | 1,602 | 52,006,357 | 403,028,839 | 7.749607× |
+| `solaris-platform` | 5,102 | 112,938,563 | 87,429,961 | 0.774137× |
+| `venus` | 2,410 | 140,482,350 | 6,832,605 | 0.048637× |
+
+The observed distribution is **0.048637× minimum**, **0.556460× median**, and
+**7.749607× maximum**. The roughly 159-fold spread between the minimum and
+maximum is direct evidence that source bytes alone are not a safe fatal
+admission signal.
 
 ## Markdown graph-v1 quality qualification
 

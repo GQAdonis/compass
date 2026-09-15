@@ -49,10 +49,12 @@ and is independently mergeable:
   canonical `graph.json` bytes bind the manifest; and the reference is checked
   before a store query runs.
 - Typed code-query opening uses an adjacent validated `store.ref` by default
-  and supports explicit `--engine default|json|store`. `json` always selects
-  the permanent JSON engine; `store` requires a published database and
-  reference and executes directly through projected immutable indexes. A
-  default query falls back to JSON only when no store reference is present.
+  and supports explicit `--engine default|json|store|surreal`. `json` always
+  selects the permanent JSON engine; `store` requires a published SQLite
+  database and reference; and `surreal` requires a generation-pinned
+  `compass.surreal.ref/1` plus a matching optional engine feature. A default
+  active-project query selects Surreal, then SQLite, then JSON. Historical
+  realization queries retain their immutable history engine.
 
 Acceptance criteria for this slice are deliberately concrete:
 

@@ -5,8 +5,9 @@ already validated file list from the Python boundary, never execute repository
 code, and emit the versioned source-oracle contract consumed by the audit
 harness. They are not Compass runtime dependencies.
 
-The current release-candidate toolchains live outside the checkout under
-`/Volumes/Workspace/crabbuild-target/compass-main/providers`:
+The current release-candidate toolchains live below the selected Cargo target
+directory in `providers/` by default. Set the corresponding
+`COMPASS_<LANGUAGE>_ORACLE` environment variable to use another executable:
 
 - `swift_oracle.swift`: Swift 6.3.3 with SwiftSyntax 603.0.0. Build it from a
   small SwiftPM executable target that depends on the pinned SwiftSyntax
@@ -20,8 +21,8 @@ The current release-candidate toolchains live outside the checkout under
   the pinned `groovy-4.0.27.jar` and launch the resulting class with that jar
   on the class path.
 
-Provider binaries and dependency caches stay on the mounted target volume and
-must never be committed to this repository. The four `*_source_oracle.py`
+Provider binaries and dependency caches stay outside tracked source and must
+never be committed to this repository. The four `*_source_oracle.py`
 wrappers fail closed to `parserAvailable: false` when the corresponding
 executable is absent; such fallback output is intentionally rejected by the
 quality-audit evaluator.

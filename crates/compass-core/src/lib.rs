@@ -40,7 +40,7 @@ pub use merge::{MergeResult, merge_graphs};
 pub use pipeline::{
     BuildFileProgress, BuildOptions, BuildPurpose, BuildResult, BuildTimings, CoreError,
     DEFAULT_MAX_SOURCE_BYTES, GraphStorage, RetainedBuildArtifacts, SemanticLayer,
-    build_graph_with_layers, build_graph_with_layers_and_progress,
+    SurrealStorageEngine, build_graph_with_layers, build_graph_with_layers_and_progress,
     build_graph_with_layers_and_tiebreaker, build_graph_with_layers_retained,
     build_graph_with_semantic, build_local_graph,
 };
@@ -55,8 +55,9 @@ pub use task_context::{
     FrameworkRelationContext, FrameworkRouteContext, FrameworkStageContext,
     TASK_CONTEXT_PROFILE_SCHEMA, TASK_CONTEXT_SCHEMA, TASK_CONTEXT_SCHEMA_V1, TaskContext,
     TaskContextError, TaskContextIntent, TaskContextKnowledge, TaskContextLimits,
-    TaskContextOmission, TaskContextRequest, TaskContextSection, TaskContextSectionKind,
-    TaskContextTarget, TaskContextWork, attach_agent_knowledge, build_task_context,
+    TaskContextOmission, TaskContextQuery, TaskContextRequest, TaskContextSection,
+    TaskContextSectionKind, TaskContextTarget, TaskContextWork, attach_agent_knowledge,
+    build_task_context,
 };
 pub use watch::{
     WatchBackend, WatchBuildReason, WatchError, WatchOptions, WatchStatus, watch_local_graph,

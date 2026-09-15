@@ -1027,6 +1027,11 @@ pub struct EdgeRecord {
 }
 
 impl EdgeRecord {
+    /// Convert one bounded typed row to the public CompassQL property view.
+    pub fn to_query_record(&self) -> Result<crate::EdgeRecord, GraphError> {
+        legacy_edge_record(self)
+    }
+
     #[must_use]
     pub fn has_networkx_identity(&self) -> bool {
         self.id == self.key
@@ -1122,6 +1127,11 @@ impl EdgeRecord {
 }
 
 impl NodeRecord {
+    /// Convert one bounded typed row to the public CompassQL property view.
+    pub fn to_query_record(&self) -> Result<crate::NodeRecord, GraphError> {
+        legacy_node_record(self)
+    }
+
     #[must_use]
     pub fn label(&self) -> &str {
         &self.name
@@ -1686,6 +1696,7 @@ impl GraphDocument {
         if !path.exists() {
             return Err(GraphError::NotFound(crate::graph::absolute_path(path)));
         }
+        crate::artifact_compatibility::validate_graph_path_preamble(path)?;
         if let Some((size, cap)) = Self::size_cap_exceeded(path) {
             return Err(GraphError::TooLarge {
                 path: crate::graph::absolute_path(path),
@@ -1695,6 +1706,10 @@ impl GraphDocument {
         }
         let digest = file_digest(path)?;
         if let Some(document) = load_content_cache(path, &digest) {
+            crate::validate_query_builder_version(
+                &document.graph.build.builder_version,
+                Some(path),
+            )?;
             validate_code_graph(&document)?;
             return Ok(document);
         }
@@ -1725,10 +1740,11 @@ impl GraphDocument {
         if found.as_deref() != Some(CODE_GRAPH_SCHEMA_V1) {
             return Err(GraphError::UnsupportedGraphSchema { found });
         }
-        let document_file = File::open(path).map_err(|source| GraphError::Read {
+        let mut document_file = File::open(path).map_err(|source| GraphError::Read {
             path: crate::graph::absolute_path(path),
             source,
         })?;
+        crate::artifact_compatibility::validate_opened_graph_preamble(&mut document_file, path)?;
         let document =
             serde_json::from_reader(BufReader::new(document_file)).map_err(GraphError::Corrupt)?;
         validate_code_graph(&document)?;
@@ -1786,6 +1802,8 @@ where
             cap,
         });
     }
+
+    crate::artifact_compatibility::validate_opened_graph_preamble(&mut file, path)?;
 
     #[derive(Deserialize)]
     struct SchemaEnvelope {

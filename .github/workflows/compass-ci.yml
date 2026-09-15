@@ -180,6 +180,37 @@ jobs:
           python -c "import ast,pathlib; ast.parse(pathlib.Path('scripts/check_compassql_support.py').read_text())"
           sh -n scripts/benchmark_compassql.sh
 
+  surrealdb-projection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+          key: surrealdb-projection
+      - name: Verify default feature isolation
+        run: sh scripts/check_surreal_feature_isolation.sh
+      - name: Qualify in-memory projection and native reads
+        run: cargo test -p compass-graphdb-surreal --test '*' --features mem --locked
+      - name: Qualify persistent embedded engines
+        run: |
+          cargo test -p compass-graphdb-surreal --test '*' --features surrealkv --locked
+          cargo test -p compass-graphdb-surreal --test '*' --features rocksdb --locked
+      - name: Qualify fully wired SurrealKV surfaces
+        run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-surrealkv --locked
+      - name: Qualify optional RocksDB surface
+        run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-rocksdb --locked
+      - name: Compile combined embedded and standalone server surfaces
+        run: cargo check -p compass-cli --features surreal-surrealkv,surreal-remote --locked
+      - name: Verify bounded YAML and endpoint configuration
+        run: cargo test -p compass-files --test surreal_configuration --locked
+
   native-platforms:
     name: ${{ matrix.target }}
     strategy:

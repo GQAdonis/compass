@@ -3,7 +3,10 @@
 mod code_query;
 mod transport;
 
-pub use transport::{HttpOptions, serve_http, serve_stdio, serve_stdio_configured};
+pub use transport::{
+    HttpOptions, serve_http, serve_stdio, serve_stdio_configured,
+    serve_stdio_configured_with_engine,
+};
 
 /// MCP protocol version accepted by the native Compass transports.
 pub const SUPPORTED_PROTOCOL_VERSION: &str = "2026-07-28";
@@ -214,8 +217,15 @@ struct CacheEntry {
 
 struct StoreInner {
     default_graph: PathBuf,
+    engine: compass_query::EngineSelection,
     cache: Mutex<HashMap<PathBuf, CacheEntry>>,
     typed_queries: compass_query::QueryEngineCache,
+    #[cfg(any(
+        feature = "surreal-surrealkv",
+        feature = "surreal-rocksdb",
+        feature = "surreal-remote"
+    ))]
+    surreal_queries: compass_query::SurrealQueryEngineCache,
 }
 
 /// Hot-reloading, multi-project graph store shared by every MCP session.
@@ -237,13 +247,77 @@ impl std::fmt::Debug for GraphStore {
 impl GraphStore {
     #[must_use]
     pub fn new(default_graph: impl Into<PathBuf>) -> Self {
+        Self::new_with_engine(default_graph, compass_query::EngineSelection::Default)
+    }
+
+    #[must_use]
+    pub fn new_with_engine(
+        default_graph: impl Into<PathBuf>,
+        engine: compass_query::EngineSelection,
+    ) -> Self {
         Self {
             inner: Arc::new(StoreInner {
                 default_graph: default_graph.into(),
+                engine,
                 cache: Mutex::new(HashMap::new()),
                 typed_queries: compass_query::QueryEngineCache::default(),
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
+                surreal_queries: compass_query::SurrealQueryEngineCache::default(),
             }),
         }
+    }
+
+    fn selects_surreal(&self, graph_path: &Path) -> Result<bool, InvocationError> {
+        let published = compass_query::has_published_surreal_compatible(graph_path);
+        match self.inner.engine {
+            compass_query::EngineSelection::Surreal => {
+                if !cfg!(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                )) {
+                    return Err(InvocationError::InvalidParams(
+                        "this Compass MCP server was built without a SurrealDB engine".to_owned(),
+                    ));
+                }
+                if !published {
+                    return Err(InvocationError::InvalidParams(format!(
+                        "explicit Surreal MCP engine requires {}",
+                        graph_path
+                            .parent()
+                            .unwrap_or_else(|| Path::new("."))
+                            .join("surreal.ref")
+                            .display()
+                    )));
+                }
+                Ok(true)
+            }
+            compass_query::EngineSelection::Default => Ok(published
+                && cfg!(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))),
+            compass_query::EngineSelection::Json | compass_query::EngineSelection::Store => {
+                Ok(false)
+            }
+        }
+    }
+
+    fn selects_store(&self, graph_path: &Path) -> bool {
+        let usable_surreal = cfg!(any(
+            feature = "surreal-surrealkv",
+            feature = "surreal-rocksdb",
+            feature = "surreal-remote"
+        )) && compass_query::has_published_surreal_compatible(graph_path);
+        self.inner.engine == compass_query::EngineSelection::Store
+            || (self.inner.engine == compass_query::EngineSelection::Default
+                && !usable_surreal
+                && compass_query::has_published_store(graph_path))
     }
 
     fn resolve(&self, project_path: Option<&str>) -> Result<PathBuf, String> {
@@ -363,16 +437,27 @@ impl AgentGraphMcpConfig {
 impl CompassMcp {
     #[must_use]
     pub fn new(graph_path: impl Into<PathBuf>) -> Self {
+        Self::new_with_engine(graph_path, compass_query::EngineSelection::Default)
+    }
+
+    #[must_use]
+    pub fn new_with_engine(
+        graph_path: impl Into<PathBuf>,
+        engine: compass_query::EngineSelection,
+    ) -> Self {
         Self {
-            store: GraphStore::new(graph_path),
+            store: GraphStore::new_with_engine(graph_path, engine),
             protocol_profile: ProtocolProfile::Stdio2026,
             agent_graph: None,
         }
     }
 
-    pub(crate) fn new_http(graph_path: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new_http_with_engine(
+        graph_path: impl Into<PathBuf>,
+        engine: compass_query::EngineSelection,
+    ) -> Self {
         Self {
-            store: GraphStore::new(graph_path),
+            store: GraphStore::new_with_engine(graph_path, engine),
             protocol_profile: ProtocolProfile::Http2026,
             agent_graph: None,
         }
@@ -401,7 +486,14 @@ impl CompassMcp {
     /// Invoke a graph tool without a transport, primarily for compatibility tests.
     #[must_use]
     pub fn invoke(&self, name: &str, mut arguments: Map<String, Value>) -> String {
-        self.invoke_result(name, &mut arguments)
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build();
+        let result = runtime
+            .map_err(|error| InvocationError::Internal(error.to_string()))
+            .and_then(|runtime| runtime.block_on(self.invoke_result(name, &mut arguments)));
+        result
             .map(|result| {
                 result
                     .structured_content
@@ -490,6 +582,7 @@ impl ServerHandler for CompassMcp {
         let mut arguments = request.arguments.unwrap_or_default();
         let result = self
             .invoke_result(&request.name, &mut arguments)
+            .await
             .map_err(InvocationError::protocol_error)?;
         let mut response = result.structured_content.map_or_else(
             || CallToolResult::success(Vec::new()),
@@ -559,7 +652,7 @@ struct ToolInvocation {
 }
 
 impl CompassMcp {
-    fn invoke_result(
+    async fn invoke_result(
         &self,
         name: &str,
         arguments: &mut Map<String, Value>,
@@ -600,7 +693,31 @@ impl CompassMcp {
                 .store
                 .source_root(project_path.as_deref())
                 .map_err(InvocationError::Internal)?;
-            let context = if compass_query::has_published_store(&graph_path) {
+            let use_surreal = self.store.selects_surreal(&graph_path)?;
+            if use_surreal {
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
+                {
+                    return invoke_surreal_task_context(
+                        &self.store,
+                        arguments,
+                        &graph_path,
+                        &root,
+                        self.agent_graph.as_deref(),
+                    )
+                    .await;
+                }
+                #[cfg(not(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                )))]
+                unreachable!("Surreal selection is false without an engine feature");
+            }
+            let context = if self.store.selects_store(&graph_path) {
                 None
             } else {
                 Some(
@@ -623,7 +740,25 @@ impl CompassMcp {
                 .store
                 .resolve(project_path.as_deref())
                 .map_err(InvocationError::Internal)?;
-            if compass_query::has_published_store(&graph_path) {
+            let use_surreal = self.store.selects_surreal(&graph_path)?;
+            if use_surreal {
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
+                {
+                    return invoke_surreal_typed_tool(&self.store, name, arguments, &graph_path)
+                        .await;
+                }
+                #[cfg(not(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                )))]
+                unreachable!("Surreal selection is false without an engine feature");
+            }
+            if self.store.selects_store(&graph_path) {
                 return invoke_discovery_tool(&self.store, arguments, &graph_path, None);
             }
         }
@@ -641,7 +776,25 @@ impl CompassMcp {
                 .store
                 .resolve(project_path.as_deref())
                 .map_err(InvocationError::Internal)?;
-            if compass_query::has_published_store(&graph_path) {
+            let use_surreal = self.store.selects_surreal(&graph_path)?;
+            if use_surreal {
+                #[cfg(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                ))]
+                {
+                    return invoke_surreal_typed_tool(&self.store, name, arguments, &graph_path)
+                        .await;
+                }
+                #[cfg(not(any(
+                    feature = "surreal-surrealkv",
+                    feature = "surreal-rocksdb",
+                    feature = "surreal-remote"
+                )))]
+                unreachable!("Surreal selection is false without an engine feature");
+            }
+            if self.store.selects_store(&graph_path) {
                 return invoke_typed_tool(&self.store, name, arguments, &graph_path, None);
             }
         }
@@ -1159,6 +1312,145 @@ fn invoke_typed_tool(
     })
 }
 
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+async fn invoke_surreal_typed_tool(
+    store: &GraphStore,
+    name: &str,
+    arguments: &Map<String, Value>,
+    graph_path: &Path,
+) -> Result<ToolInvocation, InvocationError> {
+    let engine = store
+        .inner
+        .surreal_queries
+        .get(graph_path)
+        .await
+        .map_err(|error| InvocationError::Internal(error.to_string()))?;
+    let response = code_query::invoke_with_surreal(name, arguments, &engine).await?;
+    let text = format!(
+        "{:?}: {} nodes, {} edges, {} paths{}",
+        response.operation,
+        response.nodes.len(),
+        response.edges.len(),
+        response.paths.len(),
+        if response.truncated {
+            " (truncated)"
+        } else {
+            ""
+        }
+    );
+    let reference = engine.reference();
+    let envelope = code_query::envelope_with_identity(
+        &response,
+        &reference.repository_id,
+        &reference.generation_id,
+    )
+    .map_err(|error| InvocationError::Internal(error.to_string()))?;
+    enforce_structured_response_size(&envelope, response.limits.max_response_bytes)?;
+    Ok(ToolInvocation {
+        text,
+        structured_content: Some(envelope),
+    })
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+struct McpSurrealTaskEngine {
+    handle: tokio::runtime::Handle,
+    engine: Arc<compass_query::SurrealQueryEngine>,
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+impl compass_core::TaskContextQuery for McpSurrealTaskEngine {
+    fn explore(
+        &self,
+        request: compass_model::query_contract::ExploreRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        tokio::task::block_in_place(|| self.handle.block_on(self.engine.explore(request)))
+    }
+
+    fn search(
+        &self,
+        request: compass_model::query_contract::SearchRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        tokio::task::block_in_place(|| self.handle.block_on(self.engine.search(request)))
+    }
+
+    fn callers(
+        &self,
+        request: compass_model::query_contract::CallRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        tokio::task::block_in_place(|| self.handle.block_on(self.engine.callers(request)))
+    }
+
+    fn callees(
+        &self,
+        request: compass_model::query_contract::CallRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        tokio::task::block_in_place(|| self.handle.block_on(self.engine.callees(request)))
+    }
+
+    fn impact(
+        &self,
+        request: compass_model::query_contract::ImpactRequest,
+    ) -> Result<compass_model::query_contract::CodeQueryResponse, compass_query::QueryError> {
+        tokio::task::block_in_place(|| self.handle.block_on(self.engine.impact(request)))
+    }
+
+    fn graph_identity(&self) -> &str {
+        &self.engine.reference().graph_digest
+    }
+
+    fn build_generation_identity(&self) -> &str {
+        &self.engine.reference().generation_id
+    }
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+async fn invoke_surreal_task_context(
+    store: &GraphStore,
+    arguments: &Map<String, Value>,
+    graph_path: &Path,
+    root: &Path,
+    agent_config: Option<&AgentGraphMcpConfig>,
+) -> Result<ToolInvocation, InvocationError> {
+    if arguments.contains_key("agent_overlay") || arguments.contains_key("agent_revision") {
+        return Err(InvocationError::InvalidParams(
+            "Surreal task context cannot be combined with an in-memory Agent Graph overlay"
+                .to_owned(),
+        ));
+    }
+    let (request, memory) = task_context_request(arguments, graph_path, root)?;
+    let engine = store
+        .inner
+        .surreal_queries
+        .get(graph_path)
+        .await
+        .map_err(|error| InvocationError::Internal(error.to_string()))?;
+    let provider = McpSurrealTaskEngine {
+        handle: tokio::runtime::Handle::current(),
+        engine,
+    };
+    let result = compass_core::build_task_context(&provider, &request, &memory)
+        .map_err(task_context_invocation_error)?;
+    let _ = agent_config;
+    task_context_invocation(result)
+}
+
 fn natural_discovery_requested(arguments: &Map<String, Value>) -> bool {
     !["mode", "depth", "token_budget", "context_filter"]
         .iter()
@@ -1212,7 +1504,7 @@ fn cached_typed_engine(
     graph_path: &Path,
     context: Option<&GraphContext>,
 ) -> Result<compass_query::CachedQueryEngine, InvocationError> {
-    if compass_query::has_published_store(graph_path) {
+    if store.selects_store(graph_path) {
         return store
             .inner
             .typed_queries
@@ -1788,7 +2080,7 @@ fn invoke_task_context(
             let engine = engine
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            compass_core::build_task_context(&engine, &request, &memory)
+            compass_core::build_task_context(&*engine, &request, &memory)
                 .map_err(task_context_invocation_error)?
         }
         (Some(Value::String(overlay)), Some(Value::String(revision))) => {
@@ -1916,6 +2208,136 @@ fn task_context_invocation_error(error: compass_core::TaskContextError) -> Invoc
         }
         other => InvocationError::Internal(other.to_string()),
     }
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn task_context_invocation(
+    result: compass_core::TaskContext,
+) -> Result<ToolInvocation, InvocationError> {
+    let text = format!(
+        "Task context: {:?}, {} sections{}",
+        result.target,
+        result.sections.len(),
+        if result.truncated { " (truncated)" } else { "" }
+    );
+    let digest = result.result_digest.clone();
+    Ok(ToolInvocation {
+        text,
+        structured_content: Some(transport_envelope_with_digest(
+            serde_json::to_value(result)
+                .map_err(|error| InvocationError::Internal(error.to_string()))?,
+            Some(&digest),
+        )?),
+    })
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn task_context_request(
+    arguments: &Map<String, Value>,
+    graph_path: &Path,
+    root: &Path,
+) -> Result<
+    (
+        compass_core::TaskContextRequest,
+        Vec<compass_reflect::MemoryDoc>,
+    ),
+    InvocationError,
+> {
+    const ALLOWED: &[&str] = &[
+        "intent",
+        "target",
+        "max_depth",
+        "max_nodes",
+        "max_edges",
+        "max_paths",
+        "max_candidates",
+        "max_source_bytes",
+        "max_response_bytes",
+        "max_knowledge_items",
+        "agent_overlay",
+        "agent_revision",
+        "agent_profile",
+    ];
+    if let Some(name) = arguments
+        .keys()
+        .find(|name| !ALLOWED.contains(&name.as_str()))
+    {
+        return Err(InvocationError::InvalidParams(format!(
+            "unknown task_context argument {name:?}"
+        )));
+    }
+    let intent = match string_argument(arguments, "intent")? {
+        "explain" => compass_core::TaskContextIntent::Explain,
+        "modify" => compass_core::TaskContextIntent::Modify,
+        "debug" => compass_core::TaskContextIntent::Debug,
+        "test" => compass_core::TaskContextIntent::Test,
+        value => {
+            return Err(InvocationError::InvalidParams(format!(
+                "intent must be explain, modify, debug, or test (found {value})"
+            )));
+        }
+    };
+    let target = string_argument(arguments, "target")?.to_owned();
+    if target.is_empty() || target.len() > 16_384 || target.chars().any(char::is_control) {
+        return Err(InvocationError::InvalidParams(
+            "target must contain 1 to 16384 non-control bytes".to_owned(),
+        ));
+    }
+    let mut query_limits = code_query::limits(arguments).map_err(InvocationError::InvalidParams)?;
+    let max_response_bytes = arguments
+        .get("max_response_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(16 * 1024 * 1024);
+    query_limits.max_response_bytes = query_limits
+        .max_response_bytes
+        .min(compass_model::query_contract::CodeQueryLimits::default().max_response_bytes);
+    let max_knowledge_items = arguments
+        .get("max_knowledge_items")
+        .map_or(Ok(20_u32), |value| {
+            value
+                .as_u64()
+                .ok_or_else(|| {
+                    InvocationError::InvalidParams(
+                        "max_knowledge_items must be a positive 32-bit integer".to_owned(),
+                    )
+                })
+                .and_then(|value| {
+                    u32::try_from(value).map_err(|_| {
+                        InvocationError::InvalidParams("max_knowledge_items exceeds u32".to_owned())
+                    })
+                })
+        })?;
+    let limits = compass_core::TaskContextLimits {
+        query: query_limits,
+        max_knowledge_items,
+        max_response_bytes,
+    };
+    if !limits.is_valid() {
+        return Err(InvocationError::InvalidParams(
+            "task-context limits are zero or exceed their ceilings".to_owned(),
+        ));
+    }
+    let request = compass_core::TaskContextRequest {
+        intent,
+        target,
+        repository_root: root.to_string_lossy().into_owned(),
+        limits,
+    };
+    let memory = compass_reflect::load_memory_docs(
+        &graph_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("memory"),
+    );
+    Ok((request, memory))
 }
 
 fn select_review_realization(

@@ -12,6 +12,7 @@ mod manifest;
 mod project_config;
 mod scope;
 mod slice;
+mod surreal_config;
 
 pub use atomic::{
     AtomicJsonDigest, write_atomic_with, write_atomic_with_digest, write_bytes_atomic,
@@ -31,9 +32,15 @@ pub use file_set::FileSetMatcher;
 pub use generated::source_is_generated;
 pub use hash::{StatHashIndex, body_content, file_hash, md5_file, prompt_fingerprint};
 pub use manifest::{IncrementalDetection, Manifest, ManifestEntry, ManifestKind};
-pub use project_config::{PROJECT_CONFIG_RELATIVE_PATH, ProjectConfig};
+pub use project_config::{
+    PROJECT_CONFIG_RELATIVE_PATH, PROJECT_CONFIG_VERSION, ProjectConfig, ProjectStorage,
+    ProjectStore, ProjectSurrealEngine,
+};
 pub use scope::{BuildScope, ScopeMatcher};
 pub use slice::{FileSlice, bisect_slice, read_slice_text, slice_boundaries, split_file};
+pub use surreal_config::{
+    SurrealSettings, configure_surreal, normalize_surreal_endpoint, surreal_settings,
+};
 
 use std::path::PathBuf;
 
@@ -96,6 +103,8 @@ pub enum FileError {
     },
     #[error("unsupported Compass config version {version} at {path}")]
     UnsupportedProjectConfig { path: PathBuf, version: u32 },
+    #[error("invalid Compass project config at {path}: {reason}")]
+    InvalidProjectConfig { path: PathBuf, reason: String },
     #[error("Compass project config path {path} resolves outside project root {root}")]
     ProjectConfigOutsideRoot { path: PathBuf, root: PathBuf },
     #[error("invalid build scope entry '{entry}': {reason}")]

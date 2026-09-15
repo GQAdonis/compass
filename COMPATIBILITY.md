@@ -20,6 +20,31 @@ while a fresh Compass build creates `compass-out/`; the two products do not
 share caches or mutable state. See [`MIGRATION.md`](MIGRATION.md) for the
 transition procedure.
 
+## Query artifact rebuild boundary
+
+Query artifacts built by Compass releases older than **0.3.23** (including
+0.3.23 prereleases) require a source rebuild. They are not migrated in place.
+JSON loaders inspect `graph.build.builderVersion` in at most the first 64 KiB,
+before decoding graph records, hashing the complete artifact, or using cached
+indexes. Canonical Compass JSON places this header before node/edge arrays;
+large manually reordered JSON must retain the header within that prefix.
+SQLite and Surreal engines check the pinned snapshot's bounded metadata before
+querying records, without falling back to canonical JSON.
+
+The error includes the found version, minimum supported version, and
+`compass update "<source-root>" --force`. An exact root is supplied only from
+the selected snapshot's validated sibling `source-root.txt`. Missing or invalid
+provenance explicitly requires the caller to supply the project root. The
+diagnostic never guesses a root from the current directory or graph node paths.
+Forced update rebuilds from source without loading the old query artifact.
+Historical realizations remain immutable; rebuild the active project rather
+than modifying an old realization.
+
+This is a release compatibility check, not an authenticity check. Existing
+non-release producer labels and small unversioned interchange graphs retain
+their schema validation behavior. Neither label rewriting nor index copying
+is a supported substitute for rebuilding a legacy Compass release artifact.
+
 ## VS Code extension compatibility
 
 The Compass VS Code extension requires Compass CLI 0.3.0 or newer. Releases
@@ -39,7 +64,7 @@ Compass changes are verified with native evidence:
 sh scripts/check_product_boundary.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --lib --bins --locked -- -D warnings
-cargo test --workspace --lib --bins --locked
+cargo test --workspace --test '*' --locked
 cargo test -p compass-cli --test compass_product --locked
 sh scripts/test_release_scripts.sh
 cargo package --workspace --locked --no-verify
@@ -743,6 +768,43 @@ The CLI currently selects SQLite for a validated local sidecar.
 qualification tests; it is not a CLI or packaging dependency. PostgreSQL and
 DynamoDB are future adapters, not supported release backends. No local store
 command accepts cloud credentials, endpoints, or TLS configuration.
+
+`compass-graphdb-surreal` is an optional embedded or standalone-server projection and query backend.
+The default workspace and CLI feature sets have no SurrealDB dependency.
+`surreal-surrealkv`, `surreal-rocksdb`, and `surreal-remote` wire the backend through publication,
+CLI queries, CompassQL, task context, MCP, and store operations. The immutable
+projection uses `compass.graph.surreal/2`; each filesystem snapshot carries a
+`compass.surreal.ref/1` reference that pins one repository, generation, graph
+digest, projection fingerprint, engine, counts, and location. Explicit
+`--engine surreal` never falls back to SQLite or JSON. The current-project
+`default` engine prefers a valid `surreal.ref`, then a valid `store.ref`, then
+`graph.json`. Unknown reference/projection majors, mismatched generations, and
+unavailable engine features fail explicitly. SurrealDB 3.2.4 is pinned under
+BUSL 1.1; enabling an engine feature carries the notice and redistribution
+conditions recorded in `THIRD_PARTY_NOTICES.md`.
+
+The additive `remote` engine in `compass.surreal.ref/1` binds a canonical
+WebSocket endpoint plus namespace/database instead of a directory. Older
+embedded-only binaries reject this engine explicitly. Independently supplied
+connection configuration must match that target before credentials are sent.
+YAML connection settings use `compass.surreal.config/1`; command flags override
+environment, YAML, persisted project storage, and defaults. Credentials are
+never persisted in project config, references, or portable bundles. Embedded
+references retain their existing shape. Historical realizations are unchanged.
+
+Projection v2 also binds indexed source-file records, canonical search and
+alias terms, case-sensitive CompassQL labels/types, stable node/relationship
+ordinals, and a staged CompassQL schema fingerprint. Query execution shares
+the existing semantic operators over lazy Surreal record access; it does not
+hydrate a graph or substitute JSON/SQLite. Metadata headers are bounded to
+4 MiB, with file records stored separately.
+
+Surreal projection backup uses `compass.surreal.backup/1` with a digest-bound
+`compass.surreal.bundle/1`; embedded database directories are not a portable
+contract. Historical `--at` queries remain on immutable history realizations.
+The earlier library-only `compass.graph.surreal/1` projection is not activated
+or migrated in place; republishing from canonical `graph.json` creates a v2
+generation and reference.
 
 The default published locations are `DIR/graph.json` and the validated SQLite
 sidecar under the selected `--out DIR` (default `compass-out/`). The build

@@ -11,6 +11,18 @@ description.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+surreal-remote = ["compass-core/surreal-remote", "compass-query/surreal-remote"]
+surreal-surrealkv = [
+    "compass-core/surreal-surrealkv",
+    "compass-query/surreal-surrealkv",
+]
+surreal-rocksdb = [
+    "compass-core/surreal-rocksdb",
+    "compass-query/surreal-rocksdb",
+]
+
 [dependencies]
 compass-agent-graph = { path = "../compass-agent-graph", version = "0.3.25" }
 axum.workspace = true

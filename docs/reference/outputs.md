@@ -4,6 +4,20 @@ Compass outputs range from the current `compass-out/` directory to versioned
 CompassQL results and immutable history exports. This reference describes
 consumer responsibilities and authority.
 
+## Query artifact compatibility
+
+`graph.build.builderVersion` must identify Compass 0.3.23 or newer for release
+artifacts. JSON readers inspect a bounded 64 KiB preamble before graph arrays
+or query caches; preserve the canonical header-first ordering. Native SQLite
+and Surreal readers enforce the same boundary using generation-pinned metadata,
+even when canonical JSON is absent. Rejection occurs when loading the engine,
+not on its first traversal.
+
+The sibling `source-root.txt` supplies a recovery root only if it is a bounded,
+regular non-symlink file naming a valid absolute source directory. An absent or
+invalid file requires an explicit caller-supplied root. Rebuild with
+`compass update "<source-root>" --force`; see [migration](../../MIGRATION.md).
+
 ## Current output directory
 
 Default:
@@ -24,6 +38,7 @@ compass-out/
 │   ├── graph.json
 │   ├── graph.html, report, manifest, and optional public artifacts
 │   ├── store.ref                # with the default SQLite query index
+│   ├── surreal.ref              # with an optional embedded or remote Surreal projection
 │   ├── build-state.json
 │   ├── output-stats.json
 │   ├── ast-fact-digests.json
@@ -39,6 +54,7 @@ compass-out/
 │   └── source-root.txt
 ├── store/
 │   └── store.sqlite3   # with the default SQLite query index
+├── surreal/                     # default shared embedded Surreal location
 ├── root-artifacts-complete
 ├── cached.json             # cache-check hits, when any
 ├── uncached.txt            # cache-check misses
@@ -72,6 +88,7 @@ paths.
 | `graph.json` | machine-readable graph snapshot | queries, integrations, export |
 | `store/store.sqlite3` | bounded shared namespace/partition/key query index | default large-graph queries and explicit store-engine queries |
 | current snapshot `store.ref` | typed selector for the co-published store identity and snapshot | store-engine validation before query execution |
+| current snapshot `surreal.ref` | `compass.surreal.ref/1` selector binding engine, repository, generation, graph/projection digests, counts, and location | generation-pinned Surreal CLI, CompassQL, and MCP reads |
 | `program.json` (optional) | provenance-aware Program IR | program inspection, semantic analysis |
 | `GRAPH_REPORT.md` | derived human orientation | architecture survey |
 | `orientation.json` | versioned Agent Orientation bound to the same graph generation | coding assistants and MCP |
@@ -92,6 +109,14 @@ remains the complete portable graph engine. Pass `--store json` during a build
 to omit the sidecar; `--engine json` forces the portable reader, while the
 default query engine uses the sidecar when it is present and fails closed if
 its reference is corrupt.
+
+When `--store surreal` is selected, Compass stages an immutable embedded
+generation in the shared `surreal/` directory (or `--surreal-path`) and
+publishes `surreal.ref` beside the snapshot artifacts only after validation.
+The reference, not a mutable database pointer, is the read authority. The
+portable `graph.json` remains published, but explicit Surreal queries do not
+read it as a fallback. `surreal.ref` uses `compass.surreal.ref/1`; projection
+backups use `compass.surreal.bundle/1` inside `compass.surreal.backup/1`.
 
 The store snapshot accepts canonical graphs up to 2 GiB. This larger, still
 finite bound applies only to the indexed store path; in-memory JSON readers

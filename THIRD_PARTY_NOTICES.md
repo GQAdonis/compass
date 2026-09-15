@@ -3,7 +3,9 @@
 ## Optional SurrealDB 3.2.4 integration
 
 The non-default `mem`, `surrealkv`, and `rocksdb` features of
-`compass-graphdb-surreal` resolve SurrealDB 3.2.4 and its core components.
+`compass-graphdb-surreal`, and the CLI-facing `surreal-surrealkv` and
+`surreal-rocksdb` feature profiles, resolve SurrealDB 3.2.4 and its core
+components.
 Those components are licensed under Business Source License 1.1 before
 conversion, with SurrealDB Ltd. as licensor, a Database Service restriction,
 Change Date 2030-01-01, and Apache License 2.0 as the Change License.

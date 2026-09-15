@@ -6,8 +6,8 @@ use compass_model::code_graph::{EdgeKind, EdgeRecord, NodeRecord};
 use compass_model::provenance::EvidenceConfidence;
 use compass_model::query_contract::{
     CallRequest, CodeQueryLimits, CodeQueryOperation, CodeQueryResponse, ExploreRequest,
-    ImpactRequest, NodeTrailRequest, QueryDiagnostic, QueryDiagnosticCode, QueryEdge,
-    normalize_query_symbol, query_edge_from_record, query_node_from_record,
+    ImpactRequest, NodeTrailRequest, QueryDiagnostic, QueryDiagnosticCode, QueryEdge, SearchHit,
+    SearchRequest, normalize_query_symbol, query_edge_from_record, query_node_from_record,
     query_path_from_records,
 };
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,8 @@ use super::{
     pointer_key, select_record, validate_manifest_limits,
 };
 use crate::{
-    PROJECTION_SCHEMA_V1, ProjectedNode, ProjectedRelation, ProjectionError, RelationFamily,
-    relation_family,
+    PROJECTION_SCHEMA_V2, ProjectedNode, ProjectedRelation, ProjectionError, RelationFamily,
+    SurrealRef, relation_family,
 };
 
 pub const NATIVE_RELATION_PAGE_SCHEMA_V1: &str = "compass.surreal-relation-page/1";
@@ -30,7 +30,11 @@ const MAX_CODE_QUERY_CANDIDATES: u32 = 256;
 const MAX_CURSOR_BYTES: usize = 8 * 1024;
 
 const SELECT_NODE_BY_ID: &str = "SELECT * OMIT id FROM code_node WHERE repositoryId = $repository AND generationId = $generation AND compassNodeId = $symbol ORDER BY compassNodeId LIMIT 2";
-const SELECT_NODES_BY_EXACT_NAME: &str = "SELECT * OMIT id FROM code_node WHERE repositoryId = $repository AND generationId = $generation AND $symbol IN normalizedNames ORDER BY compassNodeId LIMIT $limit";
+const SELECT_NODES_BY_EXACT_NAME: &str = "SELECT * OMIT id FROM code_node WHERE repositoryId = $repository AND generationId = $generation AND normalizedNames CONTAINS $symbol ORDER BY compassNodeId LIMIT $limit";
+const SELECT_NODES_BY_SEARCH_TERM: &str = "SELECT * OMIT id FROM code_node WHERE repositoryId = $repository AND generationId = $generation AND (searchTerms CONTAINS $symbol OR normalizedNames CONTAINS $symbol OR string::lowercase(name) CONTAINS $symbol OR string::lowercase(qualifiedName) CONTAINS $symbol) ORDER BY compassNodeId LIMIT $limit";
+const SELECT_CQL_NODES: &str = "SELECT * OMIT id FROM code_node WHERE repositoryId = $repository AND generationId = $generation AND ($allLabels OR cqlLabel IN $labels) ORDER BY ordinal LIMIT $limit";
+const SELECT_CQL_ENDPOINTS: &str = "SELECT * OMIT id FROM code_node WHERE repositoryId = $repository AND generationId = $generation AND compassNodeId IN $nodeIds ORDER BY ordinal LIMIT $limit";
+const SELECT_CQL_RELATIONS: &str = "SELECT * OMIT id, in, out FROM type::table($table) WHERE repositoryId = $repository AND generationId = $generation AND ($allTypes OR cqlType IN $types) ORDER BY ordinal LIMIT $limit";
 
 #[derive(Clone, Copy)]
 struct FamilyStatements {
@@ -81,6 +85,7 @@ const ALL_EDGE_KINDS: &[EdgeKind] = &[
     EdgeKind::Exports,
     EdgeKind::Extends,
     EdgeKind::Implements,
+    EdgeKind::MixesIn,
     EdgeKind::References,
     EdgeKind::TypeOf,
     EdgeKind::Returns,
@@ -100,6 +105,7 @@ const ALL_EDGE_KINDS: &[EdgeKind] = &[
     EdgeKind::Schedules,
     EdgeKind::Triggers,
     EdgeKind::Tests,
+    EdgeKind::Renders,
     EdgeKind::DependsOn,
     EdgeKind::Documents,
     EdgeKind::MapsTo,
@@ -144,10 +150,35 @@ pub struct RelationPage {
     pub next_cursor: Option<String>,
 }
 
+/// A bounded set of immutable Surreal rows used by the CompassQL semantic
+/// evaluator. This is deliberately not a database snapshot: every row is
+/// selected by a generation-pinned, parameterized SurrealQL statement and an
+/// overflow is an error rather than an incomplete result.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CqlProjectionSlice {
+    pub schema_fingerprint: String,
+    pub source_tree_digest: String,
+    pub node_ordinals: Vec<u64>,
+    pub relation_ordinals: Vec<u64>,
+    pub nodes: Vec<NodeRecord>,
+    pub relations: Vec<EdgeRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CqlProjectionRequest {
+    pub node_labels: BTreeSet<String>,
+    pub relation_types: BTreeSet<String>,
+    pub include_nodes: bool,
+    pub include_relations: bool,
+    pub max_nodes: usize,
+    pub max_relations: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QuerySelector {
     repository_id: String,
     pointer: ActivePointer,
+    require_current_pointer: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -201,12 +232,233 @@ impl TraversalBudget {
 }
 
 impl SurrealProjection {
+    /// Select the bounded row set needed by a compiled CompassQL plan.
+    ///
+    /// The mutable active pointer is never consulted. Relationship endpoints
+    /// are loaded explicitly so the caller can evaluate direction, repeated
+    /// variables, optional patterns, correlated EXISTS, and paths without a
+    /// second storage backend.
+    pub async fn cql_projection_at(
+        &self,
+        reference: &SurrealRef,
+        request: &CqlProjectionRequest,
+    ) -> Result<CqlProjectionSlice, ProjectionError> {
+        if (request.include_nodes && request.max_nodes == 0)
+            || (request.include_relations && request.max_relations == 0)
+            || (request.include_relations && !request.include_nodes)
+        {
+            return Err(ProjectionError::InvalidQuery(
+                "CompassQL Surreal row selection and bounds are inconsistent".to_owned(),
+            ));
+        }
+        let selector = self.pin_reference_selector(reference).await?;
+        let manifest = self.manifest_for_reference(reference).await?;
+        // CompassQL labels and relationship types are case-sensitive.
+        let labels = request.node_labels.iter().cloned().collect::<Vec<_>>();
+        let mut nodes = if request.include_nodes {
+            let mut response = self
+                .database
+                .query(SELECT_CQL_NODES)
+                .bind(("repository", selector.repository_id.as_str()))
+                .bind(("generation", selector.pointer.generation_id.as_str()))
+                .bind(("allLabels", labels.is_empty()))
+                .bind(("labels", labels))
+                .bind(("limit", plus_one(request.max_nodes)?))
+                .await
+                .map_err(|error| database_error("cql_select_nodes", error))?;
+            let nodes = decode_values::<ProjectedNode>(&mut response, "cql_select_nodes")?;
+            if nodes.len() > request.max_nodes {
+                return Err(ProjectionError::LimitExceeded {
+                    resource: "CompassQL Surreal candidate nodes",
+                    actual: u64::try_from(nodes.len()).unwrap_or(u64::MAX),
+                    limit: u64::try_from(request.max_nodes).unwrap_or(u64::MAX),
+                });
+            }
+            nodes
+        } else {
+            Vec::new()
+        };
+
+        let mut relations = Vec::<ProjectedRelation>::new();
+        if request.include_relations {
+            let types = request.relation_types.iter().cloned().collect::<Vec<_>>();
+            for family in RelationFamily::ALL {
+                let remaining = request.max_relations.saturating_sub(relations.len());
+                let mut response = self
+                    .database
+                    .query(SELECT_CQL_RELATIONS)
+                    .bind(("table", family.as_str()))
+                    .bind(("repository", selector.repository_id.as_str()))
+                    .bind(("generation", selector.pointer.generation_id.as_str()))
+                    .bind(("allTypes", types.is_empty()))
+                    .bind(("types", types.clone()))
+                    .bind(("limit", plus_one(remaining)?))
+                    .await
+                    .map_err(|error| database_error("cql_select_relations", error))?;
+                let mut family_rows =
+                    decode_values::<ProjectedRelation>(&mut response, "cql_select_relations")?;
+                if family_rows.len() > remaining {
+                    return Err(ProjectionError::LimitExceeded {
+                        resource: "CompassQL Surreal candidate relationships",
+                        actual: u64::try_from(relations.len() + family_rows.len())
+                            .unwrap_or(u64::MAX),
+                        limit: u64::try_from(request.max_relations).unwrap_or(u64::MAX),
+                    });
+                }
+                relations.append(&mut family_rows);
+            }
+        }
+        relations.sort_by_key(|relation| relation.ordinal);
+
+        let present = nodes
+            .iter()
+            .map(|node| node.compass_node_id.clone())
+            .collect::<BTreeSet<_>>();
+        let missing = relations
+            .iter()
+            .flat_map(|relation| {
+                [
+                    relation.source_node_id.clone(),
+                    relation.target_node_id.clone(),
+                ]
+            })
+            .filter(|identity| !present.contains(identity))
+            .collect::<BTreeSet<_>>();
+        if !missing.is_empty() {
+            let remaining = request.max_nodes.saturating_sub(nodes.len());
+            if missing.len() > remaining {
+                return Err(ProjectionError::LimitExceeded {
+                    resource: "CompassQL Surreal candidate nodes",
+                    actual: u64::try_from(nodes.len() + missing.len()).unwrap_or(u64::MAX),
+                    limit: u64::try_from(request.max_nodes).unwrap_or(u64::MAX),
+                });
+            }
+            let mut response = self
+                .database
+                .query(SELECT_CQL_ENDPOINTS)
+                .bind(("repository", selector.repository_id.as_str()))
+                .bind(("generation", selector.pointer.generation_id.as_str()))
+                .bind(("nodeIds", missing.into_iter().collect::<Vec<_>>()))
+                .bind(("limit", plus_one(remaining)?))
+                .await
+                .map_err(|error| database_error("cql_select_endpoints", error))?;
+            let mut endpoints =
+                decode_values::<ProjectedNode>(&mut response, "cql_select_endpoints")?;
+            if endpoints.len() > remaining {
+                return Err(ProjectionError::LimitExceeded {
+                    resource: "CompassQL Surreal candidate nodes",
+                    actual: u64::try_from(nodes.len() + endpoints.len()).unwrap_or(u64::MAX),
+                    limit: u64::try_from(request.max_nodes).unwrap_or(u64::MAX),
+                });
+            }
+            nodes.append(&mut endpoints);
+            nodes.sort_by_key(|node| node.ordinal);
+            nodes.dedup_by(|left, right| left.compass_node_id == right.compass_node_id);
+        }
+
+        Ok(CqlProjectionSlice {
+            schema_fingerprint: manifest.schema_fingerprint,
+            source_tree_digest: manifest.source_tree_digest,
+            node_ordinals: nodes.iter().map(|node| node.ordinal).collect(),
+            relation_ordinals: relations.iter().map(|relation| relation.ordinal).collect(),
+            nodes: nodes
+                .into_iter()
+                .map(|node| node.decode())
+                .collect::<Result<Vec<_>, _>>()?,
+            relations: relations
+                .into_iter()
+                .map(|relation| relation.decode())
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    pub async fn search_at(
+        &self,
+        reference: &SurrealRef,
+        request: SearchRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_reference_selector(reference).await?;
+        self.search_with_selector(selector, request).await
+    }
+
+    pub async fn search(
+        &self,
+        repository_id: &str,
+        request: SearchRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_query_selector(repository_id).await?;
+        self.search_with_selector(selector, request).await
+    }
+
+    async fn search_with_selector(
+        &self,
+        selector: QuerySelector,
+        request: SearchRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        validate_query_limits(&request.limits)?;
+        let term = normalize_query_symbol(&request.query);
+        if term.is_empty() {
+            return Err(ProjectionError::InvalidQuery(
+                "search query must not be empty".to_owned(),
+            ));
+        }
+        let limit = usize::try_from(request.limits.max_candidates).unwrap_or(usize::MAX);
+        let mut projected = self
+            .query_nodes(
+                &selector,
+                SELECT_NODES_BY_SEARCH_TERM,
+                &term,
+                plus_one(limit)?,
+                "search_nodes",
+            )
+            .await?;
+        let truncated = projected.len() > limit;
+        if truncated {
+            projected.truncate(limit);
+        }
+        let mut response = CodeQueryResponse::empty(CodeQueryOperation::Search, request.limits);
+        response.truncated = truncated;
+        for node in projected {
+            let exact_name = node.normalized_names.iter().any(|value| value == &term);
+            let matched_fields = if exact_name {
+                vec!["name".to_owned()]
+            } else {
+                vec!["searchTerms".to_owned()]
+            };
+            response.results.push(SearchHit {
+                node_id: node.compass_node_id.clone(),
+                score: if exact_name { 1.0 } else { 0.5 },
+                matched_fields,
+            });
+            response.nodes.push(query_node_from_record(&node.decode()?));
+        }
+        if response.nodes.is_empty() {
+            response.diagnostics.push(QueryDiagnostic {
+                code: QueryDiagnosticCode::NoMatch,
+                message: format!("No symbol matched {:?}", request.query),
+                node_id: None,
+                path: None,
+            });
+        }
+        self.publish_response(&selector, response).await
+    }
+
     pub async fn callers(
         &self,
         repository_id: &str,
         request: CallRequest,
     ) -> Result<CodeQueryResponse, ProjectionError> {
-        self.call_neighbors(repository_id, request, true).await
+        let selector = self.pin_query_selector(repository_id).await?;
+        self.call_neighbors(selector, request, true).await
+    }
+
+    pub async fn callers_at(
+        &self,
+        reference: &SurrealRef,
+        request: CallRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_reference_selector(reference).await?;
+        self.call_neighbors(selector, request, true).await
     }
 
     pub async fn callees(
@@ -214,17 +466,26 @@ impl SurrealProjection {
         repository_id: &str,
         request: CallRequest,
     ) -> Result<CodeQueryResponse, ProjectionError> {
-        self.call_neighbors(repository_id, request, false).await
+        let selector = self.pin_query_selector(repository_id).await?;
+        self.call_neighbors(selector, request, false).await
+    }
+
+    pub async fn callees_at(
+        &self,
+        reference: &SurrealRef,
+        request: CallRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_reference_selector(reference).await?;
+        self.call_neighbors(selector, request, false).await
     }
 
     async fn call_neighbors(
         &self,
-        repository_id: &str,
+        selector: QuerySelector,
         request: CallRequest,
         inbound: bool,
     ) -> Result<CodeQueryResponse, ProjectionError> {
         validate_query_limits(&request.limits)?;
-        let selector = self.pin_query_selector(repository_id).await?;
         let operation = if inbound {
             CodeQueryOperation::Callers
         } else {
@@ -269,8 +530,25 @@ impl SurrealProjection {
         repository_id: &str,
         request: ImpactRequest,
     ) -> Result<CodeQueryResponse, ProjectionError> {
-        validate_query_limits(&request.limits)?;
         let selector = self.pin_query_selector(repository_id).await?;
+        self.impact_with_selector(selector, request).await
+    }
+
+    pub async fn impact_at(
+        &self,
+        reference: &SurrealRef,
+        request: ImpactRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_reference_selector(reference).await?;
+        self.impact_with_selector(selector, request).await
+    }
+
+    async fn impact_with_selector(
+        &self,
+        selector: QuerySelector,
+        request: ImpactRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        validate_query_limits(&request.limits)?;
         let mut response =
             CodeQueryResponse::empty(CodeQueryOperation::Impact, request.limits.clone());
         let Some(seed) = self
@@ -351,8 +629,25 @@ impl SurrealProjection {
         repository_id: &str,
         request: NodeTrailRequest,
     ) -> Result<CodeQueryResponse, ProjectionError> {
-        validate_query_limits(&request.limits)?;
         let selector = self.pin_query_selector(repository_id).await?;
+        self.node_trail_with_selector(selector, request).await
+    }
+
+    pub async fn node_trail_at(
+        &self,
+        reference: &SurrealRef,
+        request: NodeTrailRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_reference_selector(reference).await?;
+        self.node_trail_with_selector(selector, request).await
+    }
+
+    async fn node_trail_with_selector(
+        &self,
+        selector: QuerySelector,
+        request: NodeTrailRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        validate_query_limits(&request.limits)?;
         let mut response =
             CodeQueryResponse::empty(CodeQueryOperation::NodeTrail, request.limits.clone());
         let Some(source) = self
@@ -430,6 +725,26 @@ impl SurrealProjection {
         repository_id: &str,
         request: ExploreRequest,
     ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_query_selector(repository_id).await?;
+        self.structural_subgraph_with_selector(selector, request)
+            .await
+    }
+
+    pub async fn structural_subgraph_at(
+        &self,
+        reference: &SurrealRef,
+        request: ExploreRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
+        let selector = self.pin_reference_selector(reference).await?;
+        self.structural_subgraph_with_selector(selector, request)
+            .await
+    }
+
+    async fn structural_subgraph_with_selector(
+        &self,
+        selector: QuerySelector,
+        request: ExploreRequest,
+    ) -> Result<CodeQueryResponse, ProjectionError> {
         validate_query_limits(&request.limits)?;
         if request.symbols.len()
             > usize::try_from(request.limits.max_candidates).unwrap_or(usize::MAX)
@@ -440,7 +755,6 @@ impl SurrealProjection {
                 request.limits.max_candidates
             )));
         }
-        let selector = self.pin_query_selector(repository_id).await?;
         let mut response =
             CodeQueryResponse::empty(CodeQueryOperation::Explore, request.limits.clone());
         let mut seeds = Vec::new();
@@ -499,6 +813,26 @@ impl SurrealProjection {
         repository_id: &str,
         request: RelationPageRequest,
     ) -> Result<RelationPage, ProjectionError> {
+        let selector = self.pin_query_selector(repository_id).await?;
+        self.read_relation_page_with_selector(selector, request)
+            .await
+    }
+
+    pub async fn read_relation_page_at(
+        &self,
+        reference: &SurrealRef,
+        request: RelationPageRequest,
+    ) -> Result<RelationPage, ProjectionError> {
+        let selector = self.pin_reference_selector(reference).await?;
+        self.read_relation_page_with_selector(selector, request)
+            .await
+    }
+
+    async fn read_relation_page_with_selector(
+        &self,
+        selector: QuerySelector,
+        request: RelationPageRequest,
+    ) -> Result<RelationPage, ProjectionError> {
         if request.max_items == 0 {
             return Err(ProjectionError::InvalidQuery(
                 "relation page maxItems must be greater than zero".to_owned(),
@@ -512,7 +846,6 @@ impl SurrealProjection {
                 limit: u64::try_from(self.limits.max_relations()).unwrap_or(u64::MAX),
             });
         }
-        let selector = self.pin_query_selector(repository_id).await?;
         let after = request
             .cursor
             .as_deref()
@@ -556,7 +889,7 @@ impl SurrealProjection {
         .ok_or_else(|| ProjectionError::ActiveGenerationUnavailable {
             repository_id: repository_id.to_owned(),
         })?;
-        if pointer.schema_version != PROJECTION_SCHEMA_V1 {
+        if pointer.schema_version != PROJECTION_SCHEMA_V2 {
             return Err(ProjectionError::UnsupportedProjectionSchema(
                 pointer.schema_version,
             ));
@@ -574,7 +907,7 @@ impl SurrealProjection {
             repository_id: repository_id.to_owned(),
         })?;
         if !manifest.complete
-            || manifest.schema_version != PROJECTION_SCHEMA_V1
+            || manifest.schema_version != PROJECTION_SCHEMA_V2
             || manifest.projection_fingerprint != pointer.projection_fingerprint
         {
             return Err(ProjectionError::ActiveGenerationUnavailable {
@@ -585,6 +918,24 @@ impl SurrealProjection {
         Ok(QuerySelector {
             repository_id: repository_id.to_owned(),
             pointer,
+            require_current_pointer: true,
+        })
+    }
+
+    async fn pin_reference_selector(
+        &self,
+        reference: &SurrealRef,
+    ) -> Result<QuerySelector, ProjectionError> {
+        self.validate_reference(reference).await?;
+        Ok(QuerySelector {
+            repository_id: reference.repository_id.clone(),
+            pointer: ActivePointer {
+                repository_id: reference.repository_id.clone(),
+                generation_id: reference.generation_id.clone(),
+                schema_version: reference.projection_schema.clone(),
+                projection_fingerprint: reference.projection_fingerprint.clone(),
+            },
+            require_current_pointer: false,
         })
     }
 
@@ -592,6 +943,9 @@ impl SurrealProjection {
         &self,
         selector: &QuerySelector,
     ) -> Result<(), ProjectionError> {
+        if !selector.require_current_pointer {
+            return Ok(());
+        }
         let current = select_record::<ActivePointer>(
             &self.database,
             surrealdb::types::RecordId::new(

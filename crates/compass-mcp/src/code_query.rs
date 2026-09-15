@@ -447,6 +447,14 @@ pub(super) fn envelope(
     response: &CodeQueryResponse,
     build: &BuildMetadata,
 ) -> Result<Value, serde_json::Error> {
+    envelope_with_identity(response, &build.source_tree_digest, &build.generation_id)
+}
+
+pub(super) fn envelope_with_identity(
+    response: &CodeQueryResponse,
+    repository: &str,
+    generation: &str,
+) -> Result<Value, serde_json::Error> {
     let evidence = response
         .nodes
         .iter()
@@ -481,8 +489,8 @@ pub(super) fn envelope(
     };
     Ok(json!({
         "schema": "compass.code_context.v1",
-        "repository": build.source_tree_digest,
-        "generation": build.generation_id,
+        "repository": repository,
+        "generation": generation,
         "freshness": {"status": freshness},
         "data": response,
         "evidence": {"records": records, "anchored": anchored},
@@ -494,6 +502,107 @@ pub(super) fn envelope(
         "truncation": {"truncated": response.truncated, "next": Value::Null},
         "warnings": response.diagnostics
     }))
+}
+
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+pub(super) async fn invoke_with_surreal(
+    name: &str,
+    arguments: &Map<String, Value>,
+    engine: &compass_query::SurrealQueryEngine,
+) -> Result<CodeQueryResponse, super::InvocationError> {
+    let limits = limits(arguments)?;
+    let response = match name {
+        "query_graph" => {
+            engine
+                .query_natural(NaturalQueryRequest {
+                    question: required_string(arguments, "question")?,
+                    include_heuristic: false,
+                    limits,
+                })
+                .await
+        }
+        "search_symbols" => {
+            engine
+                .search(SearchRequest {
+                    query: required_string(arguments, "query")?,
+                    limits,
+                })
+                .await
+        }
+        "get_callers" => {
+            engine
+                .callers(CallRequest {
+                    symbol: required_string(arguments, "symbol")?,
+                    include_heuristic: boolean(arguments, "include_heuristic")?,
+                    limits,
+                })
+                .await
+        }
+        "get_callees" => {
+            engine
+                .callees(CallRequest {
+                    symbol: required_string(arguments, "symbol")?,
+                    include_heuristic: boolean(arguments, "include_heuristic")?,
+                    limits,
+                })
+                .await
+        }
+        "get_impact" => {
+            engine
+                .impact(ImpactRequest {
+                    symbol: required_string(arguments, "symbol")?,
+                    include_heuristic: boolean(arguments, "include_heuristic")?,
+                    limits,
+                })
+                .await
+        }
+        "explore_code" => {
+            engine
+                .explore(ExploreRequest {
+                    symbols: arguments
+                        .get("symbols")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| "'symbols' must be an array".to_owned())?
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_owned)
+                                .ok_or_else(|| "'symbols' items must be strings".to_owned())
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    root: arguments
+                        .get("root")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    include_heuristic: boolean(arguments, "include_heuristic")?,
+                    limits,
+                })
+                .await
+        }
+        "get_node" => {
+            engine
+                .node_trail(NodeTrailRequest {
+                    source: required_string(arguments, "source")?,
+                    target: required_string(arguments, "target")?,
+                    include_heuristic: boolean(arguments, "include_heuristic")?,
+                    limits,
+                })
+                .await
+        }
+        _ => {
+            return Err(super::InvocationError::InvalidParams(format!(
+                "unknown code query tool {name}"
+            )));
+        }
+    }
+    .map_err(query_invocation_error)?;
+    Ok(response)
 }
 
 pub(super) fn invoke_with_engine(
