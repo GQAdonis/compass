@@ -94,6 +94,14 @@ history profiles, and cache identities.
 
 ## Evolving contracts
 
+
+Rust structural evidence now uses producer version 2. The evidence and graph
+schema majors are unchanged, but Rust extraction caches from producer version
+1 are rebuilt so source-proven standard-library dereference chains and
+evaluating local macro inputs can publish newly recovered exact calls.
+Unsupported macro shapes, non-evaluating inputs, and ambiguous receiver owners
+remain unresolved rather than being guessed.
+
 ### Agent Query View
 
 Compass adds the additive strict projection `compass.query.agent-view/1` for
