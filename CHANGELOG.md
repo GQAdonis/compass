@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Improve agent-facing query correctness and recovery: callers, impact, and
+  affected include source-backed alias/import/export usage evidence; CompassQL
+  exposes live node degree and supports ordering by pre-projection bindings;
+  historical reads neutralize configured checkout filters; direction-only
+  trail misses suggest `compass path`; and full reports retain bounded hub,
+  suggested-query, and learned-question entries.
+
 ## 0.3.27 - 2026-09-17
 
 - Improve Rust call-graph recall for source-proven `Arc`, `Rc`, and `Box`

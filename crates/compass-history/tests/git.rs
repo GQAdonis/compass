@@ -249,18 +249,12 @@ fn detached_worktree_is_exact_offline_reports_limitations_and_cleans_up()
         directory.path(),
         &["config", "filter.unsafe.smudge", "external-smudge %f"],
     )?;
-    assert!(matches!(
-        repository.detached_worktree(&first),
-        Err(HistoryError::UnsupportedGitFilter(_))
-    ));
+    repository.detached_worktree(&first)?.close()?;
     git(
         directory.path(),
         &["config", "filter.unsafe.smudge", "evil-git-lfs-wrapper %f"],
     )?;
-    assert!(matches!(
-        repository.detached_worktree(&first),
-        Err(HistoryError::UnsupportedGitFilter(_))
-    ));
+    repository.detached_worktree(&first)?.close()?;
     Ok(())
 }
 
@@ -295,6 +289,61 @@ fn detached_worktree_fails_for_a_missing_object_without_fetching()
         Err(HistoryError::Git(_))
     ));
     assert!(!fetch_head.exists());
+    Ok(())
+}
+
+#[test]
+fn detached_worktree_bypasses_custom_checkout_filters_without_executing_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    git(directory.path(), &["init", "--quiet"])?;
+    git(directory.path(), &["config", "user.name", "Compass Test"])?;
+    git(
+        directory.path(),
+        &["config", "user.email", "compass@example.invalid"],
+    )?;
+    std::fs::write(
+        directory.path().join(".gitattributes"),
+        "filtered.txt filter=crab\n",
+    )?;
+    std::fs::write(directory.path().join("filtered.txt"), "stored bytes\n")?;
+    git(directory.path(), &["add", ".gitattributes", "filtered.txt"])?;
+    git(directory.path(), &["commit", "--quiet", "-m", "filtered"])?;
+    git(
+        directory.path(),
+        &[
+            "config",
+            "filter.crab.process",
+            "compass-filter-must-not-run",
+        ],
+    )?;
+    git(
+        directory.path(),
+        &[
+            "config",
+            "filter.crab.smudge",
+            "compass-filter-must-not-run",
+        ],
+    )?;
+    git(
+        directory.path(),
+        &["config", "filter.crab.required", "true"],
+    )?;
+
+    let repository = Repository::discover(directory.path())?;
+    let commit = repository.resolve("HEAD")?;
+    assert!(
+        repository
+            .target_limitations(&commit)?
+            .iter()
+            .all(|limitation| !matches!(limitation, GitTargetLimitation::UnsupportedFilter(_)))
+    );
+    let checkout = repository.detached_worktree(&commit)?;
+    assert_eq!(
+        std::fs::read_to_string(checkout.path().join("filtered.txt"))?,
+        "stored bytes\n"
+    );
+    checkout.close()?;
     Ok(())
 }
 

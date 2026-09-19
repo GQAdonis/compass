@@ -203,7 +203,8 @@ Compass historical materialization:
 
 - creates a detached offline worktree;
 - does not run hooks;
-- rejects external-code checkout filters;
+- discovers configured checkout filters and overrides their process, smudge,
+  and required settings with inert values for the isolated checkout;
 - does not fetch or prompt;
 - does not smudge LFS;
 - does not recurse submodules;

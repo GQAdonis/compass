@@ -189,7 +189,10 @@ fn orientation_is_bounded_deterministic_and_markdown_safe() -> Result<(), Box<dy
     );
     assert!(orientation.chars().count() <= ORIENTATION_MARKDOWN_MAX_CHARS);
     assert!(report.chars().count() <= REPORT_MARKDOWN_MAX_CHARS);
-    assert!(report.starts_with(&orientation));
+    assert!(report.starts_with("# Agent Orientation"));
+    assert!(report.contains("- Hub:"));
+    assert!(report.contains("- Purpose:"));
+    assert!(report.contains("- Question:"));
     assert!(orientation.contains("Publication: partial"));
     assert!(orientation.contains("omitted nodes: 17"));
     let prose = report

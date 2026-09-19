@@ -217,8 +217,14 @@ fn analyze_projection(
     if clause.distinct {
         operators.push(LogicalOperator::Distinct);
     }
+    let mut order_scope = projected.clone();
+    if !has_aggregate && !clause.distinct {
+        for (name, binding) in scope {
+            order_scope.entry(name.clone()).or_insert(*binding);
+        }
+    }
     for item in &clause.order_by {
-        validate_expr(&item.expression, &projected, parameter_types)?;
+        validate_expr(&item.expression, &order_scope, parameter_types)?;
     }
     if !clause.order_by.is_empty() {
         operators.push(LogicalOperator::Sort);

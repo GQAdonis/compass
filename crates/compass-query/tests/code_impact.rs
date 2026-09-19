@@ -22,6 +22,13 @@ fn impact_walks_the_approved_reverse_family_and_gates_heuristics()
     let exact = engine.impact(request(false))?;
     assert!(exact.nodes.iter().any(|node| node.id == "n:route"));
     assert!(exact.nodes.iter().any(|node| node.id == "n:dependent"));
+    assert!(exact.nodes.iter().any(|node| node.id == "n:alias"));
+    assert!(
+        exact
+            .edges
+            .iter()
+            .any(|edge| edge.kind == EdgeKind::Aliases)
+    );
     assert!(!exact.nodes.iter().any(|node| node.id == "n:heuristic"));
     let enriched = engine.impact(request(true))?;
     assert!(enriched.nodes.iter().any(|node| node.id == "n:heuristic"));

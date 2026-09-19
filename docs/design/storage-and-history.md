@@ -221,7 +221,7 @@ Materialization uses a protected worktree under a restrictive policy:
 - no user hooks;
 - no recursive submodules;
 - no LFS smudge;
-- no external-code checkout filters;
+- configured checkout filters are neutralized before worktree creation;
 - committed ignore policy only.
 
 This is both reproducibility and security design. A historical query should not

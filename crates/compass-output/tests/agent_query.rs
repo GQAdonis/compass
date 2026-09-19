@@ -224,6 +224,13 @@ fn direction_mismatch_is_a_no_path_blocker() -> Result<(), Box<dyn Error>> {
             .iter()
             .any(|caveat| caveat.code == "direction_mismatch")
     );
+    assert!(view.next_actions.iter().any(|action| {
+        action.kind == "inspect_undirected_path"
+            && action
+                .cli
+                .as_ref()
+                .is_some_and(|cli| cli.argv == ["compass", "path", "Source", "Target"])
+    }));
     Ok(())
 }
 

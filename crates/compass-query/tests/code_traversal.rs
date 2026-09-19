@@ -37,6 +37,13 @@ fn callers_include_calls_and_route_bindings_while_callees_follow_calls()
             .iter()
             .any(|edge| edge.kind == EdgeKind::RoutesTo)
     );
+    assert!(caller_ids.contains("n:alias"));
+    assert!(
+        callers
+            .edges
+            .iter()
+            .any(|edge| edge.kind == EdgeKind::Aliases)
+    );
     assert!(!callers.nodes.iter().any(|node| node.id == "n:heuristic"));
 
     let enriched = engine.callers(CallRequest {
