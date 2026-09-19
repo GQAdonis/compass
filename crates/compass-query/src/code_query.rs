@@ -87,7 +87,7 @@ pub(crate) enum StructuralOperandRole {
 impl StructuralOperandRole {
     const fn relation_probe(self) -> (bool, &'static [EdgeKind]) {
         match self {
-            Self::CallersTarget => (true, &[EdgeKind::Calls, EdgeKind::RoutesTo]),
+            Self::CallersTarget => (true, CALLER_KINDS),
             Self::CalleesSource => (false, &[EdgeKind::Calls]),
             Self::ImpactTarget => (true, IMPACT_KINDS),
             Self::TrailSource => (false, ALL_EDGE_KINDS),
@@ -95,6 +95,15 @@ impl StructuralOperandRole {
         }
     }
 }
+
+const CALLER_KINDS: &[EdgeKind] = &[
+    EdgeKind::Calls,
+    EdgeKind::RoutesTo,
+    EdgeKind::References,
+    EdgeKind::Imports,
+    EdgeKind::Exports,
+    EdgeKind::Aliases,
+];
 
 pub(crate) struct CandidateAssembly {
     pub(crate) pool: SearchCandidatePool,
@@ -263,6 +272,7 @@ const IMPACT_KINDS: &[EdgeKind] = &[
     EdgeKind::Imports,
     EdgeKind::Exports,
     EdgeKind::References,
+    EdgeKind::Aliases,
     EdgeKind::DependsOn,
     EdgeKind::Reads,
     EdgeKind::Writes,
@@ -2248,7 +2258,7 @@ impl CodeQueryEngine {
         };
         let execution_started = Instant::now();
         let kinds: &[EdgeKind] = if inbound {
-            &[EdgeKind::Calls, EdgeKind::RoutesTo]
+            CALLER_KINDS
         } else {
             &[EdgeKind::Calls]
         };

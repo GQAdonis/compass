@@ -150,7 +150,7 @@ def callers_records() -> list[dict[str, object]]:
         "which methods call {symbol}",
         "where is {symbol} called",
     )
-    nodes = (("n:caller", 3), ("n:list", 3), ("n:route", 3))
+    nodes = (("n:alias", 3), ("n:caller", 3), ("n:list", 3), ("n:route", 3))
     edges = (
         edge("n:caller", "n:list", "calls"),
         edge("n:route", "n:list", "routes_to"),

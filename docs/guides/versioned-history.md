@@ -517,7 +517,7 @@ Failure handling:
 | Preferred realization fails validation | Inspect with `show`; use explicit rebuild/recovery path |
 | Profiles differ during diff | Build the missing side with `--profile-from`; unlike profiles are not compared |
 | Live lease exists | Join/wait according to command behavior; do not delete lock files |
-| Historical checkout limitation | Read the reported Gitlink/LFS/filter limitation and adjust source policy |
+| Historical checkout limitation | Read the reported Gitlink/LFS limitation and adjust source policy; configured checkout filters are neutralized |
 | Store copy is inconsistent | Restore a coherent SQLite/WAL backup; do not guess at Prolly records |
 
 ## Qualification

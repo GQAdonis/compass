@@ -95,7 +95,9 @@ compass tree
   node trail. Treat the reported operation and any ambiguity as part of the
   result.
 - `search` resolves typed symbols by exact or fuzzy name.
-- `callers` and `callees` walk one attributable call-graph hop.
+- `callers` returns one attributable incoming usage hop across calls, routes,
+  references, imports, exports, and aliases. `callees` walks one outgoing call
+  hop.
 - `impact` traverses a bounded transitive radius and excludes heuristic
   evidence by default.
 - `explore` returns related source and paths together under source and response
@@ -103,10 +105,11 @@ compass tree
 - `node` exposes the evidence trail and provenance between two symbols.
 - `explain` reports a matched node and connected context; follow its pagination
   metadata when connections or ambiguous candidates span multiple pages.
-- `path` reports the shortest known directed graph route from source to target.
-  A `direction_mismatch` diagnostic means a route exists only by ignoring one
-  or more edge directions; swap the operands only when the reverse route is
-  the intended question.
+- `node` reports a directed evidence trail. A `direction_mismatch` diagnostic
+  includes a `compass path SOURCE TARGET` next action when a connection exists
+  only by ignoring edge direction.
+- `path` ranks an undirected traversal while preserving stored relationship
+  direction in its displayed arrows.
 - `affected` follows impact relations and returns a review candidate set.
 - `tree` combines repository structure with graph metadata.
 

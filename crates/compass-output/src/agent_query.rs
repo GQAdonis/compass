@@ -1751,7 +1751,7 @@ fn answer_for_code(
             _ => format!("No exact answer was proven for \"{requested}\"."),
         },
         AgentOperation::Callers => format!(
-            "Found {} incoming call or route relationship(s) for {subject}.",
+            "Found {} incoming usage relationship(s) for {subject}.",
             relationships.len()
         ),
         AgentOperation::Callees => format!(
@@ -1859,6 +1859,35 @@ fn next_actions_for_code(
     paths: &[QueryPath],
 ) -> Vec<AgentNextAction> {
     let mut actions = Vec::new();
+    if caveats
+        .iter()
+        .any(|caveat| caveat.code == "direction_mismatch")
+    {
+        let source = context
+            .operands
+            .iter()
+            .find(|operand| operand.role == AgentOperandRole::Source);
+        let target = context
+            .operands
+            .iter()
+            .find(|operand| operand.role == AgentOperandRole::Target);
+        if let (Some(source), Some(target)) = (source, target) {
+            actions.push(AgentNextAction {
+                kind: "inspect_undirected_path".to_owned(),
+                reason: "A connection exists only when relationship direction is ignored."
+                    .to_owned(),
+                cli: Some(AgentActionCli {
+                    argv: vec![
+                        "compass".to_owned(),
+                        "path".to_owned(),
+                        source.value.clone(),
+                        target.value.clone(),
+                    ],
+                }),
+                mcp: None,
+            });
+        }
+    }
     if caveats
         .iter()
         .any(|caveat| caveat.code == "ambiguous_match")

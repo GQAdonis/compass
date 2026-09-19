@@ -10,7 +10,9 @@ pub const DEFAULT_AFFECTED_RELATIONS: &[&str] = &[
     "references",
     "imports",
     "imports_from",
+    "exports",
     "re_exports",
+    "aliases",
     "inherits",
     "extends",
     "implements",
@@ -262,5 +264,6 @@ mod tests {
     #[test]
     fn default_affected_relations_include_frontend_renderers() {
         assert!(DEFAULT_AFFECTED_RELATIONS.contains(&"renders"));
+        assert!(DEFAULT_AFFECTED_RELATIONS.contains(&"aliases"));
     }
 }

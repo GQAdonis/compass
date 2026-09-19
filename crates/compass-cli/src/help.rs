@@ -324,9 +324,9 @@ const PAGES: &[Page] = &[
     ),
     page!(
         "callers",
-        "List direct callers of a typed symbol",
+        "List direct incoming usages of a typed symbol",
         ["compass callers <SYMBOL> [OPTIONS]"],
-        "Arguments:\n  <SYMBOL>                      Symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass callers PaymentService.charge\n  compass callers sym:checkout --format json"
+        "Arguments:\n  <SYMBOL>                      Symbol ID, name, or qualified name\n\nOptions:\n  --graph <PATH>                Typed graph [default: compass-out/graph.json]\n  --program <PATH>              Optional Program IR enrichment\n  --cache <DIR>                 Query-index cache directory\n  --engine <default|json|store> Graph storage engine [default: default]\n  --max-nodes <N>               Node bound\n  --max-edges <N>               Edge bound\n  --include-heuristic           Include heuristic evidence (default is exact-first)\n  --format <text|json>          Output format [default: text]\n\nExamples:\n  compass callers PaymentService.charge\n  compass callers sym:checkout --format json\n\nNotes:\n  Incoming usages include calls, routes, references, imports, exports, and aliases; each result retains its exact relationship kind."
     ),
     page!(
         "callees",
@@ -425,7 +425,7 @@ const PAGES: &[Page] = &[
         "path",
         "Find the shortest relationship path between two graph nodes",
         ["compass path <SOURCE> <TARGET> [OPTIONS]"],
-        "Arguments:\n  <SOURCE>                Exact source node name, qualified name, or ID\n  <TARGET>                Exact target node name, qualified name, or ID\n\nOptions:\n  --max-depth <N>         Maximum hops examined [default: 8]\n  --graph <PATH>          Read a graph JSON file\n  --at <REV>              Use an immutable Git revision; conflicts with --graph\n\nExamples:\n  compass path CheckoutHandler PaymentGateway\n  compass path api route --max-depth 5 --at v1.2.0\n\nNotes:\n  Resolution completes before traversal. The final path node is always the resolved target ID. Relations are weighted so structural chains beat weak shared-reference shortcuts; a close shorter-but-weaker alternative is reported separately."
+        "Arguments:\n  <SOURCE>                Exact source node name, qualified name, or ID\n  <TARGET>                Exact target node name, qualified name, or ID\n\nOptions:\n  --max-depth <N>         Maximum hops examined [default: 8]\n  --graph <PATH>          Read a graph JSON file\n  --at <REV>              Use an immutable Git revision; conflicts with --graph\n\nExamples:\n  compass path CheckoutHandler PaymentGateway\n  compass path api route --max-depth 5 --at v1.2.0\n\nNotes:\n  Resolution completes before traversal. Path traversal may follow relationships in either direction; displayed arrows preserve stored direction. The final path node is always the resolved target ID. Relations are weighted so structural chains beat weak shared-reference shortcuts; a close shorter-but-weaker alternative is reported separately."
     ),
     page!(
         "explain",

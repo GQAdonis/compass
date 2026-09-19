@@ -420,6 +420,9 @@ existing discovery entry ledger and v2 cursor remain unchanged.
 bounded `nextActions` as argv arrays or JSON argument objects; clients should
 use those values instead of reconstructing shell commands from result text.
 
+`callers` returns direct incoming usage evidence: calls, routes, references,
+imports, exports, and aliases. `callees` remains the direct outgoing call view.
+
 ### `path`
 
 ```text
@@ -434,6 +437,8 @@ or documentation links. When a meaningfully weaker route is up to two hops
 shorter, Compass shows it separately. Output names the resolved target ID, and
 an unreachable target is reported as `NO PATH FOUND` with the depth bound and
 visited-node count. Relationship arrows always preserve their stored direction.
+Traversal may follow a relationship in either direction; the arrows make that
+choice visible rather than rewriting the graph.
 
 ### `explain`
 

@@ -88,7 +88,7 @@ The same rule applies broadly:
 - missing semantic credentials do not silently become a code-only historical
   profile;
 - an unreadable preferred realization is not silently replaced;
-- unsafe checkout filters are rejected for historical materialization;
+- checkout filters are neutralized for historical materialization;
 - an incomplete semantic build cannot publish as complete;
 - a profile mismatch is surfaced before a normal diff.
 
