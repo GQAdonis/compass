@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-compass-agent-graph = { path = "../compass-agent-graph", version = "0.3.27" }
+compass-agent-graph = { path = "../compass-agent-graph", version = "0.3.28" }
 base64.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
@@ -20,12 +20,12 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-compass-cypher = { path = "../compass-cypher", version = "0.3.27" }
-compass-model = { path = "../compass-model", version = "0.3.27" }
-compass-analysis = { path = "../compass-analysis", version = "0.3.27" }
-compass-ir = { path = "../compass-ir", version = "0.3.27" }
-compass-store = { path = "../compass-store", version = "0.3.27" }
-compass-graph = { path = "../compass-graph", version = "0.3.27" }
+compass-cypher = { path = "../compass-cypher", version = "0.3.28" }
+compass-model = { path = "../compass-model", version = "0.3.28" }
+compass-analysis = { path = "../compass-analysis", version = "0.3.28" }
+compass-ir = { path = "../compass-ir", version = "0.3.28" }
+compass-store = { path = "../compass-store", version = "0.3.28" }
+compass-graph = { path = "../compass-graph", version = "0.3.28" }
 unicode-normalization.workspace = true
 
 [target.'cfg(unix)'.dependencies]
@@ -33,9 +33,9 @@ libc = "0.2"
 rustix.workspace = true
 
 [dev-dependencies]
-compass-graphdb = { path = "../compass-graphdb", version = "0.3.27" }
-compass-languages = { path = "../compass-languages", version = "0.3.27" }
-compass-store-redb = { path = "../compass-store-redb", version = "0.3.27" }
+compass-graphdb = { path = "../compass-graphdb", version = "0.3.28" }
+compass-languages = { path = "../compass-languages", version = "0.3.28" }
+compass-store-redb = { path = "../compass-store-redb", version = "0.3.28" }
 tempfile.workspace = true
 
 [lints]
