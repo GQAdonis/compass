@@ -2344,6 +2344,36 @@ impl CodeQueryEngine {
                 }
             }
         }
+        // Without a containing owner, every relevant relationship terminates
+        // at the exact target and canonical inbound adjacency is complete.
+        // Do not probe broad term postings for each hop of a call chain: a
+        // common source-file term could make that internal probe appear
+        // truncated and prematurely stop an otherwise bounded impact walk.
+        if owner_ids.len() == 1 {
+            let (probe, probe_truncated) = if limit < RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS {
+                self.backend.matching_bounded(
+                    target,
+                    true,
+                    canonical_kinds,
+                    include_heuristic,
+                    RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS,
+                )?
+            } else {
+                (edges.values().cloned().collect(), truncated)
+            };
+            let observed = probe
+                .iter()
+                .map(|edge| edge.source.as_str())
+                .collect::<BTreeSet<_>>()
+                .len();
+            truncated |= probe_truncated || probe.len() > limit;
+            return Ok((
+                edges.into_values().collect(),
+                truncated,
+                observed,
+                probe_truncated,
+            ));
+        }
         let mut terms = BTreeSet::new();
         for owner_id in &owner_ids {
             let Some(owner) = self.backend.node_by_id(owner_id)? else {
