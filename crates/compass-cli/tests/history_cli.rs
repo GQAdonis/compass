@@ -1472,7 +1472,7 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
     assert!(
         envelope["graph_delta"]["removed_nodes"]
             .as_array()
-            .is_some_and(<[Value]>::is_empty)
+            .is_some_and(|nodes| nodes.is_empty())
     );
     assert!(envelope.get("changes").is_none());
 
