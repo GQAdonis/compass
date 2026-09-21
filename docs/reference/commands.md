@@ -608,7 +608,9 @@ changes, affected callers/modules, and test evidence. Routine symbol churn is
 collapsed; `--limit N` changes the visible per-section budget, while `--all`
 expands routine findings and is exhaustive. `--explain` prints the evidence
 and reasoning for one finding. Diff requires comparable build profiles;
-rebuild the newer revision with `--profile-from OLD` when needed.
+rebuild the newer revision with `--profile-from OLD` when needed. `diff` never
+materializes a revision: build each uncached revision explicitly with
+`compass history build REV --code-only` before comparing.
 `--format html` requires `--output PATH` and writes a self-contained
 interactive report containing the reviewer findings, unified/split source
 diffs, the exact Git patch fallback, and meaningful code-graph changes.
