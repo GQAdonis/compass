@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Align Surreal-backed traversal with the typed engines. Directed trails now
+  rank candidates by relation kind before evidence quality, matching the
+  weighted selection 0.3.28 introduced for JSON and SQLite, so a Surreal graph
+  returns the same path as the other backends instead of preferring a
+  higher-confidence but weaker-related edge. The CompassQL `degree` property
+  counts incident relations directly rather than resolving adjacency, so a node
+  whose neighbor falls outside the current selection reports its real degree
+  instead of failing the read.
+
 - Withdraw this fork's `compass.code_context.v1` MCP result envelope in favor of
   the upstream contract. `search_symbols`, `get_callers`, `get_callees`,
   `get_impact`, `explore_code`, and `get_node` now return
