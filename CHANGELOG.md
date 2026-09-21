@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Withdraw this fork's `compass.code_context.v1` MCP result envelope in favor of
+  the upstream contract. `search_symbols`, `get_callers`, `get_callees`,
+  `get_impact`, `explore_code`, and `get_node` now return
+  `compass.mcp.tool-result/1`, carrying the unchanged `compass.query/1` record
+  under `result` alongside `agentView` and `semanticResultDigest`. These tools
+  no longer advertise a raw output schema, matching upstream. Clients that read
+  `structuredContent.data` read `structuredContent.result` instead; see
+  MIGRATION.md for the full field mapping. `max_response_bytes` continues to
+  bound the delivered envelope, not only the query result.
+
 - Support native Windows for the optional SurrealDB surfaces, with no WSL
   dependency. Embedded store addresses reject a path containing `://` instead of
   silently retargeting the store, failed restores report cleanup that could not

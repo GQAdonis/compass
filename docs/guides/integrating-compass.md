@@ -247,17 +247,20 @@ Codex receives `mcp_servers` TOML, Claude receives an `.mcp.json`
 form intentionally uses a loopback URL; add authentication deliberately before
 changing the bind boundary.
 
-The four core navigation tools—`search_symbols`, `get_callers`, `get_callees`,
-and `get_impact`—publish a closed structured output schema and return
-`compass.code_context.v1`. Read the previous `compass.query/1` result from
-`structuredContent.data`. The surrounding envelope adds graph identity,
-evidence-scoped freshness, evidence/confidence summaries, truncation state, and
-warnings. MCP `resultType` is a separate protocol field and is `complete` for
-these synchronous calls.
+The typed navigation tools—`search_symbols`, `get_callers`, `get_callees`,
+`get_impact`, `explore_code`, and `get_node`—return
+`compass.mcp.tool-result/1`. Read the `compass.query/1` result from
+`structuredContent.result`. Alongside it, `agentView`
+(`compass.query.agent-view/1`) carries the bounded answer-first projection with
+graph identity and result state, and `semanticResultDigest` pins the result
+identity. These tools do not advertise a raw output schema; select the decoder
+from `structuredContent.schema`. MCP `resultType` is a separate protocol field
+and is `complete` for these synchronous calls.
 
-Treat `freshness.status: "unknown"` as unknown rather than current. When
-`truncation.truncated` is true and `truncation.next` is null, this schema version
-has no continuation token; issue a narrower request or raise an explicit bound.
+Treat `agentView.status.coverage: "unknown"` as unknown rather than current.
+`transportTruncation` reports whether the transport bound elided anything, while
+`max_response_bytes` bounds the delivered envelope and fails the call with
+`query_response_too_large` rather than returning an oversized payload.
 
 Discovery marks the remaining text-only tools and explicit `query_graph`
 traversal text mode deprecated from 0.4.0. Their names and current text outputs

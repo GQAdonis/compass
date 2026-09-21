@@ -608,18 +608,45 @@ upgrade; there is no legacy stdio compatibility flag.
 
 ### Read core navigation results through the MCP envelope
 
-The structured content returned by `search_symbols`, `get_callers`,
-`get_callees`, and `get_impact` now uses `compass.code_context.v1`. If a client
-previously read `schema`, `operation`, `nodes`, `edges`, `paths`, `diagnostics`,
-`limits`, or `truncated` directly from `structuredContent`, read the same fields
-from `structuredContent.data` instead. The nested object remains
-`compass.query/1`; no query record or ordering changed.
+**Breaking in this release.** The structured content returned by
+`search_symbols`, `get_callers`, `get_callees`, `get_impact`, `explore_code`,
+and `get_node` is now `compass.mcp.tool-result/1`. It previously used this
+fork's `compass.code_context.v1`, which has been withdrawn in favor of the
+upstream contract.
+
+Move each read one field:
+
+| Was (`compass.code_context.v1`)   | Now (`compass.mcp.tool-result/1`)              |
+| --------------------------------- | ---------------------------------------------- |
+| `structuredContent.data`          | `structuredContent.result`                     |
+| `structuredContent.repository`    | `structuredContent.agentView.identity.graphIdentity` |
+| `structuredContent.generation`    | `structuredContent.agentView.identity.buildGenerationIdentity` |
+| `structuredContent.freshness`     | `structuredContent.agentView.status`           |
+| `structuredContent.truncation`    | `structuredContent.transportTruncation`        |
+
+The nested query record is unchanged: `structuredContent.result` is still
+`compass.query/1` with the same fields and ordering. A client that only read
+`data` needs a one-word rename.
+
+These tools no longer advertise a raw output schema in discovery, matching
+upstream. `outputSchemaSha256` is now null for every tool. A client that
+required a declared output schema must validate `structuredContent.schema`
+itself.
+
+New alongside the result: `agentView` (`compass.query.agent-view/1`) carries the
+bounded answer-first projection, and `semanticResultDigest` pins the result
+identity. Reject unknown `agentView` major versions explicitly rather than
+guessing.
 
 Use `structuredContent.schema` to select the Compass decoder. Do not treat MCP
 `resultType` as that schema: for these synchronous MCP 2026 results it is the
-separate protocol value `complete`. A `truncation.next` value of null means this
-envelope version exposes no continuation token; reduce or adjust the request
-bounds rather than inventing a page cursor.
+separate protocol value `complete`.
+
+`max_response_bytes` still bounds what you receive. It is measured after the
+agent view and transport fields are attached, so a request whose query result
+fits but whose envelope does not fails with `query_response_too_large` rather
+than returning an oversized payload. Lower the requested bounds instead of
+retrying the same call.
 
 Legacy text results remain callable, but discovery marks `get_neighbors`,
 `get_community`, `god_nodes`, `graph_stats`, `shortest_path`, `list_prs`,

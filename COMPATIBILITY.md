@@ -333,19 +333,25 @@ usage-error, or runtime-error exit codes.
 
 ## MCP structured result compatibility
 
-`search_symbols`, `get_callers`, `get_callees`, and `get_impact` advertise a
-closed output schema and return `compass.code_context.v1`. The envelope carries
-repository and generation identity, evidence-scoped freshness, evidence and
-confidence summaries, truncation state, and warnings. Its `data` field is the
-unchanged `compass.query/1` response. MCP `resultType: "complete"` remains the
+`search_symbols`, `get_callers`, `get_callees`, `get_impact`, `explore_code`,
+and `get_node` return `compass.mcp.tool-result/1` and advertise no raw output
+schema. Its `result` field is the unchanged `compass.query/1` response;
+`agentView` (`compass.query.agent-view/1`) carries the bounded answer-first
+projection, including graph and build-generation identity and result state;
+`semanticResultDigest` pins the result identity; and `transportTruncation`
+reports transport-level elision. MCP `resultType: "complete"` remains the
 protocol-level discriminator and is not overloaded with a Compass schema name.
-Strict `compass.graph/1` validation requires non-empty `sourceTreeDigest` and
-`generationId` build identities, so a successful envelope always satisfies its
-advertised non-empty identity fields.
+
+`max_response_bytes` bounds the delivered envelope, measured after the agent
+view and transport fields are attached. A request whose query result fits but
+whose envelope does not fails with `query_response_too_large`; a bound breach is
+a distinct outcome, never a silently truncated or emptied result.
 
 This top-level shape is compatibility-sensitive. Consumers must reject an
-unknown `compass.code_context` major version and must not infer freshness when
-the envelope reports `unknown`. Other typed and legacy text tools retain their
+unknown `compass.mcp.tool-result` or `compass.query.agent-view` major version
+and must not infer coverage when `agentView.status.coverage` reports `unknown`.
+The fork-local `compass.code_context.v1` envelope was withdrawn in 0.3.28; see
+MIGRATION.md for the field mapping. Other typed and legacy text tools retain their
 existing result shapes until separately versioned. The text-result tools
 `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`,
 `list_prs`, `get_pr_impact`, and `triage_prs`, plus explicit traversal text mode
