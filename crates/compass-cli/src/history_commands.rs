@@ -62,8 +62,7 @@ pub(crate) fn load_graph_at(
     let commit = repository
         .resolve(revision)
         .map_err(|error| error.to_string())?;
-    let options = configured_build_options(&repository)?;
-    let (history, preferred) = resolve_or_materialize(&repository, commit, &options, false, false)?;
+    let (history, preferred) = resolve_materialized(&repository, &commit)?;
     let cache = history.cache().map_err(|error| error.to_string())?;
     let cache_key = serde_json::json!({
         "schema": "compass.history.graph_query_key/1",
@@ -103,8 +102,7 @@ pub(crate) fn load_typed_graph_at(
     let commit = repository
         .resolve(revision)
         .map_err(|error| error.to_string())?;
-    let options = configured_build_options(&repository)?;
-    let (history, preferred) = resolve_or_materialize(&repository, commit, &options, false, false)?;
+    let (history, preferred) = resolve_materialized(&repository, &commit)?;
     let realization = preferred.id;
     let reader = history
         .reader(&realization)
@@ -126,9 +124,7 @@ pub(crate) fn load_history_view_model_at(
     let commit = repository
         .resolve(revision)
         .map_err(|error| error.to_string())?;
-    let options = configured_build_options(&repository)?;
-    let (history, preferred) =
-        resolve_or_materialize(&repository, commit.clone(), &options, false, false)?;
+    let (history, preferred) = resolve_materialized(&repository, &commit)?;
     let reader = history
         .reader(&preferred.id)
         .map_err(|error| error.to_string())?;
@@ -150,6 +146,32 @@ pub(crate) fn resolve_or_materialize(
     replace_corrupt: bool,
 ) -> Result<(HistoryStore, PublishedVersion), String> {
     resolve_or_materialize_inner(repository, commit, options, rebuild, replace_corrupt, false)
+}
+
+/// Resolve an already-published realization without creating a history store,
+/// queueing a job, checking out a revision, or invoking any extractor. Query
+/// and diff commands use this read-only path so an uncached revision produces
+/// an actionable prerequisite error instead of an opaque build failure.
+fn resolve_materialized(
+    repository: &Repository,
+    commit: &CommitId,
+) -> Result<(HistoryStore, PublishedVersion), String> {
+    let history = HistoryStore::open_existing(repository)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "revision {commit} is not materialized; this read-only command will not build it. Run `compass history build {commit} --code-only` first"
+            )
+        })?;
+    let preferred = history
+        .preferred(commit)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "revision {commit} is not materialized; this read-only command will not build it. Run `compass history build {commit} --code-only` first"
+            )
+        })?;
+    Ok((history, preferred))
 }
 
 fn resolve_or_materialize_matching_profile(
@@ -289,6 +311,16 @@ pub(crate) fn resolve_comparable_pair(
     let new = select_existing(existing.as_ref(), &new_commit, required_fingerprint)?;
     if required_fingerprint.is_some() && (old.is_none() || new.is_none()) {
         return Err("the requested fingerprint is not materialized at both commits".to_owned());
+    }
+    if old.is_none() {
+        return Err(format!(
+            "revision {old_commit} is not materialized; history diff is read-only and will not build it. Run `compass history build {old_commit} --code-only` first"
+        ));
+    }
+    if new.is_none() {
+        return Err(format!(
+            "revision {new_commit} is not materialized; history diff is read-only and will not build it. Run `compass history build {new_commit} --code-only` first"
+        ));
     }
     let (history, old, new) = match (old, new) {
         (Some(old), Some(new)) if required_fingerprint.is_some() => (
@@ -827,10 +859,8 @@ fn execute(frontend: Frontend, args: &[String]) -> Result<String, CommandFailure
                     "--node-limit is only valid with history export --format json",
                 ));
             }
-            let build_options = configured_build_options(&repository).map_err(runtime)?;
             let (history, preferred) =
-                resolve_or_materialize(&repository, commit, &build_options, false, false)
-                    .map_err(runtime)?;
+                resolve_materialized(&repository, &commit).map_err(runtime)?;
             let artifacts = history.artifacts(&preferred.id).map_err(runtime)?;
             if format == "graph-json" {
                 if output.is_dir() {

@@ -105,9 +105,13 @@ Use the specialized navigation commands when they fit:
 - `compass explain "<concept>"` for one node and its neighborhood; use the same
   `--budget N` and `--page N` continuation workflow for large neighborhoods or
   ambiguity lists.
+- `compass architecture` for a bounded repository overview with explicit
+  coverage, omissions, and witness group IDs.
 - `compass program` for normalized functions, call evidence, or capability
   completeness rather than graph topology.
-- `compass affected "<symbol>" --depth N` for downstream review scope.
+- `compass affected "<symbol>" --depth N` for downstream review scope; on a
+  typed graph it shares importer/reference resolution with `impact`, and
+  `--format agent-json` preserves bounded diagnostics for an agent.
 - `compass query --cql "..."` for exact, deterministic graph patterns.
 - `compass tree` for a graph-aware repository tree.
 - `compass query "<question>" --at REV` for an immutable historical graph.
@@ -197,7 +201,7 @@ recovery, and MCP setup.
 Classify the effect before selecting a command:
 
 - Read-only local: `ask`, `search`, `callers`, `callees`, `impact`, `explore`,
-  `node`, `call-graph`, `query`, `program`, `path`, `explain`, `affected`,
+  `node`, `call-graph`, `query`, `program`, `path`, `explain`, `architecture`, `affected`,
   `tree`, `document`, `models list`, `models verify`, and local diagnostics.
 - Local publication: `init`, `ensure`, `update`, `extract`, `watch`, `cluster-only`,
   `label`, `models install`, history materialization, installation, and
@@ -261,7 +265,8 @@ the user wants human-readable community labels and accepts provider use. Use
 
 Do not force every request through `query`:
 
-- Architecture or concept: `query`, then `explain`.
+- Architecture or concept: `architecture`, then `query` or `explain` for a
+  focused relationship.
 - Dependency route: `path`.
 - Change-review scope: `affected`.
 - Exact relationship or automation: `query --cql`.

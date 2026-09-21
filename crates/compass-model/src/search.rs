@@ -10,6 +10,20 @@ pub const OPERATION_ROLE_TOKENS: &[&str] = &[
     "builder", "factory", "handler", "manager", "provider", "service",
 ];
 
+/// Structural relationships that can establish a source-backed dependency
+/// on a named target. The structural relationship commands use the bounded
+/// postings derived from these kinds so importer recall does not depend on a
+/// narrower direct-call-only index.
+pub const RELATIONSHIP_SEARCH_EDGE_KINDS: &[EdgeKind] = &[
+    EdgeKind::Calls,
+    EdgeKind::Imports,
+    EdgeKind::Exports,
+    EdgeKind::References,
+    EdgeKind::Aliases,
+    EdgeKind::RoutesTo,
+    EdgeKind::DependsOn,
+];
+
 /// Return deterministic normalized full and identifier-subword terms.
 ///
 /// The full tokens preserve compatibility with existing search indexes while
@@ -93,6 +107,96 @@ pub fn direct_call_source_identifier_targets(
     targets
 }
 
+/// Return exact source postings for all source-backed dependency
+/// relationships, not only direct calls.  Existing callers use the direct
+/// call helpers for compatibility; relationship commands use this broader
+/// index to recover import/reference consumers whose canonical edge points at
+/// a file or module owner rather than the resolved declaration.
+#[must_use]
+pub fn relationship_source_identifier_postings(
+    graph: &GraphDocument,
+) -> BTreeMap<String, Vec<String>> {
+    let mut postings = BTreeMap::<String, BTreeSet<String>>::new();
+    for (concept, source_id, _) in relationship_source_identifier_targets(graph) {
+        postings.entry(concept).or_default().insert(source_id);
+    }
+    postings
+        .into_iter()
+        .map(|(concept, source_ids)| (concept, source_ids.into_iter().collect()))
+        .collect()
+}
+
+/// Return deterministic `(concept, source ID, target ID)` evidence for all
+/// trusted source-backed dependency relationships.
+#[must_use]
+pub fn relationship_source_identifier_targets(
+    graph: &GraphDocument,
+) -> BTreeSet<(String, String, String)> {
+    let nodes = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    let mut aliases_by_target = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for edge in &graph.links {
+        if edge.kind == EdgeKind::Aliases
+            && let Some(alias) = nodes.get(edge.source.as_str())
+        {
+            aliases_by_target
+                .entry(edge.target.as_str())
+                .or_default()
+                .insert(alias.name.as_str());
+        }
+    }
+    let mut targets = BTreeSet::new();
+    for edge in &graph.links {
+        if !RELATIONSHIP_SEARCH_EDGE_KINDS.contains(&edge.kind)
+            || !is_exact_nonheuristic_relationship(edge)
+        {
+            continue;
+        }
+        let (Some(source), Some(target)) = (
+            nodes.get(edge.source.as_str()),
+            nodes.get(edge.target.as_str()),
+        ) else {
+            continue;
+        };
+        if source
+            .source_file()
+            .is_none_or(|source_file| source_file.is_empty())
+        {
+            continue;
+        }
+        let mut terms = identifier_search_terms(&target.name);
+        terms.extend(identifier_search_terms(&target.qualified_name));
+        if let Some(source_file) = target.source_file() {
+            terms.extend(identifier_search_terms(source_file));
+        }
+        for alias in aliases_by_target
+            .get(target.id.as_str())
+            .into_iter()
+            .flat_map(|aliases| aliases.iter())
+        {
+            terms.extend(identifier_search_terms(alias));
+        }
+        for concept in terms {
+            targets.insert((concept, source.id.clone(), target.id.clone()));
+        }
+    }
+    targets
+}
+
+/// Whether an edge is safe to use as exact relationship-search evidence.
+/// Empty evidence is retained for legacy graph documents; explicit heuristic
+/// evidence is excluded from the exact postings.
+#[must_use]
+pub fn is_exact_nonheuristic_relationship(edge: &crate::code_graph::EdgeRecord) -> bool {
+    edge.evidence.iter().all(|evidence| {
+        evidence.origin != EvidenceOrigin::Heuristic
+            && evidence.confidence == EvidenceConfidence::Exact
+    })
+}
+
 /// Whether an occurrence is trusted as an exact direct call for relationship
 /// discovery. Empty evidence remains accepted for legacy structural graphs;
 /// any explicit evidence must be exact and nonheuristic.
@@ -134,7 +238,7 @@ mod tests {
 
     use super::{
         direct_call_source_identifier_postings, direct_call_source_identifier_targets,
-        identifier_search_terms,
+        identifier_search_terms, relationship_source_identifier_postings,
     };
 
     #[test]
@@ -271,6 +375,26 @@ mod tests {
                 .count(),
             1,
             "parallel calls must not duplicate supporting target identity"
+        );
+
+        let mut aliased_importer =
+            source("aliased-importer", NodeKind::Variable, Some("src/app.ts"));
+        aliased_importer.name = "pkg_import".to_owned();
+        let mut alias_edge = edge("alias-edge", "aliased-importer", None);
+        alias_edge.target = "target".to_owned();
+        alias_edge.kind = EdgeKind::Aliases;
+        graph.nodes.push(aliased_importer);
+        graph.links.push(alias_edge);
+        let relationship_postings = relationship_source_identifier_postings(&graph);
+        assert!(
+            relationship_postings
+                .get("namespace")
+                .is_some_and(|sources| sources.contains(&"caller".to_owned()))
+        );
+        assert!(
+            relationship_postings
+                .get("pkg")
+                .is_some_and(|sources| sources.contains(&"aliased-importer".to_owned()))
         );
     }
 }

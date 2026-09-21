@@ -115,7 +115,7 @@ const GROUPS: &[Group] = &[
     },
     Group {
         title: "Visualize and export",
-        commands: &["tree", "export"],
+        commands: &["tree", "architecture", "export"],
     },
     Group {
         title: "Integrate and automate",
@@ -425,19 +425,25 @@ const PAGES: &[Page] = &[
         "path",
         "Find the shortest relationship path between two graph nodes",
         ["compass path <SOURCE> <TARGET> [OPTIONS]"],
-        "Arguments:\n  <SOURCE>                Exact source node name, qualified name, or ID\n  <TARGET>                Exact target node name, qualified name, or ID\n\nOptions:\n  --max-depth <N>         Maximum hops examined [default: 8]\n  --graph <PATH>          Read a graph JSON file\n  --at <REV>              Use an immutable Git revision; conflicts with --graph\n\nExamples:\n  compass path CheckoutHandler PaymentGateway\n  compass path api route --max-depth 5 --at v1.2.0\n\nNotes:\n  Resolution completes before traversal. Path traversal may follow relationships in either direction; displayed arrows preserve stored direction. The final path node is always the resolved target ID. Relations are weighted so structural chains beat weak shared-reference shortcuts; a close shorter-but-weaker alternative is reported separately."
+        "Arguments:\n  <SOURCE>                Exact source node name, qualified name, or ID\n  <TARGET>                Exact target node name, qualified name, or ID\n\nOptions:\n  --max-depth <N>         Maximum hops examined [default: 8]\n  --format <text|json|agent-json> Shared output contract [default: text]\n  --graph <PATH>          Read a graph JSON file\n  --at <REV>              Use an immutable Git revision; conflicts with --graph\n\nExamples:\n  compass path CheckoutHandler PaymentGateway\n  compass path api route --max-depth 5 --at v1.2.0\n  compass path api route --format agent-json\n\nNotes:\n  Resolution completes before traversal. Path traversal may follow relationships in either direction; displayed arrows preserve stored direction. The final path node is always the resolved target ID. Relations are weighted so structural chains beat weak shared-reference shortcuts; a close shorter-but-weaker alternative is reported separately."
     ),
     page!(
         "explain",
         "Explain a node and its important relationships",
         ["compass explain <NODE> [OPTIONS]"],
-        "Arguments:\n  <NODE>                  Node ID, name, label, or qualified name\n\nOptions:\n  --budget <N>            Approximate tokens per page [default: 2000]\n  --page <N>              Connection or ambiguity page, starting at 1 [default: 1]\n  --graph <PATH>          Read a graph JSON file\n  --at <REV>              Use an immutable Git revision; conflicts with --graph\n\nExamples:\n  compass explain PaymentService\n  compass explain PaymentService --budget 8000\n  compass explain PaymentService --page 2\n  compass explain auth --at HEAD~5"
+        "Arguments:\n  <NODE>                  Node ID, name, label, or qualified name\n\nOptions:\n  --budget <N>            Approximate tokens per page [default: 2000]\n  --page <N>              Connection or ambiguity page, starting at 1 [default: 1]\n  --format <text|json|agent-json> Shared output contract [default: text]\n  --graph <PATH>          Read a graph JSON file\n  --at <REV>              Use an immutable Git revision; conflicts with --graph\n\nExamples:\n  compass explain PaymentService\n  compass explain PaymentService --budget 8000\n  compass explain PaymentService --page 2\n  compass explain auth --at HEAD~5 --format agent-json"
+    ),
+    page!(
+        "architecture",
+        "Summarize the bounded architecture projection for agent inspection",
+        ["compass architecture [OPTIONS]"],
+        "Options:\n  --graph <PATH>          Graph JSON [default: compass-out/graph.json]\n  --labels <PATH>         Community-label JSON\n  --format <text|json|agent-json> Output format [default: text]\n\nExamples:\n  compass architecture\n  compass architecture --format agent-json\n  compass architecture --graph compass-out/graph.json --format json\n\nNotes:\n  The projection preserves omission counts and witness group IDs. Omitted groups are not evidence that the architecture is empty."
     ),
     page!(
         "affected",
         "Find code reachable from a proposed change",
         ["compass affected <NODE_OR_LABEL> [OPTIONS]"],
-        "Arguments:\n  <NODE_OR_LABEL>         Starting node or community label\n\nOptions:\n  --relation <RELATION>   Follow one relationship type; repeatable\n  --depth <N>             Maximum traversal depth\n  --graph <PATH>          Read a graph JSON file\n\nExamples:\n  compass affected PaymentGateway\n  compass affected auth --relation CALLS --depth 3"
+        "Arguments:\n  <NODE_OR_LABEL>         Starting node or community label\n\nOptions:\n  --relation <RELATION>   Follow one relationship type; repeatable\n  --depth <N>             Maximum traversal depth\n  --graph <PATH>          Read a graph JSON file\n  --format <text|json|agent-json> Output format [default: text]\n\nExamples:\n  compass affected PaymentGateway\n  compass affected auth --relation CALLS --depth 3\n  compass affected PaymentGateway --format agent-json"
     ),
     page!(
         "benchmark",
@@ -1322,7 +1328,7 @@ mod tests {
     #[test]
     fn catalog_has_unique_complete_public_roots() {
         let roots = root_commands();
-        assert_eq!(roots.len(), 53);
+        assert_eq!(roots.len(), 54);
         for root in roots {
             let matches = PAGES.iter().filter(|page| page.path == root).count();
             assert_eq!(matches, 1, "{root}");

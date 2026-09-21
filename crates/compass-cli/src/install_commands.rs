@@ -1297,7 +1297,13 @@ fn command_uninstall_compass(args: &[String]) -> Outcome {
     let mut failed = false;
     for platform in selected {
         let consumers = BTreeSet::from([platform.clone()]);
-        let adapter_snapshots = match snapshot_files(&uninstall_paths_for(&scope, &consumers)) {
+        let mut uninstall_paths = uninstall_paths_for(&scope, &consumers);
+        // Audit events are part of the managed transaction. Snapshot the
+        // bounded log alongside adapters so a failed uninstall can restore
+        // the exact pre-operation tree instead of leaving a misleading
+        // removal record behind after rollback.
+        uninstall_paths.push(state_event_path(scope.root()));
+        let adapter_snapshots = match snapshot_files(&uninstall_paths) {
             Ok(snapshots) => snapshots,
             Err(error) => {
                 failed = true;
@@ -1813,10 +1819,18 @@ fn uninstall_kilo_direct(root: &Path) -> Outcome {
             &format!("command removed: {}", command.display()),
         );
         if is_managed_skill(&skill) {
-            let _ = fs::remove_file(&skill);
-            removed.push(format!("skill removed: {}", skill.display()));
-            let _ = fs::remove_file(skill.with_file_name(".compass_version"));
-            let _ = fs::remove_dir_all(skill.with_file_name("references"));
+            if fs::remove_file(&skill).is_ok() {
+                record_managed_path_event(root, "remove_managed_skill", &skill);
+                removed.push(format!("skill removed: {}", skill.display()));
+            }
+            let metadata = skill.with_file_name(".compass_version");
+            if fs::remove_file(&metadata).is_ok() {
+                record_managed_path_event(root, "remove_managed_metadata", &metadata);
+            }
+            let references = skill.with_file_name("references");
+            if fs::remove_dir_all(&references).is_ok() {
+                record_managed_path_event(root, "remove_managed_references", &references);
+            }
         }
         remove_empty_ancestors(&skill.with_file_name("placeholder"), &home);
         if removed.is_empty() && !removed_command {
@@ -2032,6 +2046,17 @@ fn is_managed_skill(path: &Path) -> bool {
         return verify_manifest(parent).is_ok();
     }
     parent.join(".compass_version").is_file() && legacy_skill_is_unmodified(parent)
+}
+
+pub(crate) fn managed_skill_is_configured(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    parent.join(".compass-install.json").is_file() || parent.join(".compass_version").is_file()
+}
+
+pub(crate) fn managed_skill_is_healthy(path: &Path) -> bool {
+    !managed_skill_is_configured(path) || is_managed_skill(path)
 }
 
 fn install_skill(
@@ -2817,10 +2842,13 @@ fn remove_skill(
     }
     if path.exists() {
         match fs::remove_file(&path) {
-            Ok(()) => lines.push(format!(
-                "  skill removed    ->  {}",
-                display_path(&path, project, project_dir)
-            )),
+            Ok(()) => {
+                record_managed_path_event(project_dir, "remove_managed_skill", &path);
+                lines.push(format!(
+                    "  skill removed    ->  {}",
+                    display_path(&path, project, project_dir)
+                ));
+            }
             Err(error) => {
                 lines.push(format!(
                     "error: could not remove {}: {error}",
@@ -2835,27 +2863,48 @@ fn remove_skill(
             parent.join(".compass_version"),
             parent.join(".compass-install.json"),
         ] {
-            if metadata.exists()
-                && let Err(error) = fs::remove_file(&metadata)
-            {
-                lines.push(format!(
-                    "error: could not remove {}: {error}",
-                    metadata.display()
-                ));
+            if metadata.exists() {
+                match fs::remove_file(&metadata) {
+                    Ok(()) => {
+                        record_managed_path_event(project_dir, "remove_managed_metadata", &metadata)
+                    }
+                    Err(error) => lines.push(format!(
+                        "error: could not remove {}: {error}",
+                        metadata.display()
+                    )),
+                }
             }
         }
         let references = parent.join("references");
-        if references.exists()
-            && let Err(error) = fs::remove_dir_all(&references)
-        {
-            lines.push(format!(
-                "error: could not remove {}: {error}",
-                references.display()
-            ));
+        if references.exists() {
+            match fs::remove_dir_all(&references) {
+                Ok(()) => {
+                    record_managed_path_event(project_dir, "remove_managed_references", &references)
+                }
+                Err(error) => lines.push(format!(
+                    "error: could not remove {}: {error}",
+                    references.display()
+                )),
+            }
         }
         remove_empty_ancestors(&parent, if project { project_dir } else { Path::new("") });
     }
     BTreeSet::new()
+}
+
+fn record_managed_path_event(project_dir: &Path, event: &str, path: &Path) {
+    let output = state_event_path(project_dir)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project_dir.join("compass-out"));
+    let _ = compass_files::BuildGuard::record_state_event(&output, event, path);
+}
+
+fn state_event_path(project_dir: &Path) -> PathBuf {
+    env::var_os("COMPASS_OUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project_dir.join("compass-out"))
+        .join("state-events.jsonl")
 }
 
 fn uninstall_vscode(project_dir: &Path) -> Outcome {
@@ -2863,10 +2912,21 @@ fn uninstall_vscode(project_dir: &Path) -> Outcome {
     if let Some(home) = home_directory() {
         let path = home.join(".copilot/skills/compass/SKILL.md");
         if is_managed_skill(&path) && fs::remove_file(&path).is_ok() {
+            record_managed_path_event(project_dir, "remove_managed_skill", &path);
             lines.push(format!("  skill removed    ->  {}", path.display()));
             if let Some(parent) = path.parent() {
-                let _ = fs::remove_file(parent.join(".compass_version"));
-                let _ = fs::remove_dir_all(parent.join("references"));
+                let metadata = parent.join(".compass_version");
+                if fs::remove_file(&metadata).is_ok() {
+                    record_managed_path_event(project_dir, "remove_managed_metadata", &metadata);
+                }
+                let references = parent.join("references");
+                if fs::remove_dir_all(&references).is_ok() {
+                    record_managed_path_event(
+                        project_dir,
+                        "remove_managed_references",
+                        &references,
+                    );
+                }
             }
         }
     }

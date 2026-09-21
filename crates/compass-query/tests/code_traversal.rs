@@ -4,10 +4,10 @@ use std::collections::HashSet;
 use std::fs;
 
 use compass_model::code_graph::{EdgeKind, GraphDocument};
-use compass_model::identity::edge_id;
+use compass_model::identity::{edge_id, file_id};
 use compass_model::provenance::{OccurrenceRule, SourceAnchor};
 use compass_model::query_contract::{
-    CallRequest, CodeQueryLimits, NodeTrailRequest, QueryDiagnosticCode,
+    CallRequest, CodeQueryLimits, ImpactRequest, NodeTrailRequest, QueryDiagnosticCode,
 };
 use compass_query::open;
 
@@ -59,6 +59,148 @@ fn callers_include_calls_and_route_bindings_while_callees_follow_calls()
             .edges
             .iter()
             .all(|edge| edge.kind == EdgeKind::Calls)
+    );
+    Ok(())
+}
+
+#[test]
+fn callers_recover_source_backed_importers_that_target_a_tsconfig_alias_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let mut graph = GraphDocument::load(&graph_path)?;
+    let module = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "n:list")
+        .cloned()
+        .ok_or("missing module template")?;
+    let mut module = module;
+    module.id = "n:list-module".to_owned();
+    module.kind = compass_model::code_graph::NodeKind::Module;
+    // This is the shape emitted after a TypeScript `paths` alias such as
+    // `@scope/pkg/* -> packages/pkg/src/*` has been resolved: the importer
+    // edge targets the module owner while the queried declaration is nested
+    // inside that owner.
+    module.name = "@scope/pkg".to_owned();
+    module.qualified_name = "@scope/pkg/index".to_owned();
+    if let Some(source) = module.source.as_mut() {
+        source.file = "packages/pkg/src/index.ts".to_owned();
+    }
+    let mut module_file = graph
+        .graph
+        .files
+        .first()
+        .cloned()
+        .ok_or("missing file template")?;
+    module_file.id = file_id("packages/pkg/src/index.ts");
+    module_file.path = "packages/pkg/src/index.ts".to_owned();
+    graph.graph.files.push(module_file);
+    graph.nodes.push(module);
+    let edge_template = graph
+        .links
+        .iter()
+        .find(|edge| edge.source == "n:caller")
+        .cloned()
+        .ok_or("missing edge template")?;
+    for index in 0..8 {
+        let source_id = format!("n:importer-{index}");
+        let mut source = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "n:caller")
+            .cloned()
+            .ok_or("missing source template")?;
+        source.id = source_id.clone();
+        source.name = format!("importer_{index}");
+        source.qualified_name = format!("Api.importer_{index}");
+        graph.nodes.push(source);
+        let mut edge = edge_template.clone();
+        edge.source = source_id;
+        edge.target = "n:list-module".to_owned();
+        edge.kind = EdgeKind::Imports;
+        let id = edge_id(
+            &edge.source,
+            edge.kind,
+            &edge.target,
+            edge.relationship_site.as_ref(),
+            None,
+        );
+        edge.id.clone_from(&id);
+        edge.key = id;
+        graph.links.push(edge);
+    }
+    let mut contains = edge_template.clone();
+    contains.source = "n:list-module".to_owned();
+    contains.target = "n:list".to_owned();
+    contains.kind = EdgeKind::Contains;
+    let id = edge_id(
+        &contains.source,
+        contains.kind,
+        &contains.target,
+        contains.relationship_site.as_ref(),
+        None,
+    );
+    contains.id.clone_from(&id);
+    contains.key = id;
+    graph.links.push(contains);
+    fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
+
+    let engine = open(&graph_path, None, &directory.path().join("cache"))?;
+    let response = engine.callers(CallRequest {
+        symbol: "UserService.list".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits::default(),
+    })?;
+    let importer_count = response
+        .nodes
+        .iter()
+        .filter(|node| node.id.starts_with("n:importer-"))
+        .count();
+    assert_eq!(importer_count, 8);
+    assert!(
+        response
+            .edges
+            .iter()
+            .any(|edge| { edge.kind == EdgeKind::Imports && edge.target == "n:list-module" })
+    );
+    assert!(
+        !response
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == QueryDiagnosticCode::RelationshipInconsistency)
+    );
+
+    let bounded = engine.callers(CallRequest {
+        symbol: "UserService.list".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits {
+            max_edges: 1,
+            ..CodeQueryLimits::default()
+        },
+    })?;
+    assert!(bounded.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == QueryDiagnosticCode::RelationshipInconsistency
+            && diagnostic.message.contains("search found ")
+            && diagnostic.message.contains("importers for n:list")
+    }));
+
+    let affected = engine.affected(
+        ImpactRequest {
+            symbol: "UserService.list".to_owned(),
+            include_heuristic: false,
+            limits: CodeQueryLimits::default(),
+        },
+        &[EdgeKind::Imports],
+    )?;
+    assert_eq!(
+        affected
+            .nodes
+            .iter()
+            .filter(|node| node.id.starts_with("n:importer-"))
+            .count(),
+        8
     );
     Ok(())
 }

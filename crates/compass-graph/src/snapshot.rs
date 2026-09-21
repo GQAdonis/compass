@@ -38,6 +38,8 @@ pub const IDENTIFIER_SUBWORD_INDEX_CAPABILITY_V1: &str = "__compass_cap_identifi
 pub const OPERATION_ROLE_TERM_INDEX_CAPABILITY_V1: &str = "__compass_cap_operation_role_terms_v1__";
 pub const DECLARATION_TERM_INDEX_CAPABILITY_V1: &str = "__compass_cap_declaration_terms_v1__";
 pub const RELATIONSHIP_TERM_INDEX_CAPABILITY_V1: &str = "__compass_cap_relationship_terms_v1__";
+pub const RELATIONSHIP_SEARCH_TERM_INDEX_CAPABILITY_V1: &str =
+    "__compass_cap_relationship_search_terms_v1__";
 const EDGE_ID_ORDERED_ADJACENCY_CAPABILITY_V1: &str = "compass.edge-id-ordered-adjacency/1";
 pub const GRAPH_SNAPSHOT_OBJECT_PARTITION: &str = "graph-snapshot/objects";
 pub const GRAPH_SNAPSHOT_CATALOG_PARTITION: &str = "graph-snapshot/catalog";
@@ -2465,6 +2467,28 @@ impl<'a, S: Store + ?Sized> GraphSnapshotReader<'a, S> {
         Ok(posting.term == capability && posting.node_ids.is_empty())
     }
 
+    /// Whether this snapshot carries the broad relationship-search postings.
+    /// Older immutable snapshots remain readable and fall back to their
+    /// direct-call postings in the query layer.
+    pub fn supports_relationship_search_terms(&self) -> Result<bool, SnapshotError> {
+        let capability = RELATIONSHIP_SEARCH_TERM_INDEX_CAPABILITY_V1;
+        let posting_prefix = capability.get(..3).unwrap_or(capability);
+        let key = encode_graph_index_key(
+            IndexKind::Terms,
+            &[
+                b"relationship_search_source",
+                posting_prefix.as_bytes(),
+                capability.as_bytes(),
+                b"00000000",
+            ],
+        )?;
+        let Some(value) = self.lookup(IndexKind::Terms, &key)? else {
+            return Ok(false);
+        };
+        let posting = decode_json::<TermPostingChunk>(&value)?;
+        Ok(posting.term == capability && posting.node_ids.is_empty())
+    }
+
     /// Return sorted source IDs from one exact direct-caller concept posting.
     pub fn source_ids_for_exact_relationship_term_bounded_work(
         &self,
@@ -2486,6 +2510,63 @@ impl<'a, S: Store + ?Sized> GraphSnapshotReader<'a, S> {
             IndexKind::Terms,
             &[
                 b"call_source",
+                posting_prefix.as_bytes(),
+                normalized.as_bytes(),
+            ],
+        )?;
+        let (values, mut truncated) = self.scan_values_bounded(
+            IndexKind::Terms,
+            Some(&prefix),
+            SnapshotReadLimits {
+                max_items: chunk_limit,
+                ..limits
+            },
+        )?;
+        let mut source_ids = BTreeSet::new();
+        let mut work = TermPostingWork::default();
+        for value in values {
+            let posting = decode_json::<TermPostingChunk>(&value)?;
+            work.chunks_decoded = work.chunks_decoded.saturating_add(1);
+            work.node_ids_decoded = work
+                .node_ids_decoded
+                .saturating_add(u64::try_from(posting.node_ids.len()).unwrap_or(u64::MAX));
+            if normalize_search_term(&posting.term) != normalized {
+                continue;
+            }
+            for source_id in posting.node_ids {
+                source_ids.insert(source_id);
+                if source_ids.len() > limits.max_items {
+                    source_ids.pop_last();
+                    truncated = true;
+                }
+            }
+        }
+        Ok((source_ids.into_iter().collect(), truncated, work))
+    }
+
+    /// Return source IDs from the broader relationship-search posting used by
+    /// callers, impact, and affected. The legacy direct-call posting above is
+    /// intentionally kept separate for compatibility with older consumers.
+    pub fn source_ids_for_exact_relationship_search_term_bounded_work(
+        &self,
+        term: &str,
+        limits: SnapshotReadLimits,
+    ) -> Result<(Vec<String>, bool, TermPostingWork), SnapshotError> {
+        let normalized = normalize_search_term(term);
+        if normalized.is_empty() {
+            return Ok((Vec::new(), false, TermPostingWork::default()));
+        }
+        let chunk_limit = limits.max_items / GRAPH_TERM_POSTING_CHUNK_ITEMS;
+        if chunk_limit == 0 {
+            return Ok((Vec::new(), true, TermPostingWork::default()));
+        }
+        let posting_prefix = normalized
+            .get(..normalized.len().min(3))
+            .unwrap_or(normalized.as_str());
+        let prefix = encode_graph_index_key(
+            IndexKind::Terms,
+            &[
+                b"relationship_search_source",
                 posting_prefix.as_bytes(),
                 normalized.as_bytes(),
             ],
@@ -3506,9 +3587,9 @@ fn build_index(
                     node_ids: Vec::new(),
                 },
             )?;
-            let relationship_postings =
+            let direct_relationship_postings =
                 compass_model::search::direct_call_source_identifier_postings(graph);
-            for (term, source_ids) in &relationship_postings {
+            for (term, source_ids) in &direct_relationship_postings {
                 for source_id in source_ids {
                     insert_json(
                         &mut entries,
@@ -3577,6 +3658,85 @@ fn build_index(
                 )?,
                 &TermPostingChunk {
                     term: relationship_capability.to_owned(),
+                    node_ids: Vec::new(),
+                },
+            )?;
+
+            let relationship_search_postings =
+                compass_model::search::relationship_source_identifier_postings(graph);
+            for (term, source_ids) in &relationship_search_postings {
+                for source_id in source_ids {
+                    insert_json(
+                        &mut entries,
+                        encode_graph_index_key(
+                            IndexKind::Terms,
+                            &[
+                                b"relationship_search_source_member",
+                                source_id.as_bytes(),
+                                term.as_bytes(),
+                            ],
+                        )?,
+                        &(),
+                    )?;
+                }
+                let prefix = term.get(..term.len().min(3)).unwrap_or(term.as_str());
+                for (chunk_index, chunk) in source_ids
+                    .chunks(GRAPH_TERM_POSTING_CHUNK_ITEMS)
+                    .enumerate()
+                {
+                    let chunk_index = format!("{chunk_index:08}");
+                    insert_json(
+                        &mut entries,
+                        encode_graph_index_key(
+                            IndexKind::Terms,
+                            &[
+                                b"relationship_search_source",
+                                prefix.as_bytes(),
+                                term.as_bytes(),
+                                chunk_index.as_bytes(),
+                            ],
+                        )?,
+                        &TermPostingChunk {
+                            term: term.clone(),
+                            node_ids: chunk.to_vec(),
+                        },
+                    )?;
+                }
+            }
+            for (term, source_id, target_id) in
+                compass_model::search::relationship_source_identifier_targets(graph)
+            {
+                insert_json(
+                    &mut entries,
+                    encode_graph_index_key(
+                        IndexKind::Terms,
+                        &[
+                            b"relationship_search_source_target",
+                            source_id.as_bytes(),
+                            term.as_bytes(),
+                            target_id.as_bytes(),
+                        ],
+                    )?,
+                    &(),
+                )?;
+            }
+            let relationship_search_capability = RELATIONSHIP_SEARCH_TERM_INDEX_CAPABILITY_V1;
+            let relationship_search_prefix = relationship_search_capability
+                .get(..3)
+                .unwrap_or(relationship_search_capability);
+            insert_json(
+                &mut entries,
+                encode_graph_index_key(
+                    IndexKind::Terms,
+                    &[
+                        b"relationship_search_source",
+                        relationship_search_prefix.as_bytes(),
+                        relationship_search_capability.as_bytes(),
+                        b"00000000",
+                    ],
+                )?,
+                &TermPostingChunk {
+                    term: relationship_search_capability.to_owned(),
                     node_ids: Vec::new(),
                 },
             )?;
