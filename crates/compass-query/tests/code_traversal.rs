@@ -4,10 +4,10 @@ use std::collections::HashSet;
 use std::fs;
 
 use compass_model::code_graph::{EdgeKind, GraphDocument};
-use compass_model::identity::edge_id;
+use compass_model::identity::{edge_id, file_id};
 use compass_model::provenance::{OccurrenceRule, SourceAnchor};
 use compass_model::query_contract::{
-    CallRequest, CodeQueryLimits, NodeTrailRequest, QueryDiagnosticCode,
+    CallRequest, CodeQueryLimits, ImpactRequest, NodeTrailRequest, QueryDiagnosticCode,
 };
 use compass_query::open;
 
@@ -60,6 +60,231 @@ fn callers_include_calls_and_route_bindings_while_callees_follow_calls()
             .iter()
             .all(|edge| edge.kind == EdgeKind::Calls)
     );
+    Ok(())
+}
+
+#[test]
+fn callers_recover_source_backed_importers_that_target_a_tsconfig_alias_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let mut graph = GraphDocument::load(&graph_path)?;
+    let module = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "n:list")
+        .cloned()
+        .ok_or("missing module template")?;
+    let mut module = module;
+    module.id = "n:list-module".to_owned();
+    module.kind = compass_model::code_graph::NodeKind::Module;
+    // This is the shape emitted after a TypeScript `paths` alias such as
+    // `@scope/pkg/* -> packages/pkg/src/*` has been resolved: the importer
+    // edge targets the module owner while the queried declaration is nested
+    // inside that owner.
+    module.name = "@scope/pkg".to_owned();
+    module.qualified_name = "@scope/pkg/index".to_owned();
+    if let Some(source) = module.source.as_mut() {
+        source.file = "packages/pkg/src/index.ts".to_owned();
+    }
+    let mut module_file = graph
+        .graph
+        .files
+        .first()
+        .cloned()
+        .ok_or("missing file template")?;
+    module_file.id = file_id("packages/pkg/src/index.ts");
+    module_file.path = "packages/pkg/src/index.ts".to_owned();
+    graph.graph.files.push(module_file);
+    graph.nodes.push(module);
+    let edge_template = graph
+        .links
+        .iter()
+        .find(|edge| edge.source == "n:caller")
+        .cloned()
+        .ok_or("missing edge template")?;
+    for index in 0..8 {
+        let source_id = format!("n:importer-{index}");
+        let mut source = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "n:caller")
+            .cloned()
+            .ok_or("missing source template")?;
+        source.id = source_id.clone();
+        source.name = format!("importer_{index}");
+        source.qualified_name = format!("Api.importer_{index}");
+        graph.nodes.push(source);
+        let mut edge = edge_template.clone();
+        edge.source = source_id;
+        edge.target = "n:list-module".to_owned();
+        edge.kind = EdgeKind::Imports;
+        let id = edge_id(
+            &edge.source,
+            edge.kind,
+            &edge.target,
+            edge.relationship_site.as_ref(),
+            None,
+        );
+        edge.id.clone_from(&id);
+        edge.key = id;
+        graph.links.push(edge);
+    }
+    let mut contains = edge_template.clone();
+    contains.source = "n:list-module".to_owned();
+    contains.target = "n:list".to_owned();
+    contains.kind = EdgeKind::Contains;
+    let id = edge_id(
+        &contains.source,
+        contains.kind,
+        &contains.target,
+        contains.relationship_site.as_ref(),
+        None,
+    );
+    contains.id.clone_from(&id);
+    contains.key = id;
+    graph.links.push(contains);
+    // A different module can share a display name or search term. Its import
+    // must not become evidence for the queried declaration.
+    let mut other_module = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "n:list-module")
+        .cloned()
+        .ok_or("missing module")?;
+    other_module.id = "n:other-module".to_owned();
+    other_module.qualified_name = "@other/pkg/index".to_owned();
+    if let Some(source) = other_module.source.as_mut() {
+        source.file = "packages/other/src/index.ts".to_owned();
+    }
+    graph.nodes.push(other_module);
+    let mut other_file = graph
+        .graph
+        .files
+        .iter()
+        .find(|file| file.path == "packages/pkg/src/index.ts")
+        .cloned()
+        .ok_or("missing module file")?;
+    other_file.id = file_id("packages/other/src/index.ts");
+    other_file.path = "packages/other/src/index.ts".to_owned();
+    graph.graph.files.push(other_file);
+    let mut unrelated_importer = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "n:caller")
+        .cloned()
+        .ok_or("missing source template")?;
+    unrelated_importer.id = "n:unrelated-importer".to_owned();
+    unrelated_importer.name = "unrelated_importer".to_owned();
+    unrelated_importer.qualified_name = "Other.unrelated_importer".to_owned();
+    graph.nodes.push(unrelated_importer);
+    let mut unrelated_edge = edge_template.clone();
+    unrelated_edge.source = "n:unrelated-importer".to_owned();
+    unrelated_edge.target = "n:other-module".to_owned();
+    unrelated_edge.kind = EdgeKind::Imports;
+    let id = edge_id(
+        &unrelated_edge.source,
+        unrelated_edge.kind,
+        &unrelated_edge.target,
+        unrelated_edge.relationship_site.as_ref(),
+        None,
+    );
+    unrelated_edge.id.clone_from(&id);
+    unrelated_edge.key = id;
+    graph.links.push(unrelated_edge);
+    fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
+
+    let engine = open(&graph_path, None, &directory.path().join("cache"))?;
+    let response = engine.callers(CallRequest {
+        symbol: "UserService.list".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits::default(),
+    })?;
+    let importer_count = response
+        .nodes
+        .iter()
+        .filter(|node| node.id.starts_with("n:importer-"))
+        .count();
+    assert_eq!(importer_count, 8);
+    assert!(
+        !response
+            .nodes
+            .iter()
+            .any(|node| node.id == "n:unrelated-importer")
+    );
+    assert!(
+        response
+            .edges
+            .iter()
+            .any(|edge| { edge.kind == EdgeKind::Imports && edge.target == "n:list-module" })
+    );
+    assert!(
+        !response
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == QueryDiagnosticCode::RelationshipInconsistency)
+    );
+    assert!(response.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == QueryDiagnosticCode::IncompleteCoverage
+            && diagnostic.message.contains("owner-level dependency")
+    }));
+
+    let bounded = engine.callers(CallRequest {
+        symbol: "UserService.list".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits {
+            max_edges: 1,
+            ..CodeQueryLimits::default()
+        },
+    })?;
+    assert!(bounded.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == QueryDiagnosticCode::RelationshipInconsistency
+            && diagnostic.message.contains("search found ")
+            && diagnostic
+                .message
+                .contains("source-backed usages for n:list")
+    }));
+
+    let affected = engine.affected(
+        ImpactRequest {
+            symbol: "UserService.list".to_owned(),
+            include_heuristic: false,
+            limits: CodeQueryLimits::default(),
+        },
+        &[EdgeKind::Imports],
+    )?;
+    assert_eq!(
+        affected
+            .nodes
+            .iter()
+            .filter(|node| node.id.starts_with("n:importer-"))
+            .count(),
+        8
+    );
+    assert!(
+        !affected
+            .nodes
+            .iter()
+            .any(|node| node.id == "n:unrelated-importer")
+    );
+    assert!(!affected.paths.is_empty());
+    assert!(affected.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == QueryDiagnosticCode::IncompleteCoverage
+            && diagnostic.message.contains("owner-level dependency")
+    }));
+    for path in &affected.paths {
+        assert_eq!(path.node_ids.len(), path.edge_ids.len() + 1);
+        for (pair, edge_id) in path.node_ids.windows(2).zip(&path.edge_ids) {
+            let edge = affected
+                .edges
+                .iter()
+                .find(|edge| &edge.id == edge_id)
+                .ok_or("missing path edge")?;
+            assert_eq!(edge.target, pair[0]);
+            assert_eq!(edge.source, pair[1]);
+        }
+    }
     Ok(())
 }
 

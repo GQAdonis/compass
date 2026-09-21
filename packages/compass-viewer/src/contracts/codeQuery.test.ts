@@ -64,6 +64,17 @@ describe("compass.query/1", () => {
     expect(CodeRouteStageSchema.parse("security")).toBe("security");
   });
 
+  it("accepts a relationship inconsistency diagnostic", () => {
+    const response = example() as Record<string, unknown>;
+    response.diagnostics = [{
+      code: "relationship_inconsistency",
+      message: "Search found 8 importers; this query returned 1",
+      nodeId: "n:target",
+      path: null
+    }];
+    expect(CodeQueryResponseSchema.safeParse(response).success).toBe(true);
+  });
+
   it("retains heuristic wiring and ambiguous candidates", () => {
     const value = example() as Record<string, unknown>;
     value.edges = [{

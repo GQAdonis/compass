@@ -85,6 +85,7 @@ compass explore CheckoutController PaymentGateway --root .
 compass node route:/checkout CheckoutController.create
 compass explain PaymentGateway
 compass explain PaymentGateway --budget 8000 --page 2
+compass architecture --format agent-json
 compass path CheckoutHandler PaymentGateway
 compass affected authorizePayment --depth 3
 compass tree

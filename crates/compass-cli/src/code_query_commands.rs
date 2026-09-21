@@ -11,12 +11,15 @@ use compass_query::{
     EngineSelection, NaturalQueryRequest, open_with_engine, open_with_verified_document,
 };
 
-use crate::Outcome;
+use crate::{Outcome, SharedOutputFormat, parse_shared_output_format};
 
 pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
-    let format = option(args, "--format").unwrap_or("text");
-    if format == "agent-json"
-        && args.iter().any(|arg| {
+    let (format, query_args) = match parse_shared_output_format(args, operation) {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    if format == SharedOutputFormat::AgentJson
+        && query_args.iter().any(|arg| {
             matches!(
                 arg.as_str(),
                 "--cursor" | "--text-budget" | "--evidence" | "--result-envelope"
@@ -28,21 +31,21 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
             "error: --cursor, --text-budget, --evidence, and --result-envelope are text-only and cannot be used with --format agent-json".to_owned(),
         );
     }
-    match execute(operation, args) {
+    match execute(operation, &query_args) {
         Ok(execution) => {
-            if format == "json" {
+            if format == SharedOutputFormat::Json {
                 match serde_json::to_string_pretty(&execution.response) {
                     Ok(json) => Outcome::success(json),
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
-            } else if format == "agent-json" {
+            } else if format == SharedOutputFormat::AgentJson {
                 match build_code_query_view(&execution.response, execution.context)
                     .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
                 {
                     Ok(json) => Outcome::success(json),
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
-            } else if format == "text" {
+            } else if format == SharedOutputFormat::Text {
                 match build_code_query_view(&execution.response, execution.context)
                     .and_then(|view| render_agent_query_text(&view))
                 {
@@ -50,7 +53,7 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
             } else {
-                Outcome::failure("error: --format must be json, agent-json, or text".to_owned())
+                Outcome::failure("error: unsupported output format".to_owned())
             }
         }
         Err(error) => Outcome::failure(format!("error: {error}")),

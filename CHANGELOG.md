@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Improve agent-facing query correctness and recovery: callers, impact, and
+  affected include source-backed alias/import/export usage evidence; CompassQL
+  exposes live node degree and supports ordering by pre-projection bindings;
+  historical reads neutralize configured checkout filters; direction-only
+  trail misses suggest `compass path`; and full reports retain bounded hub,
+  suggested-query, and learned-question entries.
+- Unify bounded relationship resolution across callers, impact, and affected,
+  including importer-consistency diagnostics and explicit relationship
+  provenance. Add the bounded `compass architecture` view, shared agent output
+  formats, visible coverage witnesses, a 64-candidate query default, and
+  read-only historical queries with state-health audit events.
+
 ## 0.3.28 - 2026-09-19
 
 - Improve agent-facing query correctness and recovery across callers, impact,

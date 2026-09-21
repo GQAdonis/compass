@@ -7,7 +7,7 @@ use compass_cli::{Frontend, run};
 use compass_files::BuildGuard;
 use compass_graph::GraphSnapshotBuilder;
 use compass_model::code_graph::{EdgeKind, GraphDocument};
-use compass_output::AgentQueryView;
+use compass_output::{AgentOperation, AgentQueryView};
 use compass_store::{STORE_FILE_NAME, STORE_REF_FILE_NAME, SqliteStore};
 use serde_json::Value;
 
@@ -98,6 +98,60 @@ fn typed_query_commands_share_the_versioned_json_contract() -> Result<(), Box<dy
     );
     assert_ne!(invalid_projection.code, 0);
     assert!(invalid_projection.stderr.contains("text-only"));
+    Ok(())
+}
+
+#[test]
+fn affected_typed_graph_uses_shared_relationship_output_contract() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let graph = graph.into_os_string();
+    for format in ["text", "json", "agent-json"] {
+        let outcome = run(
+            Frontend::Compass,
+            [
+                OsString::from("affected"),
+                OsString::from("Target"),
+                OsString::from("--relation"),
+                OsString::from("calls"),
+                OsString::from("--graph"),
+                graph.clone(),
+                OsString::from("--format"),
+                OsString::from(format),
+            ],
+        );
+        assert_eq!(outcome.code, 0, "{format}: {}", outcome.stderr);
+        if format == "json" {
+            let value: Value = serde_json::from_str(&outcome.stdout)?;
+            assert_eq!(value["operation"], "impact");
+        } else if format == "agent-json" {
+            let view = AgentQueryView::from_json(outcome.stdout.as_bytes())?;
+            assert_eq!(view.request.operation, AgentOperation::Impact);
+        } else {
+            assert!(outcome.stdout.contains("Target"), "{}", outcome.stdout);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn architecture_command_is_bounded_and_agent_readable() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let output = run(
+        Frontend::Compass,
+        [
+            OsString::from("architecture"),
+            OsString::from("--graph"),
+            graph.into_os_string(),
+            OsString::from("--format"),
+            OsString::from("agent-json"),
+        ],
+    );
+    assert_eq!(output.code, 0, "{}", output.stderr);
+    let value: Value = serde_json::from_str(&output.stdout)?;
+    assert_eq!(value["schema"], "compass.architecture.agent-view/1");
+    assert!(value["answer"].as_str().is_some());
     Ok(())
 }
 

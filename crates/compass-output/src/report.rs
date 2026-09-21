@@ -2080,7 +2080,7 @@ fn fit_orientation_json_budget(model: &mut AgentOrientation) {
         if trim_blind_spots_for_budget(model) {
             continue;
         }
-        if model.communities.is_empty() {
+        if model.communities.len() <= 1 {
             break;
         }
         let scaled = model
@@ -2088,7 +2088,7 @@ fn fit_orientation_json_budget(model: &mut AgentOrientation) {
             .len()
             .saturating_mul(ORIENTATION_JSON_FIT_BYTES)
             / rendered.len();
-        let next = scaled.min(model.communities.len().saturating_sub(1));
+        let next = scaled.max(1).min(model.communities.len().saturating_sub(1));
         model.communities.truncate(next);
         model
             .omissions
@@ -2133,13 +2133,13 @@ fn fit_report_budget(model: &mut AgentOrientation, obsidian: bool) {
                 .omissions
                 .surprising_connections
                 .set_shown(model.details.surprising_connections.len());
-        } else if !model.communities.is_empty() {
+        } else if model.communities.len() > 1 {
             let scaled = model
                 .communities
                 .len()
                 .saturating_mul(REPORT_MARKDOWN_FIT_CHARS)
                 / rendered_chars;
-            let next = scaled.min(model.communities.len().saturating_sub(1));
+            let next = scaled.max(1).min(model.communities.len().saturating_sub(1));
             model.communities.truncate(next);
             model
                 .omissions
@@ -2310,6 +2310,24 @@ fn render_orientation_markdown_with_community_limit(
             shown_communities,
         )),
     ];
+    if shown_communities == 0 && model.omissions.communities.total > 0 {
+        let witness_ids = model
+            .communities
+            .iter()
+            .take(1)
+            .map(|community| community.id.to_string())
+            .collect::<Vec<_>>();
+        lines.push(
+            format!(
+                "- Architecture entries were omitted by the report budget; retained witness IDs: {}. Use the bounded architecture export or query those IDs instead of treating this section as empty evidence.",
+                if witness_ids.is_empty() {
+                    "none (no safe witness survived)".to_owned()
+                } else {
+                    witness_ids.join(", ")
+                }
+            ),
+        );
+    }
     for community in model.communities.iter().take(shown_communities) {
         lines.push(format!(
             "### {}",

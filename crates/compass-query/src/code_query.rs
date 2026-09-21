@@ -40,6 +40,11 @@ const MAX_RECALL_FUZZY_VARIANTS_TOTAL: usize = 256;
 const MIN_RECALL_CANDIDATES_BEFORE_FUZZY: usize = 4;
 const SEARCH_QUERY_CACHE_CAPACITY: usize = 64;
 const FUZZY_LOOKUP_CACHE_CAPACITY: usize = 512;
+const RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS: usize = 8;
+const RELATIONSHIP_OWNER_SCOPE_LIMIT: usize = 32;
+const RELATIONSHIP_TERM_LIMIT: usize = 128;
+const RELATIONSHIP_SOURCE_EDGE_SCAN_LIMIT: usize = 256;
+type ContainmentPath = (Vec<String>, Vec<EdgeRecord>);
 
 const ALL_EDGE_KINDS: &[EdgeKind] = &[
     EdgeKind::Contains,
@@ -411,6 +416,7 @@ pub(crate) struct CodeLookupIndex {
     node_by_id: HashMap<String, usize>,
     nodes_by_normalized_name: HashMap<String, Vec<usize>>,
     operation_nodes_by_term: HashMap<String, Vec<usize>>,
+    relationship_source_ids_by_term: HashMap<String, Vec<String>>,
     file_by_path: HashMap<String, usize>,
     scope_values: HashMap<(u8, String), Vec<String>>,
 }
@@ -421,6 +427,10 @@ impl CodeLookupIndex {
             node_by_id: HashMap::with_capacity(graph.nodes.len()),
             nodes_by_normalized_name: HashMap::new(),
             operation_nodes_by_term: HashMap::new(),
+            relationship_source_ids_by_term:
+                compass_model::search::relationship_source_identifier_postings(graph)
+                    .into_iter()
+                    .collect(),
             file_by_path: HashMap::with_capacity(graph.graph.files.len()),
             scope_values: HashMap::new(),
         };
@@ -1161,6 +1171,71 @@ impl PinnedDiscoveryBackend<'_> {
         match self {
             Self::Materialized { .. } => Ok(true),
             Self::Store(reader) => reader.supports_relationship_terms().map_err(snapshot_error),
+        }
+    }
+
+    /// Read the shared source-backed relationship posting. Materialized graphs
+    /// use a precomputed bounded posting, while store snapshots use the
+    /// versioned sidecar when available and retain a legacy fallback.
+    pub(crate) fn relationship_sources_for_term(
+        &self,
+        term: &str,
+        limit: usize,
+    ) -> Result<RelationshipCandidateRead, QueryError> {
+        let normalized = canonical_query_token(term.to_owned());
+        if normalized.is_empty() || limit == 0 {
+            return Ok(RelationshipCandidateRead {
+                source_ids: Vec::new(),
+                truncated: false,
+                node_ids_decoded: 0,
+                chunks_decoded: 0,
+            });
+        }
+        match self {
+            Self::Materialized { lookup, .. } => {
+                let indexed = lookup
+                    .relationship_source_ids_by_term
+                    .get(&normalized)
+                    .cloned()
+                    .unwrap_or_default();
+                let truncated = indexed.len() > limit;
+                let source_ids = indexed.into_iter().take(limit).collect::<Vec<_>>();
+                Ok(RelationshipCandidateRead {
+                    node_ids_decoded: u64::try_from(source_ids.len()).unwrap_or(u64::MAX),
+                    source_ids,
+                    truncated,
+                    chunks_decoded: 0,
+                })
+            }
+            Self::Store(reader) => {
+                let read_limits = snapshot_limits(limit)?;
+                let (mut source_ids, truncated, work) = if reader
+                    .supports_relationship_search_terms()
+                    .map_err(snapshot_error)?
+                {
+                    reader
+                        .source_ids_for_exact_relationship_search_term_bounded_work(
+                            &normalized,
+                            read_limits,
+                        )
+                        .map_err(snapshot_error)?
+                } else {
+                    reader
+                        .source_ids_for_exact_relationship_term_bounded_work(
+                            &normalized,
+                            read_limits,
+                        )
+                        .map_err(snapshot_error)?
+                };
+                let truncated = truncated || source_ids.len() > limit;
+                source_ids.truncate(limit);
+                Ok(RelationshipCandidateRead {
+                    source_ids,
+                    truncated,
+                    node_ids_decoded: work.node_ids_decoded,
+                    chunks_decoded: work.chunks_decoded,
+                })
+            }
         }
     }
 
@@ -2215,6 +2290,280 @@ impl CodeQueryEngine {
         })
     }
 
+    /// Return the bounded inbound relationship set for a resolved target.
+    ///
+    /// The canonical adjacency remains authoritative.  The shared
+    /// relationship postings add a second, source-backed resolution pass for
+    /// imports/references whose published edge terminates at a module or file
+    /// owner instead of the declaration selected by the query.  This keeps
+    /// callers, impact, and affected on the same evidence path as search.
+    fn resolved_incoming_relationships(
+        &self,
+        target: &str,
+        canonical_kinds: &[EdgeKind],
+        include_heuristic: bool,
+        limit: usize,
+    ) -> Result<(Vec<EdgeRecord>, bool, usize, bool), QueryError> {
+        if limit == 0 {
+            return Ok((Vec::new(), false, 0, false));
+        }
+        let (canonical, mut truncated) = self.backend.matching_bounded(
+            target,
+            true,
+            canonical_kinds,
+            include_heuristic,
+            limit,
+        )?;
+        let mut edges = canonical
+            .into_iter()
+            .map(|edge| (edge.id.clone(), edge))
+            .collect::<BTreeMap<_, _>>();
+        // Imports often terminate at a file/module owner while the query
+        // resolves to a declaration nested inside it. Walk the bounded
+        // containment chain and index every owner spelling so aliases and
+        // re-exports can recover the same importer evidence as search.
+        let mut owner_ids = BTreeSet::from([target.to_owned()]);
+        let mut owner_queue = VecDeque::from([target.to_owned()]);
+        while let Some(child) = owner_queue.pop_front() {
+            let remaining = RELATIONSHIP_OWNER_SCOPE_LIMIT.saturating_sub(owner_ids.len());
+            if remaining == 0 {
+                truncated = true;
+                break;
+            }
+            let (containers, containers_truncated) = self.backend.matching_bounded(
+                &child,
+                true,
+                &[EdgeKind::Contains],
+                false,
+                remaining,
+            )?;
+            truncated |= containers_truncated;
+            for edge in containers {
+                if owner_ids.insert(edge.source.clone()) {
+                    owner_queue.push_back(edge.source);
+                }
+            }
+        }
+        // Without a containing owner, every relevant relationship terminates
+        // at the exact target and canonical inbound adjacency is complete.
+        // Do not probe broad term postings for each hop of a call chain: a
+        // common source-file term could make that internal probe appear
+        // truncated and prematurely stop an otherwise bounded impact walk.
+        if owner_ids.len() == 1 {
+            let (probe, probe_truncated) = if limit < RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS {
+                self.backend.matching_bounded(
+                    target,
+                    true,
+                    canonical_kinds,
+                    include_heuristic,
+                    RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS,
+                )?
+            } else {
+                (edges.values().cloned().collect(), truncated)
+            };
+            let observed = probe
+                .iter()
+                .map(|edge| edge.source.as_str())
+                .collect::<BTreeSet<_>>()
+                .len();
+            truncated |= probe_truncated || probe.len() > limit;
+            return Ok((
+                edges.into_values().collect(),
+                truncated,
+                observed,
+                probe_truncated,
+            ));
+        }
+        let mut terms = BTreeSet::new();
+        for owner_id in &owner_ids {
+            let Some(owner) = self.backend.node_by_id(owner_id)? else {
+                continue;
+            };
+            terms.extend(compass_model::search::identifier_search_terms(&owner.name));
+            terms.extend(compass_model::search::identifier_search_terms(
+                &owner.qualified_name,
+            ));
+            if let Some(source_file) = owner.source_file() {
+                terms.extend(compass_model::search::identifier_search_terms(source_file));
+            }
+        }
+        let terms = terms
+            .into_iter()
+            .filter(|term| term.len() >= 3)
+            .collect::<Vec<_>>();
+        let terms_truncated = terms.len() > RELATIONSHIP_TERM_LIMIT;
+        let terms = terms
+            .into_iter()
+            .take(RELATIONSHIP_TERM_LIMIT)
+            .collect::<Vec<_>>();
+        truncated |= terms_truncated;
+        if terms.is_empty() {
+            return Ok((edges.into_values().collect(), truncated, 0, false));
+        }
+
+        let pinned = self.backend.pin_discovery()?;
+        let mut importer_ids = BTreeSet::new();
+        let mut importer_probe_truncated = false;
+        for term in &terms {
+            let read = pinned.relationship_sources_for_term(
+                term,
+                limit
+                    .saturating_sub(edges.len())
+                    .max(RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS),
+            )?;
+            truncated |= read.truncated;
+            importer_probe_truncated |= read.truncated;
+            importer_ids.extend(read.source_ids);
+            if importer_ids.len() >= limit.saturating_add(RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS) {
+                importer_probe_truncated = true;
+                break;
+            }
+        }
+        if importer_ids.is_empty() {
+            return Ok((
+                edges.into_values().collect(),
+                truncated,
+                0,
+                importer_probe_truncated,
+            ));
+        }
+        let mut verified_importers = edges
+            .values()
+            .map(|edge| edge.source.clone())
+            .collect::<BTreeSet<_>>();
+        for source_id in importer_ids {
+            let (source_edges, source_truncated) = self.backend.matching_bounded(
+                &source_id,
+                false,
+                canonical_kinds,
+                include_heuristic,
+                RELATIONSHIP_SOURCE_EDGE_SCAN_LIMIT,
+            )?;
+            truncated |= source_truncated;
+            importer_probe_truncated |= source_truncated;
+            for edge in source_edges {
+                if !owner_ids.contains(&edge.target) {
+                    continue;
+                }
+                verified_importers.insert(source_id.clone());
+                if edges.contains_key(&edge.id) {
+                    continue;
+                }
+                if edges.len() < limit {
+                    edges.insert(edge.id.clone(), edge);
+                } else {
+                    truncated = true;
+                }
+            }
+            if edges.len() >= limit
+                && verified_importers.len() >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS
+            {
+                importer_probe_truncated = true;
+                break;
+            }
+        }
+        Ok((
+            edges.into_values().take(limit).collect(),
+            truncated,
+            verified_importers.len(),
+            importer_probe_truncated,
+        ))
+    }
+
+    /// Return the actual containment hops from a declaration to an owner.
+    /// Owner-backed imports must not appear as a one-hop path to the declaration.
+    fn containment_path_to_owner(
+        &self,
+        target: &str,
+        owner: &str,
+    ) -> Result<Option<ContainmentPath>, QueryError> {
+        if target == owner {
+            return Ok(Some((vec![target.to_owned()], Vec::new())));
+        }
+        let mut queue = VecDeque::from([target.to_owned()]);
+        let mut seen = BTreeSet::from([target.to_owned()]);
+        let mut predecessor = BTreeMap::<String, (String, EdgeRecord)>::new();
+        while let Some(child) = queue.pop_front() {
+            let remaining = RELATIONSHIP_OWNER_SCOPE_LIMIT.saturating_sub(seen.len());
+            if remaining == 0 {
+                return Ok(None);
+            }
+            let (containers, truncated) = self.backend.matching_bounded(
+                &child,
+                true,
+                &[EdgeKind::Contains],
+                false,
+                remaining,
+            )?;
+            if truncated {
+                return Ok(None);
+            }
+            for edge in containers {
+                if !seen.insert(edge.source.clone()) {
+                    continue;
+                }
+                predecessor.insert(edge.source.clone(), (child.clone(), edge.clone()));
+                if edge.source == owner {
+                    let mut nodes = vec![owner.to_owned()];
+                    let mut edges = Vec::new();
+                    let mut cursor = owner.to_owned();
+                    while cursor != target {
+                        let Some((next, step)) = predecessor.get(&cursor) else {
+                            return Ok(None);
+                        };
+                        edges.push(step.clone());
+                        nodes.push(next.clone());
+                        cursor.clone_from(next);
+                    }
+                    nodes.reverse();
+                    edges.reverse();
+                    return Ok(Some((nodes, edges)));
+                }
+                queue.push_back(edge.source);
+            }
+        }
+        Ok(None)
+    }
+
+    fn relationship_consistency_diagnostic(
+        response: &mut CodeQueryResponse,
+        target: &str,
+        returned: usize,
+        observed_importers: usize,
+        observed_importers_truncated: bool,
+    ) {
+        if returned <= 1 && observed_importers >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS {
+            let usage_count = if observed_importers_truncated {
+                format!("at least {observed_importers}")
+            } else {
+                observed_importers.to_string()
+            };
+            response.diagnostics.push(QueryDiagnostic {
+                code: QueryDiagnosticCode::RelationshipInconsistency,
+                message: format!(
+                    "search found {usage_count} source-backed usages for {target}, but this relationship query returned {returned}; results may be incomplete"
+                ),
+                node_id: Some(target.to_owned()),
+                path: None,
+            });
+        }
+    }
+
+    fn owner_level_relationship_diagnostic(response: &mut CodeQueryResponse, target: &str) {
+        if response.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == QueryDiagnosticCode::IncompleteCoverage
+                && diagnostic.node_id.as_deref() == Some(target)
+        }) {
+            return;
+        }
+        response.diagnostics.push(QueryDiagnostic {
+            code: QueryDiagnosticCode::IncompleteCoverage,
+            message: "Some incoming imports or references end at a containing module or file. They prove an owner-level dependency, not direct use of the selected symbol. Check the source anchors before treating them as symbol callers.".to_owned(),
+            node_id: Some(target.to_owned()),
+            path: None,
+        });
+    }
+
     pub fn callers(&self, request: CallRequest) -> Result<CodeQueryResponse, QueryError> {
         self.call_neighbors_instrumented(request, true, &mut QueryInstrumentation::default())
     }
@@ -2263,13 +2612,24 @@ impl CodeQueryEngine {
             &[EdgeKind::Calls]
         };
         let max_edges = usize::try_from(request.limits.max_edges).unwrap_or(usize::MAX);
-        let (selected_edges, truncated) = self.backend.matching_bounded(
-            &seed,
-            inbound,
-            kinds,
-            request.include_heuristic,
-            max_edges,
-        )?;
+        let (selected_edges, truncated, observed_importers, observed_importers_truncated) =
+            if inbound {
+                self.resolved_incoming_relationships(
+                    &seed,
+                    CALLER_KINDS,
+                    request.include_heuristic,
+                    max_edges,
+                )?
+            } else {
+                let (edges, truncated) = self.backend.matching_bounded(
+                    &seed,
+                    inbound,
+                    kinds,
+                    request.include_heuristic,
+                    max_edges,
+                )?;
+                (edges, truncated, 0, false)
+            };
         instrumentation.work.nodes_expanded = instrumentation.work.nodes_expanded.saturating_add(1);
         instrumentation.work.edges_expanded = instrumentation
             .work
@@ -2280,6 +2640,18 @@ impl CodeQueryEngine {
                 instrumentation.work.edges_expanded.saturating_add(1);
         }
         response.truncated |= truncated;
+        if inbound {
+            Self::relationship_consistency_diagnostic(
+                &mut response,
+                &seed,
+                selected_edges.len(),
+                observed_importers,
+                observed_importers_truncated,
+            );
+            if selected_edges.iter().any(|edge| edge.target != seed) {
+                Self::owner_level_relationship_diagnostic(&mut response, &seed);
+            }
+        }
         let mut ids = HashSet::from([seed.clone()]);
         for edge in &selected_edges {
             ids.insert(edge.source.clone());
@@ -2296,9 +2668,34 @@ impl CodeQueryEngine {
         self.impact_instrumented(request, &mut QueryInstrumentation::default())
     }
 
+    /// Resolve inbound dependency relationships for the compatibility
+    /// `affected` command.  It deliberately shares the same relationship
+    /// postings and consistency probe as `impact`, while allowing the legacy
+    /// command's caller-selected relation vocabulary to remain explicit.
+    pub fn affected(
+        &self,
+        request: ImpactRequest,
+        relation_kinds: &[EdgeKind],
+    ) -> Result<CodeQueryResponse, QueryError> {
+        self.impact_instrumented_with_kinds(
+            request,
+            relation_kinds,
+            &mut QueryInstrumentation::default(),
+        )
+    }
+
     pub(crate) fn impact_instrumented(
         &self,
         request: ImpactRequest,
+        instrumentation: &mut QueryInstrumentation,
+    ) -> Result<CodeQueryResponse, QueryError> {
+        self.impact_instrumented_with_kinds(request, IMPACT_KINDS, instrumentation)
+    }
+
+    fn impact_instrumented_with_kinds(
+        &self,
+        request: ImpactRequest,
+        relationship_kinds: &[EdgeKind],
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
         validate_limits(&request.limits)?;
@@ -2325,8 +2722,10 @@ impl CodeQueryEngine {
         let mut queue =
             VecDeque::from([(seed.clone(), Vec::<String>::new(), Vec::<String>::new())]);
         let mut visited = HashSet::from([seed.clone()]);
+        let mut included_nodes = HashSet::from([seed.clone()]);
+        let mut owner_paths = BTreeMap::<(String, String), Option<ContainmentPath>>::new();
         let max_edges = usize::try_from(request.limits.max_edges).unwrap_or(usize::MAX);
-        let mut selected_edges = HashSet::new();
+        let mut selected_edges = BTreeMap::<String, EdgeRecord>::new();
         while let Some((node, path_nodes, path_edges)) = queue.pop_front() {
             instrumentation.work.nodes_expanded =
                 instrumentation.work.nodes_expanded.saturating_add(1);
@@ -2334,13 +2733,25 @@ impl CodeQueryEngine {
                 continue;
             }
             let remaining_edges = max_edges.saturating_sub(selected_edges.len());
-            let (incoming, incoming_truncated) = self.backend.matching_bounded(
-                &node,
-                true,
-                IMPACT_KINDS,
-                request.include_heuristic,
-                remaining_edges,
-            )?;
+            let (incoming, incoming_truncated, observed, observed_truncated) = self
+                .resolved_incoming_relationships(
+                    &node,
+                    relationship_kinds,
+                    request.include_heuristic,
+                    remaining_edges,
+                )?;
+            if node == seed {
+                Self::relationship_consistency_diagnostic(
+                    &mut response,
+                    &seed,
+                    incoming.len(),
+                    observed,
+                    observed_truncated,
+                );
+                if incoming.iter().any(|edge| edge.target != seed) {
+                    Self::owner_level_relationship_diagnostic(&mut response, &seed);
+                }
+            }
             instrumentation.work.edges_expanded = instrumentation
                 .work
                 .edges_expanded
@@ -2351,37 +2762,73 @@ impl CodeQueryEngine {
             }
             response.truncated |= incoming_truncated;
             for edge in incoming {
-                if selected_edges.len() >= max_edges {
+                let bridge_key = (node.clone(), edge.target.clone());
+                let bridge = if let Some(cached) = owner_paths.get(&bridge_key) {
+                    cached.clone()
+                } else {
+                    let result = self.containment_path_to_owner(&node, &edge.target)?;
+                    owner_paths.insert(bridge_key, result.clone());
+                    result
+                };
+                let Some((bridge_nodes, bridge_edges)) = bridge else {
                     response.truncated = true;
-                    break;
+                    continue;
+                };
+                let added_edges = bridge_edges
+                    .iter()
+                    .map(|step| step.id.as_str())
+                    .chain(std::iter::once(edge.id.as_str()))
+                    .filter(|id| !selected_edges.contains_key(*id))
+                    .count();
+                let added_nodes = bridge_nodes
+                    .iter()
+                    .chain(std::iter::once(&edge.source))
+                    .filter(|id| !included_nodes.contains(*id))
+                    .collect::<BTreeSet<_>>()
+                    .len();
+                if selected_edges.len().saturating_add(added_edges) > max_edges
+                    || included_nodes.len().saturating_add(added_nodes) > max_nodes
+                    || path_edges
+                        .len()
+                        .saturating_add(bridge_edges.len())
+                        .saturating_add(1)
+                        > max_depth
+                {
+                    response.truncated = true;
+                    continue;
                 }
+                included_nodes.extend(bridge_nodes.iter().cloned());
+                included_nodes.insert(edge.source.clone());
+                for step in &bridge_edges {
+                    selected_edges.insert(step.id.clone(), step.clone());
+                }
+                selected_edges.insert(edge.id.clone(), edge.clone());
                 if visited.insert(edge.source.clone()) {
-                    if visited.len() > max_nodes {
-                        visited.remove(&edge.source);
-                        response.truncated = true;
-                        break;
-                    }
-                    selected_edges.insert(edge.id.clone());
                     let mut nodes = path_nodes.clone();
                     if nodes.is_empty() {
                         nodes.push(seed.clone());
                     }
+                    nodes.extend(bridge_nodes.into_iter().skip(1));
                     nodes.push(edge.source.clone());
                     let mut edges = path_edges.clone();
+                    edges.extend(bridge_edges.iter().map(|step| step.id.clone()));
                     edges.push(edge.id.clone());
-                    response.paths.push(self.path_record(&nodes, &edges)?);
+                    response.paths.push(self.path_record_with_edges(
+                        &nodes,
+                        &edges,
+                        &selected_edges,
+                    )?);
                     queue.push_back((edge.source.clone(), nodes, edges));
-                } else {
-                    selected_edges.insert(edge.id.clone());
                 }
             }
             if response.truncated {
                 break;
             }
         }
-        let ids = visited;
-        self.add_nodes(&ids, &mut response)?;
-        self.add_edges(&selected_edges, &mut response)?;
+        self.add_nodes(&included_nodes, &mut response)?;
+        response
+            .edges
+            .extend(selected_edges.values().map(query_edge));
         self.apply_path_bound(&mut response);
         let response = self.finish_response(&mut response);
         instrumentation.execution += execution_started.elapsed();
@@ -2800,6 +3247,23 @@ impl CodeQueryEngine {
         let mut selected = Vec::with_capacity(edges.len());
         for edge in edges {
             if let Some(record) = self.backend.edge_by_id(edge)? {
+                selected.push(record);
+            }
+        }
+        Ok(path_record(nodes, edges, &selected))
+    }
+
+    fn path_record_with_edges(
+        &self,
+        nodes: &[String],
+        edges: &[String],
+        selected_edges: &BTreeMap<String, EdgeRecord>,
+    ) -> Result<QueryPath, QueryError> {
+        let mut selected = Vec::with_capacity(edges.len());
+        for edge in edges {
+            if let Some(record) = selected_edges.get(edge) {
+                selected.push(record.clone());
+            } else if let Some(record) = self.backend.edge_by_id(edge)? {
                 selected.push(record);
             }
         }

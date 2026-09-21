@@ -420,13 +420,36 @@ existing discovery entry ledger and v2 cursor remain unchanged.
 bounded `nextActions` as argv arrays or JSON argument objects; clients should
 use those values instead of reconstructing shell commands from result text.
 
-`callers` returns direct incoming usage evidence: calls, routes, references,
+`callers` returns incoming relationship evidence: calls, routes, references,
 imports, exports, and aliases. `callees` remains the direct outgoing call view.
+When an import or reference ends at a containing module rather than the
+selected declaration, `callers`, `impact`, and `affected` retain the real
+owner-targeted edge and emit an `incomplete_coverage` precision warning.
+Such an edge proves a module-level dependency, not a direct symbol call;
+impact paths include the containment hop instead of silently jumping from
+the selected symbol to the importer.
+
+### `architecture`
+
+```text
+compass architecture
+  [--graph PATH]
+  [--labels PATH]
+  [--format text|json|agent-json]
+```
+
+Returns the existing bounded architecture projection as a first-class command.
+The text form is answer-first and names the graph totals, groups, routes,
+diagnostics, and any omitted groups. `agent-json` adds the versioned
+`compass.architecture.agent-view/1` envelope while preserving coverage counts
+and witness group IDs, so an empty displayed section cannot be mistaken for an
+empty architecture.
 
 ### `path`
 
 ```text
-compass path "<source>" "<target>" [--max-depth N] [--graph PATH | --at REV]
+compass path "<source>" "<target>" [--max-depth N]
+  [--format text|json|agent-json] [--graph PATH | --at REV]
 ```
 
 Resolves both endpoints by exact node ID, name, or qualified name before doing
@@ -446,6 +469,7 @@ choice visible rather than rewriting the graph.
 compass explain "<node>"
   [--budget N]
   [--page N]
+  [--format text|json|agent-json]
   [--graph PATH | --at REV]
 ```
 
@@ -464,10 +488,14 @@ after the first group.
 compass affected "<node-or-label>"
   [--relation R]
   [--depth N]
+  [--format text|json|agent-json]
   [--graph PATH]
 ```
 
-Traverses incoming impact-relevant relations.
+Traverses incoming impact-relevant relations. Typed `compass.graph/1` inputs use
+the same bounded resolver and source-backed relationship postings as callers
+and impact; legacy node-link inputs retain the compatibility traversal. JSON
+and agent JSON retain diagnostics, evidence, and explicit ambiguity candidates.
 
 ### `context`
 
@@ -580,7 +608,9 @@ changes, affected callers/modules, and test evidence. Routine symbol churn is
 collapsed; `--limit N` changes the visible per-section budget, while `--all`
 expands routine findings and is exhaustive. `--explain` prints the evidence
 and reasoning for one finding. Diff requires comparable build profiles;
-rebuild the newer revision with `--profile-from OLD` when needed.
+rebuild the newer revision with `--profile-from OLD` when needed. `diff` never
+materializes a revision: build each uncached revision explicitly with
+`compass history build REV --code-only` before comparing.
 `--format html` requires `--output PATH` and writes a self-contained
 interactive report containing the reviewer findings, unified/split source
 diffs, the exact Git patch fallback, and meaningful code-graph changes.
@@ -1040,9 +1070,13 @@ count. `history change-counts` requires existing preferred realizations with
 the same complete build profile and never builds them. Its bounded structural
 counts exclude source-coordinate, clustering/layout, and anchor-derived edge
 identity churn while preserving topology and relationship multiplicity.
+`history export` is also read-only; run `compass history build REV --code-only`
+before exporting an uncached revision.
 `history diff` streams an exhaustive,
-deterministic record-level diff for selected immutable roots. It may lazily
-materialize a missing revision, requires identical complete build profiles and
+deterministic record-level diff for selected immutable roots. It is read-only:
+both revisions must already be materialized, and an uncached revision returns
+the exact `compass history build REV --code-only` prerequisite instead of
+starting extraction. It requires identical complete build profiles and
 compatible graph engines, refuses to overwrite `--output`, and bounds stdout
 for safety. This is distinct from the ranked `compass diff` semantic-review
 report. Guided writers accept `--events jsonl`; stdout then contains

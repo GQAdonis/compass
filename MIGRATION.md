@@ -23,6 +23,19 @@ reports `NO PATH FOUND` separately when both endpoints exist but are
 unreachable. Consumers that parsed the prior human path prose should migrate to
 these explicit signals; machine-query schema versions are unchanged.
 
+Typed relationship commands now share source-backed import/reference
+resolution. `callers`, `impact`, and typed `affected` may therefore return
+additional importer evidence and can emit a `relationship_inconsistency`
+diagnostic when their bounded traversal disagrees with the importer probe.
+Treat that diagnostic as incomplete coverage rather than an empty answer.
+The default typed search candidate limit is now 64; count-shaped automation
+should inspect the structured `truncated` flag and diagnostics.
+
+`ask`, `search`, `query`, `callers`, `callees`, `impact`, `path`, and `explain`
+accept the shared `--format text|json|agent-json` contract where applicable.
+Use `compass architecture --format agent-json` for a bounded repository
+overview with omission counts and witness IDs.
+
 ## Rebuild SQLite adjacency sidecars
 
 Store snapshots now declare edge-ID-ordered directional adjacency so bounded

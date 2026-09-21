@@ -1560,6 +1560,13 @@ fn agent_caveat(diagnostic: &QueryDiagnostic) -> AgentCaveat {
                 diagnostic.message
             ),
         ),
+        QueryDiagnosticCode::RelationshipInconsistency => (
+            AgentSeverity::Warning,
+            format!(
+                "Relationship traversal disagrees with indexed source-backed usage evidence. {}",
+                diagnostic.message
+            ),
+        ),
         QueryDiagnosticCode::NoMatch => (
             AgentSeverity::Blocker,
             format!(
@@ -1584,7 +1591,7 @@ fn agent_caveat(diagnostic: &QueryDiagnostic) -> AgentCaveat {
         QueryDiagnosticCode::IncompleteCoverage => (
             AgentSeverity::Warning,
             format!(
-                "Absence is not proof that the relationship does not exist. {}",
+                "Coverage or precision is limited; verify before drawing a conclusion. {}",
                 diagnostic.message
             ),
         ),
@@ -1634,6 +1641,7 @@ fn diagnostic_code_name(code: QueryDiagnosticCode) -> &'static str {
     match code {
         QueryDiagnosticCode::NoMatch => "no_match",
         QueryDiagnosticCode::AmbiguousMatch => "ambiguous_match",
+        QueryDiagnosticCode::RelationshipInconsistency => "relationship_inconsistency",
         QueryDiagnosticCode::DirectionMismatch => "direction_mismatch",
         QueryDiagnosticCode::UnresolvedHandler => "unresolved_handler",
         QueryDiagnosticCode::IncompleteCoverage => "incomplete_coverage",

@@ -694,6 +694,9 @@ fn build_index(
                     .map_err(sql_error)?;
             }
         }
+        // Preserve the discovery index contract. Structural relationship
+        // commands use their own bounded broad posting path; discovery's
+        // relationship promotion remains based on trusted direct calls.
         for (term, source_ids) in direct_call_source_identifier_postings(graph) {
             for source_id in source_ids {
                 transaction
