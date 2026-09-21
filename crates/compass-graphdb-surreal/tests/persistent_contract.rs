@@ -527,6 +527,11 @@ fn embedded_sessions_survive_replacement_of_publication_runtimes()
 /// split lands on that prefix and any colon inside the path stays part of the
 /// path. This is what carries a Windows drive letter (`C:\\...`) through
 /// unchanged, so assert the property directly rather than rejecting such paths.
+///
+/// Unix-only: NTFS reserves `:` for alternate data streams, so a colon cannot
+/// appear in a Windows file name. Every Windows absolute path exercises the
+/// same property through its drive letter, which the other tests here cover.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn embedded_store_paths_preserve_colons_in_directory_names()
 -> Result<(), Box<dyn std::error::Error>> {
