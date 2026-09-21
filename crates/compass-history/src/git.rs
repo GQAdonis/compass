@@ -391,13 +391,6 @@ impl Repository {
         commit: &CommitId,
     ) -> Result<Vec<GitTargetLimitation>, HistoryError> {
         let mut limitations = Vec::new();
-        match reject_unsupported_filters(&self.root) {
-            Ok(()) => {}
-            Err(HistoryError::UnsupportedGitFilter(filter)) => {
-                limitations.push(GitTargetLimitation::UnsupportedFilter(filter));
-            }
-            Err(error) => return Err(error),
-        }
         let listing = git_output(
             &self.root,
             &["ls-tree", "-r", "-z", "-l", "--full-tree", commit.as_str()],
@@ -440,7 +433,7 @@ impl Repository {
     /// Create an exact detached worktree without running hooks, prompting, fetching, or smudging
     /// LFS content.
     pub fn detached_worktree(&self, commit: &CommitId) -> Result<WorktreeGuard, HistoryError> {
-        reject_unsupported_filters(&self.root)?;
+        let checkout_filters = configured_checkout_filters(&self.root)?;
         let compass_root = self.common_dir.join("compass");
         crate::store::create_owner_dir(&compass_root)?;
         let tmp_root = compass_root.join("tmp");
@@ -476,7 +469,13 @@ impl Repository {
             registered: false,
             closed: false,
         };
-        if let Err(error) = add_worktree(&guard.repository_root, &hooks, &guard.path, commit) {
+        if let Err(error) = add_worktree(
+            &guard.repository_root,
+            &hooks,
+            &guard.path,
+            commit,
+            &checkout_filters,
+        ) {
             let _cleanup = guard.cleanup();
             return Err(error);
         }
@@ -797,8 +796,19 @@ fn add_worktree(
     hooks: &Path,
     path: &Path,
     commit: &CommitId,
+    checkout_filters: &[String],
 ) -> Result<(), HistoryError> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    for driver in checkout_filters {
+        command
+            .arg("-c")
+            .arg(format!("filter.{driver}.process="))
+            .arg("-c")
+            .arg(format!("filter.{driver}.smudge="))
+            .arg("-c")
+            .arg(format!("filter.{driver}.required=false"));
+    }
+    let output = command
         .arg("-c")
         .arg(format!("core.hooksPath={}", hooks.display()))
         .args(["-c", "credential.helper=", "-C"])
@@ -822,17 +832,22 @@ fn add_worktree(
     }
 }
 
-fn reject_unsupported_filters(repository_root: &Path) -> Result<(), HistoryError> {
+fn configured_checkout_filters(repository_root: &Path) -> Result<Vec<String>, HistoryError> {
     let output = Command::new("git")
         .args(["-C"])
         .arg(repository_root)
-        .args(["config", "--get-regexp", r"^filter\..*\.(smudge|process)$"])
+        .args([
+            "config",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(smudge|process|required)$",
+        ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|error| HistoryError::Git(error.to_string()))?;
     if !output.status.success() {
         if output.status.code() == Some(1) && output.stderr.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         return Err(HistoryError::Git(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
@@ -840,20 +855,31 @@ fn reject_unsupported_filters(repository_root: &Path) -> Result<(), HistoryError
     }
     let text = std::str::from_utf8(&output.stdout)
         .map_err(|error| HistoryError::Git(format!("Git returned non-UTF-8 filters: {error}")))?;
-    for line in text.lines() {
-        let (name, command) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-        let command = command.trim_start();
-        if !matches!(command, "git-lfs" | "git lfs")
-            && !command.starts_with("git-lfs ")
-            && !command.starts_with("git lfs ")
+    let mut drivers = Vec::new();
+    for key in text.lines() {
+        let Some(body) = key.strip_prefix("filter.") else {
+            continue;
+        };
+        let Some((driver, field)) = body.rsplit_once('.') else {
+            continue;
+        };
+        if !matches!(field, "smudge" | "process" | "required") {
+            continue;
+        }
+        if driver.is_empty()
+            || !driver
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
         {
-            return Err(HistoryError::UnsupportedGitFilter(format!(
-                "{name}={}",
-                command.trim()
+            return Err(HistoryError::Git(format!(
+                "Git returned an unsafe filter driver name: {driver}"
             )));
         }
+        drivers.push(driver.to_owned());
     }
-    Ok(())
+    drivers.sort();
+    drivers.dedup();
+    Ok(drivers)
 }
 
 fn target_limitations(checkout: &Path) -> Result<Vec<GitTargetLimitation>, HistoryError> {

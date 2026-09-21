@@ -1461,6 +1461,9 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
             "graph delta field {field} is not an array"
         );
     }
+    // The two published realizations differ by the added node "c"; nothing is
+    // removed. Assert that shape exactly, so a delta that invented a removal
+    // would fail rather than pass an "is not empty" check.
     assert!(
         envelope["graph_delta"]["added_nodes"]
             .as_array()
@@ -1469,7 +1472,7 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
     assert!(
         envelope["graph_delta"]["removed_nodes"]
             .as_array()
-            .is_some_and(|nodes| !nodes.is_empty())
+            .is_some_and(<[Value]>::is_empty)
     );
     assert!(envelope.get("changes").is_none());
 

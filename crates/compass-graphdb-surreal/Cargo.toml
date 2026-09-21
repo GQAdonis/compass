@@ -19,8 +19,8 @@ surrealkv = ["dep:surrealdb", "dep:tokio", "surrealdb/kv-surrealkv"]
 rocksdb = ["dep:surrealdb", "dep:tokio", "surrealdb/kv-rocksdb"]
 
 [dependencies]
-compass-files = { path = "../compass-files", version = "0.3.25" }
-compass-model = { path = "../compass-model", version = "0.3.25" }
+compass-files = { path = "../compass-files", version = "0.3.28" }
+compass-model = { path = "../compass-model", version = "0.3.28" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -30,7 +30,7 @@ tokio = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 
 [dev-dependencies]
-compass-query = { path = "../compass-query", version = "0.3.25" }
+compass-query = { path = "../compass-query", version = "0.3.28" }
 tempfile.workspace = true
 tokio.workspace = true
 

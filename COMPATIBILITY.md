@@ -119,6 +119,30 @@ history profiles, and cache identities.
 
 ## Evolving contracts
 
+
+Rust structural evidence now uses producer version 2. The evidence and graph
+schema majors are unchanged, but Rust extraction caches from producer version
+1 are rebuilt so source-proven standard-library dereference chains and
+evaluating local macro inputs can publish newly recovered exact calls.
+Unsupported macro shapes, non-evaluating inputs, and ambiguous receiver owners
+remain unresolved rather than being guessed.
+
+### Agent Query View
+
+Compass adds the additive strict projection `compass.query.agent-view/1` for
+typed CLI and MCP consumers. It is derived from, and digest-bound to, the raw
+`compass.query/1` or `compass.query.discovery/1` response. The raw CLI `json`
+shape, MCP `structuredContent.result`, graph schemas, and discovery
+`compass.query.discovery-text-page/2` cursor meaning are unchanged.
+
+The typed commands accept `--format agent-json`; default text is an
+answer-first presentation. MCP keeps `compass.mcp.tool-result/1` and adds the
+optional `agentView` sibling plus a code-query `semanticResultDigest`. Existing
+consumers may ignore the optional projection. Consumers that consume Agent
+View must reject unknown major versions, enforce the documented bounds, and
+distinguish `no_match`, `needs_resolution`, `no_path`, source truncation, and
+projection truncation from a positive complete answer.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,
@@ -447,8 +471,20 @@ now defaults to `compass.query.discovery/1`; `--dfs` and `--context` compose
 with discovery. Explicit `--traverse` or legacy-only `--budget`/`--page`
 preserve the established text traversal and reject discovery controls.
 CompassQL and explicit typed query commands remain unchanged. Discovery text
-pagination uses the versioned `compass.query.discovery-text-page/1` cursor;
-JSON rejects those presentation-only controls.
+pagination now uses the versioned `compass.query.discovery-text-page/2` cursor.
+Text is concise by default, `--evidence` restores full provenance detail, and
+the selected tier is bound into the cursor. Version-1 cursors fail explicitly
+rather than resuming into a different representation. The default text-page
+budget is 8,000 approximate tokens. JSON rejects those presentation-only
+controls and the discovery JSON schema remains `compass.query.discovery/1`.
+
+Exact-looking discovery or typed-query operands that have only fuzzy or lexical
+candidates now carry a structured `no_match` diagnostic before any fallback
+content or bounded natural-query execution. Dedicated `compass path` endpoints
+require unique exact identities;
+weighted path selection prefers structural evidence over reference/document
+shortcuts and reports an eligible shorter-but-weaker alternative separately.
+These are human-query semantic changes, not graph or JSON schema changes.
 `compass ask --at REV` uses the same immutable trusted `compass.graph/1`
 realization selection as revision discovery. The response remains the unchanged
 `compass.query/1` contract; an older realization without that trusted graph is

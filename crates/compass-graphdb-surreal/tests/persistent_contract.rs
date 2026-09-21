@@ -520,3 +520,34 @@ fn embedded_sessions_survive_replacement_of_publication_runtimes()
     }
     Ok(())
 }
+
+/// A store path containing `://` must fail closed.
+///
+/// Embedded addresses are rendered as `scheme://path`, and the SDK splits on the
+/// first `://`. A path carrying its own `://` would move that split point and
+/// open a different datastore than the caller named, so reject it instead of
+/// silently retargeting the store. Windows paths reach this same code with a
+/// verbatim `\\?\C:\...` prefix, which must keep working.
+#[tokio::test(flavor = "multi_thread")]
+async fn embedded_store_paths_reject_embedded_scheme_separators()
+-> Result<(), Box<dyn std::error::Error>> {
+    let backends = [
+        #[cfg(feature = "surrealkv")]
+        Backend::SurrealKv,
+        #[cfg(feature = "rocksdb")]
+        Backend::RocksDb,
+    ];
+    for backend in backends {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("store://nested");
+        let error = backend
+            .open(&path)
+            .await
+            .expect_err("a store path containing \"://\" must be rejected");
+        assert!(
+            error.to_string().contains("://"),
+            "error should name the rejected separator, got: {error}"
+        );
+    }
+    Ok(())
+}

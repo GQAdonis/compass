@@ -150,15 +150,20 @@ on the established relevance traversal. MCP `query_graph` uses the same routing
 rule for typed graphs unless a legacy `mode`, `depth`, `token_budget`, or
 `context_filter` field is present.
 
-Structural operand resolution uses the same bounded exact-ID, normalized-name,
-alias, term-posting, and typo recall assembly as search. Duplicate exact names
-remain ambiguous. For a non-exact operand, a candidate with unique evidence in
-the operation's required relationship role can resolve the operand; otherwise
-the engine returns `ambiguous_match` rather than selecting the top-ranked
-candidate. Relation probes are bounded by the request's candidate limit and a
-one-edge existence check per candidate.
+Structural operand resolution checks unique exact IDs, normalized names, and
+qualified names before fallback recall. Duplicate exact names remain ambiguous.
+Bounded alias, term-posting, relationship, and typo recall can still drive a
+strictly dominant natural-query fallback, but the response always carries
+`no_match` and the text projection begins with `NO EXACT MATCH`; the fallback
+cannot masquerade as exact. Ambiguous fallbacks remain suggestions only.
+Relation probes remain bounded by the request's candidate limit and a one-edge
+existence check per candidate. The dedicated `compass path` command is stricter:
+both endpoints must resolve exactly before traversal.
 
-Node trails traverse published edges from source to target. When no directed
+Node trails traverse published edges from source to target with deterministic
+relation costs: structural call, containment, import, dependency, routing, and
+type-hierarchy evidence is preferred over reference and documentation edges.
+When no directed
 path is found, one undirected probe using the remaining traversal budget
 distinguishes a true no-match from
 a route that requires traversing at least one edge backward. The latter returns
@@ -418,6 +423,31 @@ Renderers produce:
 
 Output-to-file uses atomic completion. A failed execution must not leave a
 valid-looking partial result.
+
+## Agent-readable projection
+
+`compass-output` owns the presentation-only `compass.query.agent-view/1`
+projection. The query engine supplies the full raw response and canonical
+source-result digest; it does not select a different node or re-run resolution
+for presentation. The projector records the invocation operands and graph /
+generation identities, then derives deterministic status dimensions:
+
+- result (`answered`, `candidates`, `needs_resolution`, `no_match`, `no_path`);
+- match and evidence state;
+- source execution versus projection truncation;
+- explicit corpus coverage (`incomplete` or `unknown`).
+
+Relationships inline both endpoint IDs and labels, and path steps retain the
+published edge direction (`forward` or `reverse`). Diagnostics become sorted
+caveats before graph detail. Stable bounds (12 primary results, 24
+relationships, 5 paths, 16 caveats, 5 next actions, 256 KiB JSON, 64 KiB
+text) keep the projection safe for tool transports. `identity.viewDigest`
+covers the projection without mutating the raw result.
+
+CLI and MCP call the same projector and text renderer. Raw `json` output and
+MCP `structuredContent.result` remain authoritative and unchanged. The
+discovery page renderer accepts an already escaped fixed header but keeps its
+`compass.query.discovery-text-page/2` entry ledger and cursor semantics.
 
 ## Explain and profile
 

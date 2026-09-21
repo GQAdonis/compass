@@ -571,7 +571,6 @@ pub fn agent_orientation(
     };
     sanitize_orientation_model(&mut model);
     fit_orientation_json_budget(&mut model);
-    fit_orientation_budget(&mut model);
     fit_report_budget(&mut model, options.obsidian);
     model
 }
@@ -608,7 +607,6 @@ pub fn agent_orientation_with_blind_spots(
     model.blind_spots = blind_spots.cloned();
     sanitize_orientation_model(&mut model);
     fit_orientation_json_budget(&mut model);
-    fit_orientation_budget(&mut model);
     fit_report_budget(&mut model, options.obsidian);
     model
 }
@@ -689,7 +687,8 @@ pub fn graph_artifact_identity(path: &Path) -> Result<String, OutputError> {
 
 pub fn render_orientation_markdown(model: &AgentOrientation) -> Result<String, OutputError> {
     validate_orientation_model(model)?;
-    let rendered = render_orientation_markdown_unchecked(model);
+    let compact = compact_orientation_model(model);
+    let rendered = render_orientation_markdown_unchecked(&compact);
     let rendered_chars = char_count(&rendered);
     if rendered_chars > ORIENTATION_MARKDOWN_MAX_CHARS {
         return Err(OutputError::OrientationBudgetExceeded {
@@ -2065,6 +2064,12 @@ fn fit_orientation_budget(model: &mut AgentOrientation) {
             break;
         }
     }
+}
+
+fn compact_orientation_model(model: &AgentOrientation) -> AgentOrientation {
+    let mut compact = model.clone();
+    fit_orientation_budget(&mut compact);
+    compact
 }
 
 fn fit_orientation_json_budget(model: &mut AgentOrientation) {

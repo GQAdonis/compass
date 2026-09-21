@@ -97,6 +97,26 @@ fn executes_indexed_fixed_patterns_and_properties() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn node_degree_is_queryable_and_orders_before_projection_scope_is_discarded()
+-> Result<(), Box<dyn Error>> {
+    let result = run("MATCH (n) RETURN n.label AS label, n.degree AS degree \
+         ORDER BY n.degree DESC, label")?;
+    assert_eq!(result.rows.len(), 4);
+    assert_eq!(result.rows[0][0], CompassValue::String("a()".into()));
+    assert_eq!(result.rows[0][1], CompassValue::Integer(2));
+    assert_eq!(result.rows[1][0], CompassValue::String("b()".into()));
+    assert_eq!(result.rows[1][1], CompassValue::Integer(2));
+    assert_eq!(result.rows[2][1], CompassValue::Integer(1));
+    assert_eq!(result.rows[3][1], CompassValue::Integer(1));
+
+    let mapped = run("MATCH (n {id:'a'}) \
+         RETURN n.degree AS direct, properties(n).degree AS mapped")?;
+    assert_eq!(mapped.rows[0][0], CompassValue::Integer(2));
+    assert_eq!(mapped.rows[0][1], CompassValue::Integer(2));
+    Ok(())
+}
+
+#[test]
 fn typed_graph_projects_labels_anchors_and_effective_confidence() -> Result<(), Box<dyn Error>> {
     let graph = typed_graph()?;
     let parameters = Parameters::new();

@@ -43,6 +43,27 @@ compass update . --force --store surreal --surreal-engine surrealkv
 compass store validate compass-out --engine surreal --format json
 ```
 
+### Building a SurrealDB-enabled binary on Windows
+
+Native Windows is supported without WSL, but building *with* any SurrealDB
+feature needs a C toolchain. `surrealdb-core` enables `jsonwebtoken/aws-lc-rs`
+unconditionally, so `aws-lc-sys` is compiled for every SurrealDB feature —
+including `surreal-remote` — and requires **CMake** and **NASM** on
+`x86_64-pc-windows-msvc`, plus the Visual Studio C++ build tools:
+
+```powershell
+choco install cmake nasm --no-progress -y
+```
+
+This is a SurrealDB upstream requirement, not a Compass one. The default
+build has no such dependency: SurrealDB is absent from its dependency tree
+entirely, so a feature-free `compass` binary builds on Windows with only the
+Rust toolchain.
+
+Ship `surreal-surrealkv` rather than `surreal-rocksdb` on Windows. SurrealKV is
+pure Rust, whereas RocksDB adds a C++ build through
+`surrealdb-librocksdb-sys`. RocksDB remains available from source.
+
 Project configuration version 2 persists the storage selection. Version-1
 configuration files still load with their previous behavior; run `compass init
 --force --store surreal` only when you intentionally want to rewrite the saved
@@ -54,6 +75,23 @@ closed until that reference is present and valid.
 The fully wired projection is `compass.graph.surreal/2`. Existing
 library-only `compass.graph.surreal/1` generations are not migrated in place;
 rerun the forced update above to create a new typed/indexed generation.
+## Query text and path resolution
+
+Plain `compass query` output is now concise by default and its page budget is
+8,000 approximate tokens. Scripts or review workflows that need the previous
+expanded provenance should pass `--evidence`. Existing
+`compass.query.discovery-text-page/1` cursors cannot be resumed; start the query
+again to receive a `/2` cursor, and keep the concise/evidence tier unchanged
+while paging. Discovery JSON remains `compass.query.discovery/1`.
+
+Natural structural queries now mark every fuzzy execution or suggestion with
+`NO EXACT MATCH`/the typed `no_match` diagnostic. Handle that signal and retry
+with a suggested exact ID when exact identity is required. `compass path` no
+longer promotes a fuzzy symbol candidate into an endpoint; it is
+weighted toward structural relations, defaults to an eight-hop bound, and
+reports `NO PATH FOUND` separately when both endpoints exist but are
+unreachable. Consumers that parsed the prior human path prose should migrate to
+these explicit signals; machine-query schema versions are unchanged.
 
 ## Rebuild SQLite adjacency sidecars
 
@@ -163,6 +201,15 @@ must accept `django-rest-framework-python`. No settings, middleware, or admin
 registration edge is synthesized: the current descriptor vocabulary cannot
 advertise those registrations without incorrectly claiming bean-container
 semantics.
+
+## Rust receiver and macro evidence rebuild
+
+Rust universal evidence now uses producer version 2. The first graph build
+after upgrading re-extracts cached Rust files automatically. No graph schema
+migration or manual artifact editing is required. The new producer follows
+source-proven `Arc`, `Rc`, and `Box` field chains and recovers calls from a
+bounded local `macro_rules!` shape only when the captured expression or
+statement is proven to be evaluated; ambiguous cases remain unresolved.
 
 ## Ruby universal evidence rebuild
 

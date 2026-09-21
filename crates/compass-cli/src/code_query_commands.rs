@@ -4,6 +4,9 @@ use compass_model::query_contract::{
     CallRequest, CodeQueryLimits, CodeQueryResponse, ExploreRequest, ImpactRequest,
     NodeTrailRequest, SearchRequest,
 };
+use compass_output::{
+    AgentOperandRole, AgentQueryContext, build_code_query_view, render_agent_query_text,
+};
 use compass_query::{
     EngineSelection, NaturalQueryRequest, open_with_engine, open_with_verified_document,
 };
@@ -17,25 +20,55 @@ use compass_query::{SurrealQueryEngine, has_published_surreal};
 use crate::Outcome;
 
 pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
+    let format = option(args, "--format").unwrap_or("text");
+    if format == "agent-json"
+        && args.iter().any(|arg| {
+            matches!(
+                arg.as_str(),
+                "--cursor" | "--text-budget" | "--evidence" | "--result-envelope"
+            ) || arg.starts_with("--cursor=")
+                || arg.starts_with("--text-budget=")
+        })
+    {
+        return Outcome::failure(
+            "error: --cursor, --text-budget, --evidence, and --result-envelope are text-only and cannot be used with --format agent-json".to_owned(),
+        );
+    }
     match execute(operation, args) {
-        Ok(response) => {
-            let format = option(args, "--format").unwrap_or("text");
+        Ok(execution) => {
             if format == "json" {
-                match serde_json::to_string_pretty(&response) {
+                match serde_json::to_string_pretty(&execution.response) {
+                    Ok(json) => Outcome::success(json),
+                    Err(error) => Outcome::failure(format!("error: {error}")),
+                }
+            } else if format == "agent-json" {
+                match build_code_query_view(&execution.response, execution.context)
+                    .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
+                {
                     Ok(json) => Outcome::success(json),
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
             } else if format == "text" {
-                Outcome::success(render_text(&response))
+                match build_code_query_view(&execution.response, execution.context)
+                    .and_then(|view| render_agent_query_text(&view))
+                {
+                    Ok(text) => Outcome::success(text),
+                    Err(error) => Outcome::failure(format!("error: {error}")),
+                }
             } else {
-                Outcome::failure("error: --format must be json or text".to_owned())
+                Outcome::failure("error: --format must be json, agent-json, or text".to_owned())
             }
         }
         Err(error) => Outcome::failure(format!("error: {error}")),
     }
 }
 
-fn execute(operation: &str, args: &[String]) -> Result<CodeQueryResponse, String> {
+struct QueryExecution {
+    response: CodeQueryResponse,
+    context: AgentQueryContext,
+}
+
+fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
     let positional = positional(args);
     let graph_option = option(args, "--graph");
     let revision = option(args, "--at");
@@ -121,46 +154,109 @@ fn execute(operation: &str, args: &[String]) -> Result<CodeQueryResponse, String
         open_with_engine(&graph, program.as_deref(), &cache, engine)
             .map_err(|error| error.to_string())?
     };
-    match operation {
-        "ask" => engine.query_natural(NaturalQueryRequest {
-            question: required(&positional, 0, "ask <QUESTION>")?.to_owned(),
-            include_heuristic: args.iter().any(|arg| arg == "--include-heuristic"),
-            limits,
-        }),
-        "search" => engine.search(SearchRequest {
-            query: required(&positional, 0, "search <QUERY>")?.to_owned(),
-            limits,
-        }),
-        "callers" => engine.callers(CallRequest {
-            symbol: required(&positional, 0, "callers <SYMBOL>")?.to_owned(),
-            include_heuristic: args.iter().any(|arg| arg == "--include-heuristic"),
-            limits,
-        }),
-        "callees" => engine.callees(CallRequest {
-            symbol: required(&positional, 0, "callees <SYMBOL>")?.to_owned(),
-            include_heuristic: args.iter().any(|arg| arg == "--include-heuristic"),
-            limits,
-        }),
-        "impact" => engine.impact(ImpactRequest {
-            symbol: required(&positional, 0, "impact <SYMBOL>")?.to_owned(),
-            include_heuristic: args.iter().any(|arg| arg == "--include-heuristic"),
-            limits,
-        }),
-        "explore" => engine.explore(ExploreRequest {
-            symbols: positional,
-            root: option(args, "--root").unwrap_or_default().to_owned(),
-            include_heuristic: args.iter().any(|arg| arg == "--include-heuristic"),
-            limits,
-        }),
-        "node" => engine.node_trail(NodeTrailRequest {
-            source: required(&positional, 0, "node <SOURCE> <TARGET>")?.to_owned(),
-            target: required(&positional, 1, "node <SOURCE> <TARGET>")?.to_owned(),
-            include_heuristic: args.iter().any(|arg| arg == "--include-heuristic"),
-            limits,
-        }),
+    let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
+    let (response, question, operands) = match operation {
+        "ask" => {
+            let question = required(&positional, 0, "ask <QUESTION>")?.to_owned();
+            let response = engine
+                .query_natural(NaturalQueryRequest {
+                    question: question.clone(),
+                    include_heuristic,
+                    limits,
+                })
+                .map_err(|error| error.to_string())?;
+            (
+                response,
+                Some(question.clone()),
+                vec![(AgentOperandRole::Query, question)],
+            )
+        }
+        "search" => {
+            let query = required(&positional, 0, "search <QUERY>")?.to_owned();
+            let response = engine
+                .search(SearchRequest {
+                    query: query.clone(),
+                    limits,
+                })
+                .map_err(|error| error.to_string())?;
+            (response, None, vec![(AgentOperandRole::Query, query)])
+        }
+        "callers" | "callees" | "impact" => {
+            let symbol = required(&positional, 0, "<SYMBOL>")?.to_owned();
+            let response = match operation {
+                "callers" => engine.callers(CallRequest {
+                    symbol: symbol.clone(),
+                    include_heuristic,
+                    limits,
+                }),
+                "callees" => engine.callees(CallRequest {
+                    symbol: symbol.clone(),
+                    include_heuristic,
+                    limits,
+                }),
+                "impact" => engine.impact(ImpactRequest {
+                    symbol: symbol.clone(),
+                    include_heuristic,
+                    limits,
+                }),
+                _ => unreachable!(),
+            }
+            .map_err(|error| error.to_string())?;
+            (response, None, vec![(AgentOperandRole::Symbol, symbol)])
+        }
+        "explore" => {
+            let symbols = positional.clone();
+            let response = engine
+                .explore(ExploreRequest {
+                    symbols: symbols.clone(),
+                    root: option(args, "--root").unwrap_or_default().to_owned(),
+                    include_heuristic,
+                    limits,
+                })
+                .map_err(|error| error.to_string())?;
+            let mut operands = symbols
+                .into_iter()
+                .map(|symbol| (AgentOperandRole::Symbol, symbol))
+                .collect::<Vec<_>>();
+            if let Some(root) = option(args, "--root").filter(|root| !root.is_empty()) {
+                operands.push((AgentOperandRole::Root, root.to_owned()));
+            }
+            (response, None, operands)
+        }
+        "node" => {
+            let source = required(&positional, 0, "node <SOURCE> <TARGET>")?.to_owned();
+            let target = required(&positional, 1, "node <SOURCE> <TARGET>")?.to_owned();
+            let response = engine
+                .node_trail(NodeTrailRequest {
+                    source: source.clone(),
+                    target: target.clone(),
+                    include_heuristic,
+                    limits,
+                })
+                .map_err(|error| error.to_string())?;
+            (
+                response,
+                None,
+                vec![
+                    (AgentOperandRole::Source, source),
+                    (AgentOperandRole::Target, target),
+                ],
+            )
+        }
         _ => unreachable!(),
+    };
+    let mut context = AgentQueryContext::new(
+        response.operation.into(),
+        engine.graph_identity().to_owned(),
+        engine.build_generation_identity().to_owned(),
+    );
+    if let Some(question) = question {
+        context = context.with_question(question);
     }
-    .map_err(|error| error.to_string())
+    for (role, value) in operands {
+        context = context.with_operand(role, value);
+    }
+    Ok(QueryExecution { response, context })
 }
 
 #[cfg(any(
@@ -192,7 +288,7 @@ fn execute_surreal(
     positional: &[String],
     graph: &std::path::Path,
     limits: CodeQueryLimits,
-) -> Result<CodeQueryResponse, String> {
+) -> Result<QueryExecution, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -202,7 +298,12 @@ fn execute_surreal(
             .await
             .map_err(|error| error.to_string())?;
         let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
-        match operation {
+        let question = match operation {
+            "ask" => Some(required(positional, 0, "ask <QUESTION>")?.to_owned()),
+            _ => None,
+        };
+        let operands = surreal_operands(operation, positional)?;
+        let response = match operation {
             "ask" => {
                 engine
                     .query_natural(NaturalQueryRequest {
@@ -269,7 +370,63 @@ fn execute_surreal(
             }
             _ => unreachable!(),
         }
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        // Surreal reads are pinned to one immutable published generation, so
+        // the reference carries the same identity the typed engines report.
+        let reference = engine.reference();
+        let mut context = AgentQueryContext::new(
+            response.operation.into(),
+            reference.repository_id.clone(),
+            reference.generation_id.clone(),
+        );
+        if let Some(question) = question {
+            context = context.with_question(question);
+        }
+        for (role, value) in operands {
+            context = context.with_operand(role, value);
+        }
+        Ok(QueryExecution { response, context })
+    })
+}
+
+/// Agent-view operands for a Surreal-backed query, matching the typed path.
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn surreal_operands(
+    operation: &str,
+    positional: &[String],
+) -> Result<Vec<(AgentOperandRole, String)>, String> {
+    Ok(match operation {
+        "ask" => vec![(
+            AgentOperandRole::Query,
+            required(positional, 0, "ask <QUESTION>")?.to_owned(),
+        )],
+        "search" => vec![(
+            AgentOperandRole::Query,
+            required(positional, 0, "search <QUERY>")?.to_owned(),
+        )],
+        "callers" | "callees" | "impact" => vec![(
+            AgentOperandRole::Symbol,
+            required(positional, 0, "<SYMBOL>")?.to_owned(),
+        )],
+        "node" => vec![
+            (
+                AgentOperandRole::Source,
+                required(positional, 0, "node <SOURCE> <TARGET>")?.to_owned(),
+            ),
+            (
+                AgentOperandRole::Target,
+                required(positional, 1, "node <SOURCE> <TARGET>")?.to_owned(),
+            ),
+        ],
+        "explore" => positional
+            .iter()
+            .map(|symbol| (AgentOperandRole::Symbol, symbol.clone()))
+            .collect(),
+        _ => Vec::new(),
     })
 }
 
@@ -284,7 +441,7 @@ fn execute_surreal(
     _positional: &[String],
     _graph: &std::path::Path,
     _limits: CodeQueryLimits,
-) -> Result<CodeQueryResponse, String> {
+) -> Result<QueryExecution, String> {
     Err("Surreal query support is unavailable in this Compass build".to_owned())
 }
 
@@ -365,32 +522,4 @@ fn required<'a>(values: &'a [String], index: usize, usage: &str) -> Result<&'a s
         .get(index)
         .map(String::as_str)
         .ok_or_else(|| format!("usage: compass {usage} [OPTIONS]"))
-}
-
-fn render_text(response: &CodeQueryResponse) -> String {
-    let mut lines = vec![format!(
-        "{:?}: {} node(s), {} edge(s), {} path(s)",
-        response.operation,
-        response.nodes.len(),
-        response.edges.len(),
-        response.paths.len()
-    )];
-    lines.extend(response.nodes.iter().map(|node| {
-        format!(
-            "{} [{}] {}",
-            node.qualified_name,
-            node.kind.as_str(),
-            node.source
-                .as_ref()
-                .map(|source| format!("{}:{}", source.file, source.start_line))
-                .unwrap_or_default()
-        )
-    }));
-    lines.extend(
-        response
-            .diagnostics
-            .iter()
-            .map(|diagnostic| format!("! {:?}: {}", diagnostic.code, diagnostic.message)),
-    );
-    lines.join("\n")
 }

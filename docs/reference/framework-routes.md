@@ -40,7 +40,9 @@ Configuration and file-convention routes keep the rule and source that produced 
 
 ## Read a route through callers
 
-The `callers` command follows incoming `calls` and `routes_to` edges. Use it to see code callers and URL registrations for the same handler:
+The `callers` command follows incoming usage evidence, including `calls`,
+`routes_to`, references, imports, exports, and aliases. Use it to see code
+usages and URL registrations for the same handler:
 
 ```bash
 compass callers UsersController.show --graph compass-out/graph.json

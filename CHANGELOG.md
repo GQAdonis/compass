@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Support native Windows for the optional SurrealDB surfaces, with no WSL
+  dependency. Embedded store addresses reject a path containing `://` instead of
+  silently retargeting the store, failed restores report cleanup that could not
+  complete rather than discarding the error and leaving a partially populated
+  directory that the next attempt rejects as non-empty, and the Surreal
+  repository id hashes its root losslessly so two distinct non-UTF-8 roots can no
+  longer collide. SurrealDB surfaces are now qualified on `windows-2025` in CI;
+  building any SurrealDB feature there needs CMake and NASM for the transitive
+  `aws-lc-sys` dependency, which the default build does not pull in.
+
 - Reject query artifacts produced before Compass 0.3.23 at engine loading,
   before record decoding or cache reuse. JSON uses a 64 KiB builder-version
   preamble; SQLite and Surreal use pinned snapshot metadata without JSON
@@ -120,6 +130,47 @@
   snapshots. Production validation and reference generation now verify chunks
   without retaining the canonical payload in one allocation, while the public
   full-read API and store formats remain compatible.
+## 0.3.28 - 2026-09-19
+
+- Improve agent-facing query correctness and recovery across callers, impact,
+  affected, CompassQL ordering, historical reads, directed trail guidance, and
+  bounded full-report sections. Incoming usage results now retain
+  source-backed alias, import, export, route, and reference evidence.
+
+- Keep query answers deterministic and actionable: live node degree is
+  available to CompassQL, ordering may use pre-projection bindings, configured
+  checkout filters are neutralized for historical reads, and direction-only
+  trail misses recommend the matching `compass path` command.
+
+## 0.3.27 - 2026-09-17
+
+- Improve Rust call-graph recall for source-proven `Arc`, `Rc`, and `Box`
+  receiver chains, typed chained-call results, and local evaluating
+  `macro_rules!` inputs. Rust universal evidence advances to producer version
+  2 so cached Rust files rebuild; ambiguous and non-evaluating macro inputs
+  continue to fail closed.
+
+- Add the bounded `compass.query.agent-view/1` projection for coding agents.
+  Typed CLI and MCP query text now lead with result state, answer, and caveats;
+  `--format agent-json` and MCP `agentView` expose the same deterministic
+  source-linked view while raw query JSON remains unchanged. Discovery text
+  keeps its v2 cursor ledger and adds only an answer-first fixed header.
+
+## 0.3.26 - 2026-09-15
+
+- Make query failures and paths more trustworthy: exact-looking missing symbols
+  now return structured `no_match` signals across discovery and typed natural
+  queries; `compass path` requires exact endpoints, reports unreachable targets,
+  and uses deterministic relation-weighted routing with a visible shorter weak
+  alternative.
+
+- Make plain query output concise by default, add `--evidence` for full
+  provenance, raise the default text-page budget to 8,000 tokens, and move text
+  cursors to `compass.query.discovery-text-page/2`. Generic relationship words
+  no longer dominate discovery seeding.
+
+- Update the Rust TLS dependency to 0.23.45 to address the security advisory
+  covered by the release branch.
 
 ## 0.3.25 - 2026-09-13
 

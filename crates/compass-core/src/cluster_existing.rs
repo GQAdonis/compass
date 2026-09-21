@@ -9,7 +9,7 @@ use compass_graph::{
     CommunityRequest, GodNode, ResolutionPolicy, blind_spot_report, build_communities, cluster,
     community_member_signatures, god_nodes, label_communities_by_hub, max_canonical_graph_bytes,
     remap_communities_to_previous, score_communities, suggest_questions, surprising_connections,
-    write_canonical_graph_json, write_canonical_graph_json_bounded,
+    write_canonical_graph_json_bounded,
 };
 use compass_model::GraphDocument;
 use compass_model::GraphError;

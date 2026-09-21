@@ -211,6 +211,43 @@ jobs:
       - name: Verify bounded YAML and endpoint configuration
         run: cargo test -p compass-files --test surreal_configuration --locked
 
+  # The Linux job above is the only place SurrealDB code used to run, so no
+  # embedded store had ever been opened on Windows. Qualify the shipped feature
+  # set natively: path handling, file locking, and directory removal while a
+  # store is open all differ there. RocksDB stays Linux-only; SurrealKV is pure
+  # Rust and is the engine shipped for Windows.
+  surrealdb-projection-windows:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: 1.97.1
+          target: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: .
+          key: surrealdb-projection-windows
+      # surrealdb-core hard-enables jsonwebtoken/aws-lc-rs, so aws-lc-sys is
+      # built for every SurrealDB feature and needs CMake plus NASM on MSVC.
+      - name: Install aws-lc-sys build prerequisites
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+        shell: pwsh
+      - name: Qualify in-memory projection and native reads
+        run: cargo test -p compass-graphdb-surreal --test '*' --features mem --locked
+      - name: Qualify the embedded SurrealKV engine
+        run: cargo test -p compass-graphdb-surreal --test '*' --features surrealkv --locked
+      - name: Qualify fully wired SurrealKV surfaces
+        run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-surrealkv --locked
+      - name: Compile the shipped embedded and standalone surfaces
+        run: cargo check -p compass-cli --features surreal-surrealkv,surreal-remote --locked
+      - name: Verify bounded YAML and endpoint configuration
+        run: cargo test -p compass-files --test surreal_configuration --locked
+
   native-platforms:
     name: ${{ matrix.target }}
     strategy:

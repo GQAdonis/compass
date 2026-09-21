@@ -118,11 +118,34 @@ If the result is broad, add the boundary or action you care about:
 "API token verification failure"  behavior-shaped
 ```
 
+Read an answer-first result in this order:
+
+1. `RESULT` — decide whether the operation answered, returned candidates,
+   needs resolution, has no exact match, or has no path.
+2. `ANSWER` and `CAVEATS` — understand the bounded conclusion and any blocker
+   before looking at graph records.
+3. `PRIMARY RESULTS`, `PATHS`, and `RELATIONSHIPS` — verify IDs, direction,
+   and source locations.
+4. `NEXT ACTIONS` — follow an exact ID retry, evidence lookup, or continuation
+   cursor instead of reconstructing a command from prose.
+
+For automation, request `--format agent-json` and validate
+`compass.query.agent-view/1`. Keep `--format json` for the complete raw
+evidence contract. A fallback candidate is a lead, not proof of an exact
+answer; a partial execution or unknown coverage state must be disclosed.
+
 Save useful output when comparing questions:
 
 ```bash
 compass query "API token verification failure" > /tmp/compass-auth.txt
 ```
+
+The default result is a concise source-located graph map. Add `--evidence` when
+you need the full provenance audit. If an exact-looking symbol is absent,
+Compass says `NO EXACT MATCH` before listing any fuzzy suggestions. Generic
+relationship words such as “connect,” “depend,” “path,” and “use” guide intent
+but do not become discovery anchors unless they are themselves explicit symbol
+operands.
 
 Do not treat temporary result text as a durable schema. For automation, use
 CompassQL JSON/JSONL.
@@ -160,6 +183,12 @@ Once you know two boundaries, connect them:
 ```bash
 compass path HttpHandler TokenVerifier
 ```
+
+Both endpoints must resolve exactly. The path ranking prefers direct structural
+evidence over weak reference or documentation shortcuts, while still showing a
+shorter-but-weaker alternative when it is close. Use `--max-depth N` to change
+the default eight-hop bound. `NO PATH FOUND` means the exact target resolved but
+was unreachable within that bound; it is distinct from `NO EXACT MATCH`.
 
 Useful boundary pairs include:
 

@@ -308,6 +308,7 @@ compass query "<question>"
   [--result-envelope]
   [--text-budget N]
   [--cursor TOKEN]
+  [--evidence]
   [--budget N]
   [--page N]
   [--max-nodes N]
@@ -332,10 +333,17 @@ as `call`, `import`, or `route`. It is not a node, file, package, community, or
 subsystem selector. Use repeatable `--scope KIND:VALUE` for explicit OR scope
 over `community`, `source`, `package`, or `node`.
 
-`--text-budget` bounds the discovery text projection. Its opaque cursor binds
+The default text projection is concise: it prints match confidence, seed terms,
+nodes, edges, and source locations without expanding provenance records or the
+semantic digest. `--evidence` selects the full audit projection. Exact-looking
+operands that do not resolve emit `NO EXACT MATCH`; bounded fuzzy and lexical
+candidates can still follow as suggestions but are not represented as exact.
+
+`--text-budget` bounds the discovery text projection and defaults to 8,000
+approximate tokens. Its opaque cursor binds
 the contract version, normalized request/options, selected graph generation and
-digest, semantic-response digest, and next stable section/item. Fetch the next
-page with `--cursor TOKEN` and otherwise unchanged semantic inputs. The
+digest, semantic-response digest, evidence tier, and next stable section/item.
+Fetch the next page with `--cursor TOKEN` and otherwise unchanged semantic inputs. The
 presentation-only `--text-budget` may change between pages. Pages contain whole
 deterministic entries; changed inputs fail instead of silently continuing a
 different result. JSON rejects text pagination controls. Legacy `--budget` and
@@ -392,15 +400,53 @@ example `RETURN n.id ORDER BY n.id SKIP 100 LIMIT 100`.
 
 Canonical language contract: [CompassQL](../COMPASSQL.md).
 
+### Typed query commands
+
+The focused typed commands share one output profile:
+
+```text
+compass ask "<question>"       [--format text|agent-json|json]
+compass search "<query>"       [--format text|agent-json|json]
+compass callers "<symbol>"     [--format text|agent-json|json]
+compass callees "<symbol>"     [--format text|agent-json|json]
+compass impact "<symbol>"      [--format text|agent-json|json]
+compass explore "<symbol>" ... [--format text|agent-json|json]
+compass node "<source>" "<target>" [--format text|agent-json|json]
+```
+
+`text` is the answer-first Agent View projection. It starts with `RESULT`,
+`ANSWER`, and any blocking `CAVEATS`, then shows source-located entities,
+paths, relationships, and bounded next actions. `agent-json` emits the strict
+`compass.query.agent-view/1` object. `json` remains the unchanged raw
+`compass.query/1` response and is the right choice when an audit consumer needs
+every evidence record. The natural `query` command accepts the same
+`agent-json` format for discovery; its text header is answer-first while the
+existing discovery entry ledger and v2 cursor remain unchanged.
+
+`agent-json` is incompatible with text-only `--cursor`, `--text-budget`,
+`--evidence`, and `--result-envelope` controls. Agent View JSON contains
+bounded `nextActions` as argv arrays or JSON argument objects; clients should
+use those values instead of reconstructing shell commands from result text.
+
+`callers` returns direct incoming usage evidence: calls, routes, references,
+imports, exports, and aliases. `callees` remains the direct outgoing call view.
+
 ### `path`
 
 ```text
-compass path "<source>" "<target>" [--graph PATH | --at REV]
+compass path "<source>" "<target>" [--max-depth N] [--graph PATH | --at REV]
 ```
 
-Renders a shortest known graph path while preserving relationship direction.
-If a route exists only by ignoring one or more edge directions, the typed response
-reports `direction_mismatch`; swap the operands to request that route.
+Resolves both endpoints by exact node ID, name, or qualified name before doing
+any graph search; missing and ambiguous endpoints fail explicitly. The text path
+search is bounded to eight hops by default and ranks structural relationships
+such as calls, containment, imports, and dependencies ahead of weak references
+or documentation links. When a meaningfully weaker route is up to two hops
+shorter, Compass shows it separately. Output names the resolved target ID, and
+an unreachable target is reported as `NO PATH FOUND` with the depth bound and
+visited-node count. Relationship arrows always preserve their stored direction.
+Traversal may follow a relationship in either direction; the arrows make that
+choice visible rather than rewriting the graph.
 
 ### `explain`
 

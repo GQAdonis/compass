@@ -1164,6 +1164,10 @@ impl SurrealProjection {
         Ok((merged, truncated))
     }
 
+    // Every parameter is a distinct traversal bound or selector that the
+    // caller owns; grouping them into a struct would only move the same
+    // values behind one more indirection.
+    #[allow(clippy::too_many_arguments)]
     async fn shortest_path(
         &self,
         selector: &QuerySelector,

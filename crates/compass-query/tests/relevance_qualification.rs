@@ -208,11 +208,13 @@ fn executable_corpus(graph_digest: String) -> JudgmentCorpus {
     let callers = |id: &str, text: &str| {
         let mut judged = query(id, text, QueryClass::Edge, "callers");
         judged.node_judgments = vec![
+            node_judgment("n:alias"),
             node_judgment("n:caller"),
             node_judgment("n:list"),
             node_judgment("n:route"),
         ];
         judged.edge_judgments = vec![
+            edge_judgment("n:alias", "n:list", "aliases"),
             edge_judgment("n:caller", "n:list", "calls"),
             edge_judgment("n:route", "n:list", "routes_to"),
         ];

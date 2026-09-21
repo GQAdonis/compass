@@ -93,7 +93,8 @@ Use the specialized navigation commands when they fit:
 - `compass ask "<question>"` to require bounded, typed intent routing directly;
   inspect the reported operation and ambiguity.
 - `compass search "<symbol>"` for exact or fuzzy typed-symbol lookup.
-- `compass callers` or `compass callees` for one-hop call-graph evidence.
+- `compass callers` for one-hop incoming usage evidence, or `compass callees`
+  for one-hop outgoing call evidence.
 - `compass call-graph` for a bounded caller/callee trace from a source position
   or symbol, optionally enriched with Program IR.
 - `compass impact` for bounded transitive impact; use `affected` for review

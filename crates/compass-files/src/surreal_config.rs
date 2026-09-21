@@ -143,15 +143,15 @@ impl SurrealSettings {
         if self.engine.is_some() && self.store.is_none() {
             self.store = Some("surreal".into());
         }
-        if let Some(store) = &self.store {
-            if !matches!(store.as_str(), "json" | "sqlite" | "surreal") {
-                return Err("Surreal settings store must be json, sqlite, or surreal".into());
-            }
+        if let Some(store) = &self.store
+            && !matches!(store.as_str(), "json" | "sqlite" | "surreal")
+        {
+            return Err("Surreal settings store must be json, sqlite, or surreal".into());
         }
-        if let Some(engine) = &self.engine {
-            if !matches!(engine.as_str(), "surrealkv" | "rocksdb" | "remote") {
-                return Err("Surreal engine must be surrealkv, rocksdb, or remote".into());
-            }
+        if let Some(engine) = &self.engine
+            && !matches!(engine.as_str(), "surrealkv" | "rocksdb" | "remote")
+        {
+            return Err("Surreal engine must be surrealkv, rocksdb, or remote".into());
         }
         if self.engine.as_deref() == Some("remote") {
             if self.path.is_some() {
@@ -176,10 +176,10 @@ impl SurrealSettings {
                 (&self.password_env, &mut self.password),
                 (&self.token_env, &mut self.token),
             ] {
-                if target.is_none() {
-                    if let Some(name) = name {
-                        *target = Some(std::env::var(name).map_err(|_| "configured Surreal credential environment variable is missing or not UTF-8")?);
-                    }
+                if target.is_none()
+                    && let Some(name) = name
+                {
+                    *target = Some(std::env::var(name).map_err(|_| "configured Surreal credential environment variable is missing or not UTF-8")?);
                 }
             }
             if self.token.is_some() && (self.username.is_some() || self.password.is_some()) {

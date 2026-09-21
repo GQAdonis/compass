@@ -7,18 +7,11 @@ use compass_files::BuildGuard;
 use compass_graph::{GodNode, GraphSnapshotBuilder, SurpriseConnection};
 use compass_mcp::CompassMcp;
 use compass_model::code_graph::{
-    BuildMetadata, CallDispatch, CallEdgeDetails, ComponentNodeDetails, ConfigNodeDetails,
-    DatabaseNodeDetails, EdgeDetails, EdgeKind, EdgeRecord, ExtractionStatus, FileNodeDetails,
-    FileRecord, GraphDocument, ImportExportNodeDetails, JobNodeDetails, MappingEdgeDetails,
-    MessagingEdgeDetails, MessagingNodeDetails, NodeDetails, NodeKind, NodeRecord, NodeRole,
-    QueryNodeDetails, ResourceKind, ResourceNodeDetails, RouteEdgeDetails, RouteNodeDetails,
-    RouteStage, RouteStageDetails, ScheduleEdgeDetails, SchemaNodeDetails, SymbolNodeDetails,
+    BuildMetadata, CallDispatch, CallEdgeDetails, EdgeDetails, EdgeKind, EdgeRecord,
+    ExtractionStatus, FileRecord, GraphDocument, NodeKind, NodeRecord,
 };
 use compass_model::identity::{edge_id, file_id};
-use compass_model::provenance::{
-    EvidenceConfidence, EvidenceOrigin, Provenance, ResolutionCandidate, ResolutionState,
-    SourceAnchor,
-};
+use compass_model::provenance::{EvidenceConfidence, EvidenceOrigin, Provenance, SourceAnchor};
 use compass_output::{
     DetectionSummary, ReportOptions, TokenCost, agent_orientation, graph_artifact_identity,
     render_orientation_json,
@@ -244,23 +237,57 @@ fn invoke(server: &CompassMcp, name: &str, arguments: Value) -> Result<Value, Bo
     );
     let envelope = serde_json::from_str::<Value>(&output)
         .map_err(|error| format!("tool {name} returned invalid JSON ({error}): {output}"))?;
-    if envelope["schema"] == "compass.code_context.v1" {
-        return Ok(envelope);
-    }
     assert_eq!(envelope["schema"], "compass.mcp.tool-result/1");
     assert_eq!(envelope["transportTruncation"]["truncated"], false);
     Ok(envelope["result"].clone())
 }
 
-fn golden_result(tool: &str) -> Result<Value, Box<dyn Error>> {
-    let contents = match tool {
-        "search_symbols" => include_str!("fixtures/search_symbols-result.json"),
-        "get_callers" => include_str!("fixtures/get_callers-result.json"),
-        "get_callees" => include_str!("fixtures/get_callees-result.json"),
-        "get_impact" => include_str!("fixtures/get_impact-result.json"),
-        _ => return Err(format!("no golden result for {tool}").into()),
-    };
-    Ok(serde_json::from_str(contents)?)
+/// Return the full transport envelope (`result` plus the optional `agentView`
+/// sibling) instead of only the raw `compass.query/1` payload.
+fn invoke_envelope(
+    server: &CompassMcp,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, Box<dyn Error>> {
+    let output = server.invoke(
+        name,
+        arguments.as_object().cloned().unwrap_or_else(Map::new),
+    );
+    let envelope = serde_json::from_str::<Value>(&output)
+        .map_err(|error| format!("tool {name} returned invalid JSON ({error}): {output}"))?;
+    assert_eq!(envelope["schema"], "compass.mcp.tool-result/1", "{name}");
+    assert_eq!(
+        envelope["transportTruncation"]["truncated"], false,
+        "{name}"
+    );
+    Ok(envelope)
+}
+
+/// Collect the diagnostic codes an agent view surfaces as caveats. The agent
+/// view is the only bounded projection of the raw diagnostics, so the caveat
+/// codes must keep tracking the raw `diagnostics` codes.
+fn caveat_codes(view: &Value) -> Vec<String> {
+    view["caveats"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item["code"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn diagnostic_codes(data: &Value) -> Vec<String> {
+    data["diagnostics"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item["code"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn pre_envelope_golden(tool: &str) -> Result<Value, Box<dyn Error>> {
@@ -280,107 +307,6 @@ fn parallel_callers_golden() -> Result<Value, Box<dyn Error>> {
     ))?)
 }
 
-fn validate_schema(value: &Value, schema: &Value, root: &Value, path: &str) -> Result<(), String> {
-    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
-        let pointer = reference
-            .strip_prefix('#')
-            .ok_or_else(|| format!("{path}: external schema reference is unsupported"))?;
-        let resolved = root
-            .pointer(pointer)
-            .ok_or_else(|| format!("{path}: unresolved schema reference {reference}"))?;
-        return validate_schema(value, resolved, root, path);
-    }
-    if let Some(expected) = schema.get("const")
-        && value != expected
-    {
-        return Err(format!(
-            "{path}: expected constant {expected}, found {value}"
-        ));
-    }
-    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
-        && !allowed.contains(value)
-    {
-        return Err(format!("{path}: value {value} is outside the enum"));
-    }
-    if let Some(alternatives) = schema.get("anyOf").and_then(Value::as_array)
-        && !alternatives
-            .iter()
-            .any(|alternative| validate_schema(value, alternative, root, path).is_ok())
-    {
-        return Err(format!("{path}: no anyOf alternative matched"));
-    }
-    if let Some(alternatives) = schema.get("oneOf").and_then(Value::as_array) {
-        let matches = alternatives
-            .iter()
-            .filter(|alternative| validate_schema(value, alternative, root, path).is_ok())
-            .count();
-        if matches != 1 {
-            return Err(format!("{path}: expected one oneOf match, found {matches}"));
-        }
-    }
-    if let Some(expected) = schema.get("type") {
-        let matches_type = |name: &str| match name {
-            "object" => value.is_object(),
-            "array" => value.is_array(),
-            "string" => value.is_string(),
-            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-            "number" => value.is_number(),
-            "boolean" => value.is_boolean(),
-            "null" => value.is_null(),
-            _ => false,
-        };
-        let valid = expected.as_str().is_some_and(matches_type)
-            || expected
-                .as_array()
-                .is_some_and(|names| names.iter().filter_map(Value::as_str).any(matches_type));
-        if !valid {
-            return Err(format!("{path}: value {value} has the wrong type"));
-        }
-    }
-    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64)
-        && value.as_f64().is_some_and(|number| number < minimum)
-    {
-        return Err(format!("{path}: numeric value is below {minimum}"));
-    }
-    if let Some(minimum) = schema.get("minLength").and_then(Value::as_u64)
-        && value
-            .as_str()
-            .is_some_and(|text| text.len() < minimum as usize)
-    {
-        return Err(format!("{path}: string is shorter than {minimum}"));
-    }
-    if let Some(object) = value.as_object() {
-        let properties = schema.get("properties").and_then(Value::as_object);
-        if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            for name in required.iter().filter_map(Value::as_str) {
-                if !object.contains_key(name) {
-                    return Err(format!("{path}: required property {name} is absent"));
-                }
-            }
-        }
-        if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
-            for name in object.keys() {
-                if !properties.is_some_and(|known| known.contains_key(name)) {
-                    return Err(format!("{path}: unexpected property {name}"));
-                }
-            }
-        }
-        if let Some(properties) = properties {
-            for (name, child_schema) in properties {
-                if let Some(child) = object.get(name) {
-                    validate_schema(child, child_schema, root, &format!("{path}.{name}"))?;
-                }
-            }
-        }
-    }
-    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
-        for (index, item) in values.iter().enumerate() {
-            validate_schema(item, items, root, &format!("{path}[{index}]"))?;
-        }
-    }
-    Ok(())
-}
-
 #[test]
 fn code_query_tools_share_the_bounded_versioned_contract() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
@@ -388,6 +314,9 @@ fn code_query_tools_share_the_bounded_versioned_contract() -> Result<(), Box<dyn
     let server = CompassMcp::new(graph);
     let orientation: Value = serde_json::from_str(&server.read("compass://orientation")?)?;
     assert_eq!(orientation["schema"], "compass.orientation/2");
+    // Bound on the first tool, then required to match for the rest: every tool
+    // must report the same loaded graph.
+    let mut expected_graph_identity: Option<String> = None;
     for (tool, arguments, operation) in [
         ("search_symbols", json!({"query":"Target"}), "search"),
         ("get_callers", json!({"symbol":"Target"}), "callers"),
@@ -404,31 +333,74 @@ fn code_query_tools_share_the_bounded_versioned_contract() -> Result<(), Box<dyn
             "node_trail",
         ),
     ] {
-        let response = invoke(&server, tool, arguments)?;
-        let data = if matches!(
+        let envelope = invoke_envelope(&server, tool, arguments)?;
+        let data = &envelope["result"];
+        // Every typed code query carries the agent-view sibling. Graph identity
+        // now travels on that view instead of a bespoke wrapper schema.
+        let view = &envelope["agentView"];
+        assert_eq!(view["schema"], "compass.query.agent-view/1", "{tool}");
+        assert_eq!(view["identity"]["rawSchema"], "compass.query/1", "{tool}");
+        // Graph identity is the digest of the loaded graph, not the fixture's
+        // build id: assert it is present and stable across every tool rather
+        // than pinning a literal that would drift with the fixture.
+        let graph_identity = view["identity"]["graphIdentity"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{tool}: missing graphIdentity"));
+        assert!(!graph_identity.is_empty(), "{tool}");
+        match &expected_graph_identity {
+            Some(first) => assert_eq!(graph_identity, first, "{tool}"),
+            None => expected_graph_identity = Some(graph_identity.to_owned()),
+        }
+        assert_eq!(
+            view["identity"]["buildGenerationIdentity"], "sha256:test",
+            "{tool}"
+        );
+        assert_eq!(view["sourceTruncated"], false, "{tool}");
+        assert_eq!(view["status"]["sourceExecution"], "complete", "{tool}");
+        assert!(envelope.get("resultType").is_none(), "{tool}");
+        assert!(
+            envelope["semanticResultDigest"]
+                .as_str()
+                .is_some_and(|digest| digest.starts_with("sha256:")),
+            "{tool}"
+        );
+        assert_eq!(
+            envelope["semanticResultDigest"], view["identity"]["sourceResultDigest"],
+            "{tool} digest agreement"
+        );
+        if matches!(
             tool,
             "search_symbols" | "get_callers" | "get_callees" | "get_impact"
         ) {
-            assert_eq!(response["schema"], "compass.code_context.v1", "{tool}");
-            assert_eq!(response["repository"], "sha256:test", "{tool}");
-            assert_eq!(response["generation"], "sha256:test", "{tool}");
-            assert_eq!(response["freshness"]["status"], "unknown", "{tool}");
-            assert_eq!(response["truncation"]["next"], Value::Null, "{tool}");
-            assert!(response.get("resultType").is_none(), "{tool}");
-            assert_eq!(response, golden_result(tool)?, "{tool} golden result");
             assert_eq!(
-                response["data"],
-                pre_envelope_golden(tool)?,
-                "{tool} pre-envelope payload"
+                data,
+                &pre_envelope_golden(tool)?,
+                "{tool} raw query payload"
             );
-            &response["data"]
-        } else {
-            &response
-        };
+        }
         assert_eq!(data["schema"], "compass.query/1", "{tool}");
         assert_eq!(data["operation"], operation, "{tool}");
         assert!(data["limits"]["maxNodes"].as_u64().is_some(), "{tool}");
     }
+
+    let typed_envelope: Value = serde_json::from_str(&server.invoke(
+        "get_callers",
+        Map::from_iter([("symbol".to_owned(), json!("Target"))]),
+    ))?;
+    assert_eq!(
+        typed_envelope["agentView"]["schema"],
+        "compass.query.agent-view/1"
+    );
+    assert_eq!(
+        typed_envelope["agentView"]["status"]["resultState"],
+        "answered"
+    );
+    assert_eq!(typed_envelope["result"]["schema"], "compass.query/1");
+    assert!(
+        typed_envelope["semanticResultDigest"]
+            .as_str()
+            .is_some_and(|digest| digest.starts_with("sha256:"))
+    );
 
     let reverse = invoke(
         &server,
@@ -641,7 +613,7 @@ fn report_resource_is_rendered_from_validated_orientation_and_rejects_missing_or
 }
 
 #[test]
-fn code_query_tool_schemas_are_closed_and_bounded() -> Result<(), Box<dyn Error>> {
+fn code_query_tool_schemas_are_closed_and_bounded() {
     for tool in CompassMcp::tools().into_iter().filter(|tool| {
         matches!(
             tool.name.as_ref(),
@@ -667,335 +639,17 @@ fn code_query_tool_schemas_are_closed_and_bounded() -> Result<(), Box<dyn Error>
                 .and_then(Value::as_u64)
                 .is_some()
         );
-        if matches!(
-            tool.name.as_ref(),
-            "search_symbols" | "get_callers" | "get_callees" | "get_impact"
-        ) {
-            let output = tool.output_schema.as_ref().ok_or("missing output schema")?;
-            assert_eq!(
-                output.get("additionalProperties"),
-                Some(&Value::Bool(false))
-            );
-            assert_eq!(
-                output
-                    .get("properties")
-                    .and_then(Value::as_object)
-                    .and_then(|properties| properties.get("schema"))
-                    .and_then(Value::as_object)
-                    .and_then(|schema| schema.get("const")),
-                Some(&json!("compass.code_context.v1"))
-            );
-            let golden = golden_result(tool.name.as_ref())?;
-            validate_schema(
-                &golden,
-                &Value::Object(output.as_ref().clone()),
-                &Value::Object(output.as_ref().clone()),
-                "$",
-            )?;
-            let mut invalid = golden;
-            invalid["data"]["nodes"] = json!([17]);
-            assert!(
-                validate_schema(
-                    &invalid,
-                    &Value::Object(output.as_ref().clone()),
-                    &Value::Object(output.as_ref().clone()),
-                    "$"
-                )
-                .is_err()
-            );
-
-            let mut detailed = golden_result(tool.name.as_ref())?;
-            detailed["data"]["nodes"][0]["details"] = json!({
-                "type": "symbol",
-                "data": {"signature": "fn()", "modifiers": ["public"]}
-            });
-            if detailed["data"]["edges"]
-                .as_array()
-                .is_some_and(|edges| !edges.is_empty())
-            {
-                detailed["data"]["edges"][0]["details"] = json!({
-                    "type": "call",
-                    "data": {"dispatch": "static", "argumentCount": 0}
-                });
-            }
-            validate_schema(
-                &detailed,
-                &Value::Object(output.as_ref().clone()),
-                &Value::Object(output.as_ref().clone()),
-                "$",
-            )?;
-            for invalid_details in [
-                json!({"type":"unknown","data":{}}),
-                json!({"type":"symbol","data":{"unexpected":true}}),
-            ] {
-                detailed["data"]["nodes"][0]["details"] = invalid_details;
-                assert!(
-                    validate_schema(
-                        &detailed,
-                        &Value::Object(output.as_ref().clone()),
-                        &Value::Object(output.as_ref().clone()),
-                        "$"
-                    )
-                    .is_err()
-                );
-            }
-            detailed["data"]["nodes"][0]["details"] = Value::Null;
-            detailed["data"]["nodes"][0]["kind"] = json!("unknown");
-            assert!(
-                validate_schema(
-                    &detailed,
-                    &Value::Object(output.as_ref().clone()),
-                    &Value::Object(output.as_ref().clone()),
-                    "$"
-                )
-                .is_err()
-            );
-            detailed["data"]["nodes"][0]["kind"] = json!("function");
-            detailed["data"]["nodes"][0]["roles"] = json!(["unknown"]);
-            assert!(
-                validate_schema(
-                    &detailed,
-                    &Value::Object(output.as_ref().clone()),
-                    &Value::Object(output.as_ref().clone()),
-                    "$"
-                )
-                .is_err()
-            );
-            if detailed["data"]["edges"]
-                .as_array()
-                .is_some_and(|edges| !edges.is_empty())
-            {
-                detailed["data"]["nodes"][0]["roles"] = json!([]);
-                for invalid_details in [
-                    json!({"type":"unknown","data":{}}),
-                    json!({"type":"call","data":{"dispatch":"static","unexpected":true}}),
-                ] {
-                    detailed["data"]["edges"][0]["details"] = invalid_details;
-                    assert!(
-                        validate_schema(
-                            &detailed,
-                            &Value::Object(output.as_ref().clone()),
-                            &Value::Object(output.as_ref().clone()),
-                            "$"
-                        )
-                        .is_err()
-                    );
-                }
-                detailed["data"]["edges"][0]["details"] = Value::Null;
-                detailed["data"]["edges"][0]["kind"] = json!("unknown");
-                assert!(
-                    validate_schema(
-                        &detailed,
-                        &Value::Object(output.as_ref().clone()),
-                        &Value::Object(output.as_ref().clone()),
-                        "$"
-                    )
-                    .is_err()
-                );
-            }
-        } else {
-            assert!(tool.output_schema.is_none());
-        }
+        // Code query tools deliberately declare no output schema. They emit the
+        // `compass.mcp.tool-result/1` transport envelope whose `result` is a
+        // `compass.query/1` payload; a declared schema here would have to
+        // restate that envelope and would silently go stale, which is worse
+        // than declaring none.
+        assert!(
+            tool.output_schema.is_none(),
+            "tool {} must not declare an output schema",
+            tool.name
+        );
     }
-    Ok(())
-}
-
-fn complete_node_details(anchor: &SourceAnchor) -> Vec<NodeDetails> {
-    vec![
-        NodeDetails::File(FileNodeDetails {
-            content_digest: "sha256:file".to_owned(),
-            byte_size: 42,
-            generated: true,
-        }),
-        NodeDetails::Symbol(SymbolNodeDetails {
-            signature: Some("fn example(value: usize)".to_owned()),
-            modifiers: vec!["public".to_owned()],
-            overload_discriminator: Some("usize".to_owned()),
-            declaring_type: Some("Fixture".to_owned()),
-            signature_digest: Some("sha256:signature".to_owned()),
-            implementation_digest: Some("sha256:implementation".to_owned()),
-            source_digest: Some("sha256:source".to_owned()),
-        }),
-        NodeDetails::ImportExport(ImportExportNodeDetails {
-            specifier: "crate::fixture".to_owned(),
-            imported_name: Some("Fixture".to_owned()),
-            local_name: Some("LocalFixture".to_owned()),
-            type_only: true,
-        }),
-        NodeDetails::Route(RouteNodeDetails {
-            operation: "GET".to_owned(),
-            path: "/fixture".to_owned(),
-            original_path: Some("/fixture/:id".to_owned()),
-            declaring_scope: "Fixture".to_owned(),
-            resolution: ResolutionState::Ambiguous,
-            middleware_count: 1,
-            stages: vec![RouteStageDetails {
-                stage: RouteStage::Middleware,
-                position: 0,
-                reference: "authenticate".to_owned(),
-                resolution: ResolutionState::Ambiguous,
-                source_anchor: Some(anchor.clone()),
-                target: Some("n:middleware".to_owned()),
-                candidates: vec![ResolutionCandidate {
-                    node_id: "n:middleware".to_owned(),
-                    reason: "fixture".to_owned(),
-                    confidence: EvidenceConfidence::Ambiguous,
-                    score: Some(0.5),
-                    anchor: Some(anchor.clone()),
-                }],
-            }],
-        }),
-        NodeDetails::Component(ComponentNodeDetails {
-            component_type: "view".to_owned(),
-        }),
-        NodeDetails::Resource(ResourceNodeDetails {
-            resource_kind: ResourceKind::Document,
-            uri: Some("https://example.invalid/fixture".to_owned()),
-            media_type: Some("text/plain".to_owned()),
-        }),
-        NodeDetails::Messaging(MessagingNodeDetails {
-            transport: "nats".to_owned(),
-            subject: "fixture.created".to_owned(),
-            declaring_scope: "Fixture".to_owned(),
-        }),
-        NodeDetails::Job(JobNodeDetails {
-            schedule: Some("0 * * * *".to_owned()),
-            queue: Some("fixture".to_owned()),
-        }),
-        NodeDetails::Schema(SchemaNodeDetails {
-            dialect: Some("postgres".to_owned()),
-            logical_database: Some("fixture".to_owned()),
-            namespace: Some("public".to_owned()),
-        }),
-        NodeDetails::Query(QueryNodeDetails {
-            dialect: Some("sql".to_owned()),
-            operation: Some("select".to_owned()),
-            text_digest: Some("sha256:query".to_owned()),
-        }),
-        NodeDetails::Config(ConfigNodeDetails {
-            format: "toml".to_owned(),
-            key_path: "fixture.enabled".to_owned(),
-        }),
-        NodeDetails::Database(DatabaseNodeDetails {
-            logical_database: "fixture".to_owned(),
-            database_schema: Some("public".to_owned()),
-        }),
-    ]
-}
-
-fn complete_edge_details() -> Vec<EdgeDetails> {
-    vec![
-        EdgeDetails::Call(CallEdgeDetails {
-            dispatch: CallDispatch::Virtual,
-            receiver_type: Some("Fixture".to_owned()),
-            argument_count: Some(2),
-        }),
-        EdgeDetails::Route(RouteEdgeDetails {
-            stage: RouteStage::Handler,
-            position: Some(1),
-            operation: Some("POST".to_owned()),
-        }),
-        EdgeDetails::Messaging(MessagingEdgeDetails {
-            transport: "nats".to_owned(),
-            subject: "fixture.created".to_owned(),
-        }),
-        EdgeDetails::Schedule(ScheduleEdgeDetails {
-            expression: Some("0 * * * *".to_owned()),
-        }),
-        EdgeDetails::Mapping(MappingEdgeDetails {
-            mapping_kind: "column".to_owned(),
-        }),
-    ]
-}
-
-#[test]
-fn output_schema_covers_every_graph_enum_and_detail_variant() -> Result<(), Box<dyn Error>> {
-    let tool = CompassMcp::tools()
-        .into_iter()
-        .find(|tool| tool.name == "get_callers")
-        .ok_or("get_callers missing")?;
-    let root = Value::Object(
-        tool.output_schema
-            .as_ref()
-            .ok_or("get_callers output schema missing")?
-            .as_ref()
-            .clone(),
-    );
-    let mut result = golden_result("get_callers")?;
-
-    for kind in NodeKind::ALL {
-        result["data"]["nodes"][0]["kind"] = serde_json::to_value(kind)?;
-        validate_schema(&result, &root, &root, "$")?;
-    }
-    result["data"]["nodes"][0]["kind"] = json!("function");
-    for role in NodeRole::ALL {
-        result["data"]["nodes"][0]["roles"] = json!([serde_json::to_value(role)?]);
-        validate_schema(&result, &root, &root, "$")?;
-    }
-    result["data"]["nodes"][0]["roles"] = json!([]);
-    for kind in EdgeKind::ALL {
-        result["data"]["edges"][0]["kind"] = serde_json::to_value(kind)?;
-        validate_schema(&result, &root, &root, "$")?;
-    }
-    result["data"]["edges"][0]["kind"] = json!("calls");
-
-    let anchor = SourceAnchor {
-        file: "src/lib.rs".to_owned(),
-        start_byte: 0,
-        end_byte: 4,
-        start_line: 1,
-        start_column: 0,
-        end_line: 1,
-        end_column: 4,
-    };
-    for details in complete_node_details(&anchor) {
-        let serialized = serde_json::to_value(details)?;
-        result["data"]["nodes"][0]["details"] = serialized.clone();
-        validate_schema(&result, &root, &root, "$")?;
-
-        let mut missing_data = serialized.clone();
-        missing_data
-            .as_object_mut()
-            .ok_or("serialized node details are not an object")?
-            .remove("data");
-        result["data"]["nodes"][0]["details"] = missing_data;
-        assert!(validate_schema(&result, &root, &root, "$").is_err());
-
-        let mut unknown_field = serialized.clone();
-        unknown_field["data"]["unexpected"] = Value::Bool(true);
-        result["data"]["nodes"][0]["details"] = unknown_field;
-        assert!(validate_schema(&result, &root, &root, "$").is_err());
-
-        let mut unknown_tag = serialized;
-        unknown_tag["type"] = json!("unknown");
-        result["data"]["nodes"][0]["details"] = unknown_tag;
-        assert!(validate_schema(&result, &root, &root, "$").is_err());
-    }
-    result["data"]["nodes"][0]["details"] = Value::Null;
-    for details in complete_edge_details() {
-        let serialized = serde_json::to_value(details)?;
-        result["data"]["edges"][0]["details"] = serialized.clone();
-        validate_schema(&result, &root, &root, "$")?;
-
-        let mut missing_data = serialized.clone();
-        missing_data
-            .as_object_mut()
-            .ok_or("serialized edge details are not an object")?
-            .remove("data");
-        result["data"]["edges"][0]["details"] = missing_data;
-        assert!(validate_schema(&result, &root, &root, "$").is_err());
-
-        let mut unknown_field = serialized.clone();
-        unknown_field["data"]["unexpected"] = Value::Bool(true);
-        result["data"]["edges"][0]["details"] = unknown_field;
-        assert!(validate_schema(&result, &root, &root, "$").is_err());
-
-        let mut unknown_tag = serialized;
-        unknown_tag["type"] = json!("unknown");
-        result["data"]["edges"][0]["details"] = unknown_tag;
-        assert!(validate_schema(&result, &root, &root, "$").is_err());
-    }
-    Ok(())
 }
 
 #[test]
@@ -1003,20 +657,33 @@ fn envelope_preserves_bounds_warnings_and_deterministic_discovery() -> Result<()
     let directory = tempfile::tempdir()?;
     let graph = write_typed_graph(directory.path())?;
     let server = CompassMcp::new(graph);
-    let bounded = invoke(
+    let bounded = invoke_envelope(
         &server,
         "get_impact",
         json!({"symbol":"Target","max_nodes":1}),
     )?;
-    assert_eq!(bounded["data"]["truncated"], true);
-    assert_eq!(bounded["truncation"]["truncated"], true);
-    assert_eq!(bounded["truncation"]["next"], Value::Null);
-    assert_eq!(bounded["warnings"], bounded["data"]["diagnostics"]);
-    assert!(bounded["warnings"].as_array().is_some_and(|items| {
-        items
-            .iter()
-            .any(|item| item["code"] == "bounded_truncation")
-    }));
+    let data = &bounded["result"];
+    let view = &bounded["agentView"];
+    // The raw payload still reports the bound, and the agent view must report
+    // the same truncation rather than presenting a complete-looking answer.
+    assert_eq!(data["truncated"], true);
+    assert_eq!(view["sourceTruncated"], true);
+    assert_eq!(view["status"]["sourceExecution"], "partial");
+    // Every raw diagnostic must survive into the agent view's caveats; the
+    // view is the only bounded projection an agent reads, so a dropped warning
+    // would silently hide a bound.
+    let raw_codes = diagnostic_codes(data);
+    assert!(
+        raw_codes.contains(&"bounded_truncation".to_owned()),
+        "{raw_codes:?}"
+    );
+    let view_codes = caveat_codes(view);
+    for code in &raw_codes {
+        assert!(
+            view_codes.contains(code),
+            "agent view dropped diagnostic {code}: {view_codes:?}"
+        );
+    }
 
     let first = CompassMcp::tools();
     let second = CompassMcp::tools();
@@ -1076,13 +743,17 @@ fn envelope_preserves_bounds_warnings_and_deterministic_discovery() -> Result<()
             .cloned()
             .ok_or("request is not an object")?,
     );
-    assert!(
-        oversized.contains("after MCP envelope encoding"),
-        "{oversized}"
-    );
+    // `max_response_bytes` bounds the delivered envelope, not just the
+    // semantic result: the raw result fits under 1000 bytes here, but the
+    // envelope with its agent view does not. A bound breach is a distinct
+    // failure, never a silently emptied or truncated result.
     assert!(
         oversized.contains("query_response_too_large"),
         "{oversized}"
+    );
+    assert!(
+        oversized.contains("after MCP envelope encoding"),
+        "the breach must name the envelope as the measured subject: {oversized}"
     );
     Ok(())
 }
@@ -1092,19 +763,30 @@ fn envelope_preserves_parallel_edge_occurrences_against_pre_envelope_golden()
 -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let graph = write_parallel_call_graph(directory.path())?;
-    let response = invoke(
+    let envelope = invoke_envelope(
         &CompassMcp::new(graph),
         "get_callers",
         json!({"symbol":"Target"}),
     )?;
-    assert_eq!(response["data"], parallel_callers_golden()?);
-    let edges = response["data"]["edges"]
+    let data = &envelope["result"];
+    assert_eq!(data, &parallel_callers_golden()?);
+    let edges = data["edges"]
         .as_array()
         .ok_or("parallel edge result is not an array")?;
     assert_eq!(edges.len(), 2);
     assert_ne!(edges[0]["id"], edges[1]["id"]);
     assert_ne!(edges[0]["relationshipSite"], edges[1]["relationshipSite"]);
     assert_ne!(edges[0]["evidence"], edges[1]["evidence"]);
+
+    // Both call sites must also survive the agent-view projection as distinct
+    // relationships. Collapsing parallel occurrences would understate how many
+    // places actually call the target.
+    let relationships = envelope["agentView"]["relationships"]
+        .as_array()
+        .ok_or("agent view relationships are not an array")?;
+    assert_eq!(relationships.len(), 2);
+    assert_ne!(relationships[0]["id"], relationships[1]["id"]);
+    assert_ne!(relationships[0]["site"], relationships[1]["site"]);
     Ok(())
 }
 
@@ -1124,26 +806,42 @@ fn envelope_preserves_ambiguity_without_inventing_a_target() -> Result<(), Box<d
     graph.nodes.push(duplicate);
     fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
 
-    let response = invoke(
+    let envelope = invoke_envelope(
         &CompassMcp::new(graph_path),
         "get_callers",
         json!({"symbol":"Target"}),
     )?;
+    let data = &envelope["result"];
+    let view = &envelope["agentView"];
+    assert!(data["nodes"].as_array().is_some_and(Vec::is_empty));
+    assert!(data["edges"].as_array().is_some_and(Vec::is_empty));
+
+    // The ambiguity must be reported, not resolved by picking a candidate.
+    let raw_codes = diagnostic_codes(data);
     assert!(
-        response["data"]["nodes"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
+        raw_codes.contains(&"ambiguous_match".to_owned()),
+        "{raw_codes:?}"
+    );
+    let view_codes = caveat_codes(view);
+    for code in &raw_codes {
+        assert!(
+            view_codes.contains(code),
+            "agent view dropped diagnostic {code}: {view_codes:?}"
+        );
+    }
+    // The agent view must not invent a target either: it reports the ambiguity
+    // as its match state and offers no primary result or relationship.
+    assert_eq!(view["status"]["matchState"], "ambiguous");
+    assert_eq!(view["status"]["resultState"], "needs_resolution");
+    assert!(
+        view["primaryResults"].as_array().is_some_and(Vec::is_empty),
+        "{}",
+        view["primaryResults"]
     );
     assert!(
-        response["data"]["edges"]
-            .as_array()
-            .is_some_and(Vec::is_empty)
-    );
-    assert_eq!(response["warnings"], response["data"]["diagnostics"]);
-    assert!(
-        response["warnings"]
-            .as_array()
-            .is_some_and(|items| { items.iter().any(|item| item["code"] == "ambiguous_match") })
+        view["relationships"].as_array().is_some_and(Vec::is_empty),
+        "{}",
+        view["relationships"]
     );
     Ok(())
 }
@@ -1292,7 +990,21 @@ fn typed_store_tools_do_not_load_the_compatibility_json_graph() -> Result<(), Bo
         "search_symbols",
         Map::from_iter([("query".to_owned(), json!("Target"))]),
     ))?;
-    assert_eq!(search["data"]["operation"], "search");
+    // The typed store answered without the compatibility JSON graph, which was
+    // overwritten with garbage above.
+    assert_eq!(search["schema"], "compass.mcp.tool-result/1");
+    assert_eq!(search["result"]["schema"], "compass.query/1");
+    assert_eq!(search["result"]["operation"], "search");
+    assert_eq!(search["agentView"]["schema"], "compass.query.agent-view/1");
+    let search_response: compass_model::query_contract::CodeQueryResponse =
+        serde_json::from_value(search["result"].clone())?;
+    assert_eq!(
+        search["semanticResultDigest"],
+        format!(
+            "sha256:{}",
+            compass_query::code_query_response_digest(&search_response)?
+        )
+    );
     let discovery: Value = serde_json::from_str(&server.invoke(
         "query_graph",
         Map::from_iter([("question".to_owned(), json!("where is Target"))]),
@@ -1348,19 +1060,35 @@ async fn mcp_code_queries_publish_structured_content_and_protocol_errors()
             .as_ref()
             .and_then(|value| value.get("schema"))
             .and_then(Value::as_str),
-        Some("compass.code_context.v1")
+        Some("compass.mcp.tool-result/1")
     );
     assert_eq!(response.result_type, Some(ResultType::COMPLETE));
     assert_eq!(
         response
             .structured_content
             .as_ref()
-            .and_then(|value| value.get("data"))
+            .and_then(|value| value.get("result"))
             .and_then(|value| value.get("schema"))
             .and_then(Value::as_str),
         Some("compass.query/1")
     );
     assert!(!response.content.is_empty());
+    let text = response
+        .content
+        .iter()
+        .find_map(|content| content.as_text().map(|text| text.text.clone()))
+        .ok_or("missing MCP text content")?;
+    assert!(text.starts_with("RESULT\n"));
+    assert!(text.contains("ANSWER\n"));
+    let structured = response
+        .structured_content
+        .as_ref()
+        .ok_or("missing structured content")?;
+    assert_eq!(
+        structured["agentView"]["schema"],
+        "compass.query.agent-view/1"
+    );
+    assert_eq!(structured["result"]["schema"], "compass.query/1");
     assert!(
         client
             .call_tool(CallToolRequestParams::new("search_symbols"))
@@ -1422,9 +1150,22 @@ fn mcp_typed_tools_and_task_context_share_the_generation_pinned_surreal_engine()
         ("get_node", json!({"source": "caller", "target": "callee"})),
     ];
     for (name, arguments) in cases {
-        let result = invoke(&server, name, arguments)?;
-        assert_eq!(result["schema"], "compass.code_context.v1", "tool: {name}");
-        assert_eq!(result["data"]["schema"], "compass.query/1", "tool: {name}");
+        // The Surreal backend must publish exactly the same envelope as the
+        // SQLite-backed path: a `compass.query/1` result plus the agent view.
+        let envelope = invoke_envelope(&server, name, arguments)?;
+        assert_eq!(
+            envelope["result"]["schema"], "compass.query/1",
+            "tool: {name}"
+        );
+        assert_eq!(
+            envelope["agentView"]["schema"], "compass.query.agent-view/1",
+            "tool: {name}"
+        );
+        assert_eq!(
+            envelope["semanticResultDigest"],
+            envelope["agentView"]["identity"]["sourceResultDigest"],
+            "tool: {name}"
+        );
     }
 
     let context = invoke(

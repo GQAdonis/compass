@@ -51,6 +51,27 @@ pub(super) async fn client(
         .map_err(|error| database_error("embedded_connect_worker", error))?
 }
 
+/// Render a canonical store directory as a `scheme://` address component.
+///
+/// The SDK splits an address on its first `://`, then treats the remainder as a
+/// filesystem path. Two properties of Windows paths have to survive that split.
+/// `std::fs::canonicalize` returns a verbatim `\\?\C:\...` prefix, which must be
+/// preserved so long paths keep working; and a path that itself contains `://`
+/// would move the split point and silently retarget the store. Reject the
+/// latter instead of connecting somewhere unintended, and keep the platform's
+/// own rendering of the prefix otherwise.
+fn endpoint_path(path: &std::path::Path) -> Result<String, ProjectionError> {
+    let rendered = path.to_str().ok_or_else(|| {
+        ProjectionError::InvalidReference("embedded storage path must be UTF-8".into())
+    })?;
+    if rendered.contains("://") {
+        return Err(ProjectionError::InvalidReference(
+            "embedded storage path must not contain \"://\"".into(),
+        ));
+    }
+    Ok(rendered.to_owned())
+}
+
 async fn connect(
     engine: SurrealEngine,
     path: &str,
@@ -78,9 +99,7 @@ async fn connect(
             limit: MAX_STORES as u64,
         });
     }
-    let store_path = path.to_str().ok_or_else(|| {
-        ProjectionError::InvalidReference("embedded storage path must be UTF-8".into())
-    })?;
+    let store_path = endpoint_path(&path)?;
     let connection = match engine {
         #[cfg(feature = "surrealkv")]
         SurrealEngine::SurrealKv => {

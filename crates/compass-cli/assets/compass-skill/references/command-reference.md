@@ -11,7 +11,8 @@ whether a Compass capability is covered by the installed skill. Run
 - `compass ask`: route a direct natural-language structural question to a
   bounded, deterministic typed query operation.
 - `compass search`: find typed symbols by name using the local FTS index.
-- `compass callers`: list direct typed call-graph predecessors.
+- `compass callers`: list direct typed incoming usages, including calls,
+  routes, references, imports, exports, and aliases.
 - `compass callees`: list direct typed call-graph successors.
 - `compass impact`: compute bounded transitive change impact, excluding
   heuristic evidence unless explicitly requested.

@@ -30,15 +30,13 @@ use compass_graph::{
     BuildEvidence, CommunityExecution, CommunityLimits, CommunityProfile, CommunityQualityArtifact,
     CommunityRequest, CommunityResult, EntityTiebreaker, GRAPH_DIAGNOSTICS_EXTENSION,
     GRAPH_JSON_DELTA_MAX_SOURCE_BYTES, GRAPH_SNAPSHOT_MAX_OBJECTS,
-    GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1, GraphSnapshotBuilder, GraphSnapshotGcStats,
-    IncrementalClusterLimits, InferenceLevel, InventoryEvidence, PublicationOmissions,
-    ResolutionPolicy, SnapshotError, SnapshotSelector, SourceDigest, apply_inference_level,
-    build_communities,
+    GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1, GraphSnapshotBuilder, GraphSnapshotGcStats, InferenceLevel,
+    InventoryEvidence, PublicationOmissions, ResolutionPolicy, SnapshotSelector, SourceDigest,
+    apply_inference_level, build_communities,
     build_owned_with_tiebreaker_at_inference as build_document, canonical_edge_kind,
     canonical_raw_edge_sites, deduped_node_count, extraction_from_v1,
     garbage_collect_graph_snapshots, graph_insights_with_blind_spots, graph_snapshot_needs_gc,
-    max_canonical_graph_bytes,
-    normalize_document_v1_with_evidence_best_effort_owned_at_inference,
+    max_canonical_graph_bytes, normalize_document_v1_with_evidence_best_effort_owned_at_inference,
     normalize_document_v1_with_inventory_and_source_digests_best_effort_owned_at_inference,
     normalize_document_v1_with_inventory_best_effort_at_inference, score_communities,
     write_canonical_graph_json_bounded, write_fact_neutral_graph_json_delta_prevalidated_bounded,
@@ -512,6 +510,34 @@ fn write_ast_fact_digest_state(
         return Ok(());
     }
     write_json_atomic(output_dir.join(AST_FACT_DIGESTS_FILE), state, false).map_err(CoreError::from)
+}
+
+/// Losslessly encode an OS string for hashing.
+///
+/// Paths are not guaranteed to be UTF-8 on either platform, and a lossy
+/// conversion collapses distinct paths onto the same replacement characters.
+/// Unix exposes the raw bytes; Windows exposes UTF-16 code units, encoded here
+/// little-endian so one platform always produces one stable encoding.
+#[cfg(any(
+    feature = "surreal-surrealkv",
+    feature = "surreal-rocksdb",
+    feature = "surreal-remote"
+))]
+fn os_str_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        value.as_bytes().to_vec()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        value.encode_wide().flat_map(u16::to_le_bytes).collect()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        value.to_string_lossy().into_owned().into_bytes()
+    }
 }
 
 fn relative_fact_path(path: &Path, root: &Path) -> String {
@@ -4850,7 +4876,7 @@ fn ensure_surreal_projection(options: &BuildOptions, output_dir: &Path) -> Resul
         Ok::<(), CoreError>(())
     })?;
     write_bytes_atomic(
-        &output_dir.join(SURREAL_REF_FILE_NAME),
+        output_dir.join(SURREAL_REF_FILE_NAME),
         &reference.encode().map_err(|error| {
             CoreError::InvalidBuildState(format!("encode surreal.ref: {error}"))
         })?,
@@ -4880,9 +4906,12 @@ fn surreal_storage_binding(
         path: options.root.clone(),
         source,
     })?;
+    // Hash the path losslessly. `to_string_lossy` maps every unrepresentable
+    // sequence to U+FFFD, so two distinct roots could collide onto one
+    // repository id and share a projection.
     let repository_id = format!(
         "sha256:{:x}",
-        Sha256::digest(root.to_string_lossy().as_bytes())
+        Sha256::digest(os_str_bytes(root.as_os_str()))
     );
     let output_name = std::env::var("COMPASS_OUT").unwrap_or_else(|_| "compass-out".to_owned());
     let output_root = options

@@ -1,5 +1,7 @@
 //! Native graph search, traversal, explanation, and impact analysis.
 
+use sha2::Digest as _;
+
 mod affected;
 mod benchmark;
 mod bm25;
@@ -46,9 +48,10 @@ pub use cql::{
     QueryErrorKind, QueryLimits, QueryProfile, QueryRequest, QueryResult, execute,
 };
 pub use discovery_text::{
-    DISCOVERY_TEXT_PAGE_VERSION, DiscoveryTextPage, DiscoveryTextPageError,
-    DiscoveryTextPageOptions, discovery_request_digest, discovery_response_digest,
-    discovery_result_envelope, render_discovery_text_page,
+    DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET, DISCOVERY_TEXT_PAGE_VERSION, DiscoveryTextPage,
+    DiscoveryTextPageError, DiscoveryTextPageOptions, discovery_request_digest,
+    discovery_response_digest, discovery_result_envelope, render_discovery_text_page,
+    render_discovery_text_page_with_prefix,
 };
 pub use graph_engine::{
     DirectGraphEngine, EffectiveGraphEngine, GraphEngine, JsonGraphEngine, StoreGraphEngine,
@@ -108,16 +111,36 @@ pub use telemetry::{
 };
 pub use text::{normalize_context_filters, query_terms, sanitize_label, search_tokens};
 pub use traversal::{
-    DEFAULT_TEXT_TOKEN_BUDGET, ProfiledTextPageOptions, TextPageOptions, TextPaginationError,
-    TraversalMode, query_graph_text, query_graph_text_page, query_graph_text_page_with_profile,
-    render_explanation, render_explanation_page, render_shortest_path,
+    DEFAULT_PATH_DEPTH_LIMIT, DEFAULT_TEXT_TOKEN_BUDGET, ProfiledTextPageOptions, TextPageOptions,
+    TextPaginationError, TraversalMode, query_graph_text, query_graph_text_page,
+    query_graph_text_page_with_profile, render_explanation, render_explanation_page,
+    render_shortest_path, render_shortest_path_with_limit,
 };
+
+/// Return the canonical semantic-result digest for a typed code query.
+///
+/// The digest deliberately lives beside the query contract rather than in a
+/// presentation layer. Equivalent responses with different collection order
+/// therefore bind to one source result, while any semantic field retained by
+/// `CodeQueryResponse` changes the digest.
+pub fn code_query_response_digest(
+    response: &compass_model::query_contract::CodeQueryResponse,
+) -> Result<String, serde_json::Error> {
+    let mut canonical = response.clone();
+    canonical.sort_stable();
+    let bytes = serde_json::to_vec(&canonical)?;
+    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
+}
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::error::Error;
 
+    use compass_model::query_contract::{
+        CodeQueryLimits, CodeQueryOperation, CodeQueryResponse, QueryDiagnostic,
+        QueryDiagnosticCode, SearchHit,
+    };
     use compass_model::{Graph, GraphDocument};
 
     use super::*;
@@ -125,6 +148,52 @@ mod tests {
     fn load(raw: &str) -> Result<Graph, Box<dyn Error>> {
         let document = serde_json::from_str::<GraphDocument>(raw)?;
         Ok(Graph::from_document(document)?)
+    }
+
+    #[test]
+    fn code_query_response_digest_is_order_independent_but_semantic_sensitive()
+    -> Result<(), Box<dyn Error>> {
+        let mut left =
+            CodeQueryResponse::empty(CodeQueryOperation::Search, CodeQueryLimits::default());
+        left.results = vec![
+            SearchHit {
+                node_id: "node:b".to_owned(),
+                score: 0.4,
+                matched_fields: vec!["name".to_owned()],
+            },
+            SearchHit {
+                node_id: "node:a".to_owned(),
+                score: 0.9,
+                matched_fields: vec!["qualified_name".to_owned()],
+            },
+        ];
+        left.diagnostics.push(QueryDiagnostic {
+            code: QueryDiagnosticCode::BoundedTruncation,
+            message: "bounded".to_owned(),
+            node_id: None,
+            path: None,
+        });
+        let mut right = left.clone();
+        right.results.reverse();
+        right.diagnostics.reverse();
+        assert_eq!(
+            code_query_response_digest(&left)?,
+            code_query_response_digest(&right)?
+        );
+
+        let mut changed = right.clone();
+        changed.truncated = true;
+        assert_ne!(
+            code_query_response_digest(&left)?,
+            code_query_response_digest(&changed)?
+        );
+        changed.truncated = left.truncated;
+        changed.limits.max_nodes = left.limits.max_nodes.saturating_add(1);
+        assert_ne!(
+            code_query_response_digest(&left)?,
+            code_query_response_digest(&changed)?
+        );
+        Ok(())
     }
 
     #[test]
@@ -453,6 +522,64 @@ mod tests {
         );
         assert!(
             reverse.contains("validateSanitySession() <--calls [EXTRACTED]-- createPatchHandler()")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shortest_path_prefers_strong_evidence_and_reports_a_shorter_weak_route()
+    -> Result<(), Box<dyn Error>> {
+        let graph = load(
+            r#"{
+                "directed": true, "multigraph": false, "graph": {},
+                "nodes": [
+                    {"id":"source","label":"Source"},
+                    {"id":"strong-one","label":"StrongOne"},
+                    {"id":"strong-two","label":"StrongTwo"},
+                    {"id":"target","label":"Target"},
+                    {"id":"weak","label":"WeakShortcut"}
+                ],
+                "links": [
+                    {"source":"source","target":"strong-one","relation":"calls","confidence":"EXTRACTED"},
+                    {"source":"strong-one","target":"strong-two","relation":"contains","confidence":"EXTRACTED"},
+                    {"source":"strong-two","target":"target","relation":"depends_on","confidence":"EXTRACTED"},
+                    {"source":"source","target":"weak","relation":"references","confidence":"INFERRED"},
+                    {"source":"weak","target":"target","relation":"documents","confidence":"INFERRED"}
+                ]
+            }"#,
+        )?;
+
+        let output = render_shortest_path(&graph, "source", "target")?;
+        assert!(output.contains("Target resolved: Target [id=target]"));
+        assert!(output.contains("Best path (weighted, 3 hops, weight 3)"));
+        assert!(output.contains("Source --calls [EXTRACTED]--> StrongOne"));
+        assert!(output.contains("StrongTwo --depends_on [EXTRACTED]--> Target"));
+        assert!(output.contains("shorter (2-hop) but weaker path also exists (weight 8)"));
+        assert!(output.contains("references"));
+        assert!(output.contains("documents"));
+        Ok(())
+    }
+
+    #[test]
+    fn shortest_path_requires_exact_endpoints_and_reports_unreachable_targets()
+    -> Result<(), Box<dyn Error>> {
+        let graph = load(
+            r#"{
+                "directed": true, "multigraph": false, "graph": {},
+                "nodes": [
+                    {"id":"source","label":"Source"},
+                    {"id":"source-helper","label":"SourceHelper"},
+                    {"id":"target","label":"Target"}
+                ],
+                "links": []
+            }"#,
+        )?;
+
+        let missing = render_shortest_path(&graph, "Sour", "Target");
+        assert!(matches!(missing, Err(message) if message.contains("NO EXACT MATCH")));
+        assert!(
+            render_shortest_path(&graph, "Source", "Target")?
+                .contains("NO PATH FOUND to resolved target")
         );
         Ok(())
     }
