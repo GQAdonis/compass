@@ -322,98 +322,12 @@ pub(crate) fn resolve_comparable_pair(
             "revision {new_commit} is not materialized; history diff is read-only and will not build it. Run `compass history build {new_commit} --code-only` first"
         ));
     }
-    let (history, old, new) = match (old, new) {
-        (Some(old), Some(new)) if required_fingerprint.is_some() => (
-            existing.ok_or_else(|| "history store disappeared".to_owned())?,
-            old,
-            new,
-        ),
-        (Some(old), Some(new)) => {
-            let old_options =
-                HistoryBuildOptions::from_rebuild_profile(old.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            let new_options =
-                HistoryBuildOptions::from_rebuild_profile(new.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            if old_options.profile() == new_options.profile() {
-                let (_, old) = resolve_or_materialize_matching_profile(
-                    repository,
-                    old_commit,
-                    &old_options,
-                    false,
-                    false,
-                )?;
-                let (history, new) = resolve_or_materialize_matching_profile(
-                    repository,
-                    new_commit,
-                    &new_options,
-                    false,
-                    false,
-                )?;
-                (history, old, new)
-            } else {
-                return Err(format!(
-                    "realizations retain different user-selected build options after current-engine reconstruction\n\nOLD {} ({}) profile: {}\nNEW {} ({}) profile: {}\n\nBuild a comparable realization:\n  compass history build {} --profile-from {}",
-                    old.version.git_commit,
-                    old.id,
-                    old.version.profile_digest,
-                    new.version.git_commit,
-                    new.id,
-                    new.version.profile_digest,
-                    new.version.git_commit,
-                    old.version.git_commit,
-                ));
-            }
-        }
-        (Some(old), None) => {
-            let options =
-                HistoryBuildOptions::from_rebuild_profile(old.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            let old = if old.version.build_profile == options.profile() {
-                old
-            } else {
-                resolve_or_materialize_matching_profile(
-                    repository, old_commit, &options, true, false,
-                )?
-                .1
-            };
-            let (history, new) = resolve_or_materialize_matching_profile(
-                repository, new_commit, &options, false, false,
-            )?;
-            (history, old, new)
-        }
-        (None, Some(new)) => {
-            let options =
-                HistoryBuildOptions::from_rebuild_profile(new.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            let new = if new.version.build_profile == options.profile() {
-                new
-            } else {
-                resolve_or_materialize_matching_profile(
-                    repository, new_commit, &options, true, false,
-                )?
-                .1
-            };
-            let (history, old) = resolve_or_materialize_matching_profile(
-                repository, old_commit, &options, false, false,
-            )?;
-            (history, old, new)
-        }
-        (None, None) => {
-            let options = configured_build_options(repository)?;
-            let (_, old) = resolve_or_materialize_matching_profile(
-                repository,
-                old_commit.clone(),
-                &options,
-                false,
-                false,
-            )?;
-            let (history, new) = resolve_or_materialize_matching_profile(
-                repository, new_commit, &options, false, false,
-            )?;
-            (history, old, new)
-        }
-    };
+    // Comparison is a read path. Profile reconstruction under a newer binary
+    // can differ from the published profile, so even an apparently cached
+    // pair must never pass through the materialization helper here.
+    let history = existing.ok_or_else(|| "history store disappeared".to_owned())?;
+    let old = old.ok_or_else(|| "old realization disappeared".to_owned())?;
+    let new = new.ok_or_else(|| "new realization disappeared".to_owned())?;
     let old_engine = engine_compatibility_digest(&old.version.build_profile)?;
     let new_engine = engine_compatibility_digest(&new.version.build_profile)?;
     if old_engine != new_engine {

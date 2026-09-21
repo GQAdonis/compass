@@ -420,8 +420,14 @@ existing discovery entry ledger and v2 cursor remain unchanged.
 bounded `nextActions` as argv arrays or JSON argument objects; clients should
 use those values instead of reconstructing shell commands from result text.
 
-`callers` returns direct incoming usage evidence: calls, routes, references,
+`callers` returns incoming relationship evidence: calls, routes, references,
 imports, exports, and aliases. `callees` remains the direct outgoing call view.
+When an import or reference ends at a containing module rather than the
+selected declaration, `callers`, `impact`, and `affected` retain the real
+owner-targeted edge and emit an `incomplete_coverage` precision warning.
+Such an edge proves a module-level dependency, not a direct symbol call;
+impact paths include the containment hop instead of silently jumping from
+the selected symbol to the importer.
 
 ### `architecture`
 

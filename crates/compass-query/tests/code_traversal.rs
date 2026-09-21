@@ -145,6 +145,54 @@ fn callers_recover_source_backed_importers_that_target_a_tsconfig_alias_owner()
     contains.id.clone_from(&id);
     contains.key = id;
     graph.links.push(contains);
+    // A different module can share a display name or search term. Its import
+    // must not become evidence for the queried declaration.
+    let mut other_module = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "n:list-module")
+        .cloned()
+        .ok_or("missing module")?;
+    other_module.id = "n:other-module".to_owned();
+    other_module.qualified_name = "@other/pkg/index".to_owned();
+    if let Some(source) = other_module.source.as_mut() {
+        source.file = "packages/other/src/index.ts".to_owned();
+    }
+    graph.nodes.push(other_module);
+    let mut other_file = graph
+        .graph
+        .files
+        .iter()
+        .find(|file| file.path == "packages/pkg/src/index.ts")
+        .cloned()
+        .ok_or("missing module file")?;
+    other_file.id = file_id("packages/other/src/index.ts");
+    other_file.path = "packages/other/src/index.ts".to_owned();
+    graph.graph.files.push(other_file);
+    let mut unrelated_importer = graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "n:caller")
+        .cloned()
+        .ok_or("missing source template")?;
+    unrelated_importer.id = "n:unrelated-importer".to_owned();
+    unrelated_importer.name = "unrelated_importer".to_owned();
+    unrelated_importer.qualified_name = "Other.unrelated_importer".to_owned();
+    graph.nodes.push(unrelated_importer);
+    let mut unrelated_edge = edge_template.clone();
+    unrelated_edge.source = "n:unrelated-importer".to_owned();
+    unrelated_edge.target = "n:other-module".to_owned();
+    unrelated_edge.kind = EdgeKind::Imports;
+    let id = edge_id(
+        &unrelated_edge.source,
+        unrelated_edge.kind,
+        &unrelated_edge.target,
+        unrelated_edge.relationship_site.as_ref(),
+        None,
+    );
+    unrelated_edge.id.clone_from(&id);
+    unrelated_edge.key = id;
+    graph.links.push(unrelated_edge);
     fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
 
     let engine = open(&graph_path, None, &directory.path().join("cache"))?;
@@ -160,6 +208,12 @@ fn callers_recover_source_backed_importers_that_target_a_tsconfig_alias_owner()
         .count();
     assert_eq!(importer_count, 8);
     assert!(
+        !response
+            .nodes
+            .iter()
+            .any(|node| node.id == "n:unrelated-importer")
+    );
+    assert!(
         response
             .edges
             .iter()
@@ -171,6 +225,10 @@ fn callers_recover_source_backed_importers_that_target_a_tsconfig_alias_owner()
             .iter()
             .any(|diagnostic| diagnostic.code == QueryDiagnosticCode::RelationshipInconsistency)
     );
+    assert!(response.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == QueryDiagnosticCode::IncompleteCoverage
+            && diagnostic.message.contains("owner-level dependency")
+    }));
 
     let bounded = engine.callers(CallRequest {
         symbol: "UserService.list".to_owned(),
@@ -183,7 +241,9 @@ fn callers_recover_source_backed_importers_that_target_a_tsconfig_alias_owner()
     assert!(bounded.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == QueryDiagnosticCode::RelationshipInconsistency
             && diagnostic.message.contains("search found ")
-            && diagnostic.message.contains("importers for n:list")
+            && diagnostic
+                .message
+                .contains("source-backed usages for n:list")
     }));
 
     let affected = engine.affected(
@@ -202,6 +262,29 @@ fn callers_recover_source_backed_importers_that_target_a_tsconfig_alias_owner()
             .count(),
         8
     );
+    assert!(
+        !affected
+            .nodes
+            .iter()
+            .any(|node| node.id == "n:unrelated-importer")
+    );
+    assert!(!affected.paths.is_empty());
+    assert!(affected.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == QueryDiagnosticCode::IncompleteCoverage
+            && diagnostic.message.contains("owner-level dependency")
+    }));
+    for path in &affected.paths {
+        assert_eq!(path.node_ids.len(), path.edge_ids.len() + 1);
+        for (pair, edge_id) in path.node_ids.windows(2).zip(&path.edge_ids) {
+            let edge = affected
+                .edges
+                .iter()
+                .find(|edge| &edge.id == edge_id)
+                .ok_or("missing path edge")?;
+            assert_eq!(edge.target, pair[0]);
+            assert_eq!(edge.source, pair[1]);
+        }
+    }
     Ok(())
 }
 

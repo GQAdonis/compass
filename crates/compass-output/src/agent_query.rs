@@ -1563,7 +1563,7 @@ fn agent_caveat(diagnostic: &QueryDiagnostic) -> AgentCaveat {
         QueryDiagnosticCode::RelationshipInconsistency => (
             AgentSeverity::Warning,
             format!(
-                "Relationship traversal disagrees with indexed importer evidence. {}",
+                "Relationship traversal disagrees with indexed source-backed usage evidence. {}",
                 diagnostic.message
             ),
         ),
@@ -1591,7 +1591,7 @@ fn agent_caveat(diagnostic: &QueryDiagnostic) -> AgentCaveat {
         QueryDiagnosticCode::IncompleteCoverage => (
             AgentSeverity::Warning,
             format!(
-                "Absence is not proof that the relationship does not exist. {}",
+                "Coverage or precision is limited; verify before drawing a conclusion. {}",
                 diagnostic.message
             ),
         ),

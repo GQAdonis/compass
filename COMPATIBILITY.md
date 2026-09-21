@@ -118,6 +118,11 @@ View must reject unknown major versions, enforce the documented bounds, and
 distinguish `no_match`, `needs_resolution`, `no_path`, source truncation, and
 projection truncation from a positive complete answer.
 
+The additive `relationship_inconsistency` diagnostic extends the strict
+`compass.query/1` diagnostic enum and changes its contract fingerprint. Strict
+TypeScript consumers and the checked-in manifest must accept the new value
+before interpreting a relationship result that carries it.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,
