@@ -14,6 +14,18 @@
   formats, visible coverage witnesses, a 64-candidate query default, and
   read-only historical queries with state-health audit events.
 
+## 0.3.28 - 2026-09-19
+
+- Improve agent-facing query correctness and recovery across callers, impact,
+  affected, CompassQL ordering, historical reads, directed trail guidance, and
+  bounded full-report sections. Incoming usage results now retain
+  source-backed alias, import, export, route, and reference evidence.
+
+- Keep query answers deterministic and actionable: live node degree is
+  available to CompassQL, ordering may use pre-projection bindings, configured
+  checkout filters are neutralized for historical reads, and direction-only
+  trail misses recommend the matching `compass path` command.
+
 ## 0.3.27 - 2026-09-17
 
 - Improve Rust call-graph recall for source-proven `Arc`, `Rc`, and `Box`
