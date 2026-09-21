@@ -134,6 +134,52 @@ impl SurrealProjection {
         Ok(rows)
     }
 
+    /// Count the relations incident to one node.
+    ///
+    /// `cql_adjacent_at` additionally resolves each neighbor's ordinal and
+    /// fails closed when one is absent from the projection, which is correct
+    /// for traversal but wrong for a degree: degree counts incident edges
+    /// regardless of whether the far endpoint is retained by the current
+    /// selection. Count the relation rows themselves and stop there.
+    pub async fn cql_degree_at(
+        &self,
+        reference: &SurrealRef,
+        node: usize,
+        direction: CqlDirection,
+        limit: usize,
+    ) -> Result<usize, ProjectionError> {
+        let current = self.cql_node_at(reference, node).await?;
+        let limit = limit.min(self.limits.max_relations());
+        let condition = match direction {
+            CqlDirection::Incoming => "targetNodeId = $node",
+            CqlDirection::Outgoing => "sourceNodeId = $node",
+            CqlDirection::Both => "(sourceNodeId = $node OR targetNodeId = $node)",
+        };
+        let mut total = 0_usize;
+        for family in RelationFamily::ALL {
+            let remaining = limit.saturating_sub(total);
+            let statement = format!(
+                "SELECT VALUE ordinal FROM type::table($table) WHERE repositoryId = $repository AND generationId = $generation AND {condition} ORDER BY ordinal LIMIT $limit"
+            );
+            let mut response = self
+                .database
+                .query(statement)
+                .bind(("table", family.as_str()))
+                .bind(("repository", reference.repository_id.as_str()))
+                .bind(("generation", reference.generation_id.as_str()))
+                .bind(("node", current.compass_node_id.as_str()))
+                .bind(("limit", plus_one(remaining)?))
+                .await
+                .map_err(|error| database_error("cql_degree", error))?;
+            let rows: Vec<usize> = response
+                .take(0)
+                .map_err(|error| database_error("cql_degree", error))?;
+            total = total.saturating_add(rows.len());
+            enforce_rows(total, limit)?;
+        }
+        Ok(total)
+    }
+
     pub async fn cql_adjacent_at(
         &self,
         reference: &SurrealRef,

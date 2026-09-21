@@ -272,23 +272,21 @@ impl QueryGraph for SurrealCqlGraph {
 
     fn degree(&self, node: NodeIndex) -> Result<usize, QueryError> {
         // Match `Graph::degree`: a directed graph counts both directions, an
-        // undirected one counts each incident edge once. The bounded adjacency
-        // selector already fails closed with a limit error rather than
-        // silently reporting a short count.
+        // undirected one counts each incident edge once. Counting relation rows
+        // rather than resolving adjacency is what makes this correct: degree
+        // counts incident edges whether or not the far endpoint is retained by
+        // the current selection. The bounded read still fails closed with a
+        // limit error rather than reporting a short count.
         let direction = if self.directed {
             CqlDirection::Both
         } else {
             CqlDirection::Outgoing
         };
         let max_rows = ProjectionLimits::default().max_relations();
-        let adjacent: Vec<(EdgeIndex, NodeIndex)> = self.read(self.projection.cql_adjacent_at(
-            &self.reference,
-            node,
-            direction,
-            &[],
-            max_rows,
-        ))?;
-        Ok(adjacent.len())
+        self.read(
+            self.projection
+                .cql_degree_at(&self.reference, node, direction, max_rows),
+        )
     }
 }
 

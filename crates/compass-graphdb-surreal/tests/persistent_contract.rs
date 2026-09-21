@@ -239,7 +239,7 @@ async fn exercise(backend: Backend) -> Result<(), Box<dyn std::error::Error>> {
             "engine" => {
                 wrong.engine = match wrong.engine {
                     SurrealEngine::SurrealKv => SurrealEngine::RocksDb,
-                    SurrealEngine::RocksDb => SurrealEngine::SurrealKv,
+                    _ => SurrealEngine::SurrealKv,
                 };
             }
             "location" => wrong.location = temporary.path().to_string_lossy().into_owned(),
@@ -521,15 +521,14 @@ fn embedded_sessions_survive_replacement_of_publication_runtimes()
     Ok(())
 }
 
-/// A store path containing `://` must fail closed.
+/// A store directory whose name contains a colon opens the directory it names.
 ///
-/// Embedded addresses are rendered as `scheme://path`, and the SDK splits on the
-/// first `://`. A path carrying its own `://` would move that split point and
-/// open a different datastore than the caller named, so reject it instead of
-/// silently retargeting the store. Windows paths reach this same code with a
-/// verbatim `\\?\C:\...` prefix, which must keep working.
+/// Embedded addresses are built as `scheme://` plus the path, so the SDK's
+/// split lands on that prefix and any colon inside the path stays part of the
+/// path. This is what carries a Windows drive letter (`C:\\...`) through
+/// unchanged, so assert the property directly rather than rejecting such paths.
 #[tokio::test(flavor = "multi_thread")]
-async fn embedded_store_paths_reject_embedded_scheme_separators()
+async fn embedded_store_paths_preserve_colons_in_directory_names()
 -> Result<(), Box<dyn std::error::Error>> {
     let backends = [
         #[cfg(feature = "surrealkv")]
@@ -539,14 +538,16 @@ async fn embedded_store_paths_reject_embedded_scheme_separators()
     ];
     for backend in backends {
         let directory = tempfile::tempdir()?;
-        let path = directory.path().join("store://nested");
-        let error = backend
-            .open(&path)
-            .await
-            .expect_err("a store path containing \"://\" must be rejected");
+        let path = directory.path().join("store:colon");
+        let plan = ProjectionPlan::from_graph("colon-path", &graph('8', "")?)?;
+        let reference = SurrealRef::from_plan(&plan, backend.engine(), &path, digest('c'))?;
+        let projection = backend.open(&path).await?;
+        projection.stage_for_reference(&plan, &reference).await?;
+        projection.validate_contents(&reference).await?;
         assert!(
-            error.to_string().contains("://"),
-            "error should name the rejected separator, got: {error}"
+            path.is_dir(),
+            "the colon-bearing directory itself must hold the store: {}",
+            path.display()
         );
     }
     Ok(())

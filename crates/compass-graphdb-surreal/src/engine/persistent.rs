@@ -53,22 +53,21 @@ pub(super) async fn client(
 
 /// Render a canonical store directory as a `scheme://` address component.
 ///
-/// The SDK splits an address on its first `://`, then treats the remainder as a
-/// filesystem path. Two properties of Windows paths have to survive that split.
-/// `std::fs::canonicalize` returns a verbatim `\\?\C:\...` prefix, which must be
-/// preserved so long paths keep working; and a path that itself contains `://`
-/// would move the split point and silently retarget the store. Reject the
-/// latter instead of connecting somewhere unintended, and keep the platform's
-/// own rendering of the prefix otherwise.
+/// The SDK splits an address on its first `://` and only falls back to a bare
+/// `:` when no `://` is present. Because this address is always built as
+/// `surrealkv://` or `rocksdb://` plus the path, the split lands on that prefix,
+/// so a Windows drive letter (`C:\...`) or any other colon inside the path is
+/// carried through as the path component rather than read as a scheme.
+///
+/// What the path must satisfy is UTF-8: the address is a `String`, and Windows
+/// permits paths that do not round-trip. Reject those with a typed error rather
+/// than rendering them lossily and opening a different directory than the caller
+/// named. `std::fs::canonicalize` has already normalized the path, including the
+/// verbatim `\\?\C:\...` prefix that keeps long paths working on Windows.
 fn endpoint_path(path: &std::path::Path) -> Result<String, ProjectionError> {
     let rendered = path.to_str().ok_or_else(|| {
         ProjectionError::InvalidReference("embedded storage path must be UTF-8".into())
     })?;
-    if rendered.contains("://") {
-        return Err(ProjectionError::InvalidReference(
-            "embedded storage path must not contain \"://\"".into(),
-        ));
-    }
     Ok(rendered.to_owned())
 }
 
