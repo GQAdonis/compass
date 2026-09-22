@@ -62,8 +62,7 @@ pub(crate) fn load_graph_at(
     let commit = repository
         .resolve(revision)
         .map_err(|error| error.to_string())?;
-    let options = configured_build_options(&repository)?;
-    let (history, preferred) = resolve_or_materialize(&repository, commit, &options, false, false)?;
+    let (history, preferred) = resolve_materialized(&repository, &commit)?;
     let cache = history.cache().map_err(|error| error.to_string())?;
     let cache_key = serde_json::json!({
         "schema": "compass.history.graph_query_key/1",
@@ -103,8 +102,7 @@ pub(crate) fn load_typed_graph_at(
     let commit = repository
         .resolve(revision)
         .map_err(|error| error.to_string())?;
-    let options = configured_build_options(&repository)?;
-    let (history, preferred) = resolve_or_materialize(&repository, commit, &options, false, false)?;
+    let (history, preferred) = resolve_materialized(&repository, &commit)?;
     let realization = preferred.id;
     let reader = history
         .reader(&realization)
@@ -126,9 +124,7 @@ pub(crate) fn load_history_view_model_at(
     let commit = repository
         .resolve(revision)
         .map_err(|error| error.to_string())?;
-    let options = configured_build_options(&repository)?;
-    let (history, preferred) =
-        resolve_or_materialize(&repository, commit.clone(), &options, false, false)?;
+    let (history, preferred) = resolve_materialized(&repository, &commit)?;
     let reader = history
         .reader(&preferred.id)
         .map_err(|error| error.to_string())?;
@@ -150,6 +146,32 @@ pub(crate) fn resolve_or_materialize(
     replace_corrupt: bool,
 ) -> Result<(HistoryStore, PublishedVersion), String> {
     resolve_or_materialize_inner(repository, commit, options, rebuild, replace_corrupt, false)
+}
+
+/// Resolve an already-published realization without creating a history store,
+/// queueing a job, checking out a revision, or invoking any extractor. Query
+/// and diff commands use this read-only path so an uncached revision produces
+/// an actionable prerequisite error instead of an opaque build failure.
+fn resolve_materialized(
+    repository: &Repository,
+    commit: &CommitId,
+) -> Result<(HistoryStore, PublishedVersion), String> {
+    let history = HistoryStore::open_existing(repository)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "revision {commit} is not materialized; this read-only command will not build it. Run `compass history build {commit} --code-only` first"
+            )
+        })?;
+    let preferred = history
+        .preferred(commit)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "revision {commit} is not materialized; this read-only command will not build it. Run `compass history build {commit} --code-only` first"
+            )
+        })?;
+    Ok((history, preferred))
 }
 
 fn resolve_or_materialize_matching_profile(
@@ -290,98 +312,22 @@ pub(crate) fn resolve_comparable_pair(
     if required_fingerprint.is_some() && (old.is_none() || new.is_none()) {
         return Err("the requested fingerprint is not materialized at both commits".to_owned());
     }
-    let (history, old, new) = match (old, new) {
-        (Some(old), Some(new)) if required_fingerprint.is_some() => (
-            existing.ok_or_else(|| "history store disappeared".to_owned())?,
-            old,
-            new,
-        ),
-        (Some(old), Some(new)) => {
-            let old_options =
-                HistoryBuildOptions::from_rebuild_profile(old.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            let new_options =
-                HistoryBuildOptions::from_rebuild_profile(new.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            if old_options.profile() == new_options.profile() {
-                let (_, old) = resolve_or_materialize_matching_profile(
-                    repository,
-                    old_commit,
-                    &old_options,
-                    false,
-                    false,
-                )?;
-                let (history, new) = resolve_or_materialize_matching_profile(
-                    repository,
-                    new_commit,
-                    &new_options,
-                    false,
-                    false,
-                )?;
-                (history, old, new)
-            } else {
-                return Err(format!(
-                    "realizations retain different user-selected build options after current-engine reconstruction\n\nOLD {} ({}) profile: {}\nNEW {} ({}) profile: {}\n\nBuild a comparable realization:\n  compass history build {} --profile-from {}",
-                    old.version.git_commit,
-                    old.id,
-                    old.version.profile_digest,
-                    new.version.git_commit,
-                    new.id,
-                    new.version.profile_digest,
-                    new.version.git_commit,
-                    old.version.git_commit,
-                ));
-            }
-        }
-        (Some(old), None) => {
-            let options =
-                HistoryBuildOptions::from_rebuild_profile(old.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            let old = if old.version.build_profile == options.profile() {
-                old
-            } else {
-                resolve_or_materialize_matching_profile(
-                    repository, old_commit, &options, true, false,
-                )?
-                .1
-            };
-            let (history, new) = resolve_or_materialize_matching_profile(
-                repository, new_commit, &options, false, false,
-            )?;
-            (history, old, new)
-        }
-        (None, Some(new)) => {
-            let options =
-                HistoryBuildOptions::from_rebuild_profile(new.version.build_profile.clone())
-                    .map_err(|error| error.to_string())?;
-            let new = if new.version.build_profile == options.profile() {
-                new
-            } else {
-                resolve_or_materialize_matching_profile(
-                    repository, new_commit, &options, true, false,
-                )?
-                .1
-            };
-            let (history, old) = resolve_or_materialize_matching_profile(
-                repository, old_commit, &options, false, false,
-            )?;
-            (history, old, new)
-        }
-        (None, None) => {
-            let options = configured_build_options(repository)?;
-            let (_, old) = resolve_or_materialize_matching_profile(
-                repository,
-                old_commit.clone(),
-                &options,
-                false,
-                false,
-            )?;
-            let (history, new) = resolve_or_materialize_matching_profile(
-                repository, new_commit, &options, false, false,
-            )?;
-            (history, old, new)
-        }
-    };
+    if old.is_none() {
+        return Err(format!(
+            "revision {old_commit} is not materialized; history diff is read-only and will not build it. Run `compass history build {old_commit} --code-only` first"
+        ));
+    }
+    if new.is_none() {
+        return Err(format!(
+            "revision {new_commit} is not materialized; history diff is read-only and will not build it. Run `compass history build {new_commit} --code-only` first"
+        ));
+    }
+    // Comparison is a read path. Profile reconstruction under a newer binary
+    // can differ from the published profile, so even an apparently cached
+    // pair must never pass through the materialization helper here.
+    let history = existing.ok_or_else(|| "history store disappeared".to_owned())?;
+    let old = old.ok_or_else(|| "old realization disappeared".to_owned())?;
+    let new = new.ok_or_else(|| "new realization disappeared".to_owned())?;
     let old_engine = engine_compatibility_digest(&old.version.build_profile)?;
     let new_engine = engine_compatibility_digest(&new.version.build_profile)?;
     if old_engine != new_engine {
@@ -827,10 +773,8 @@ fn execute(frontend: Frontend, args: &[String]) -> Result<String, CommandFailure
                     "--node-limit is only valid with history export --format json",
                 ));
             }
-            let build_options = configured_build_options(&repository).map_err(runtime)?;
             let (history, preferred) =
-                resolve_or_materialize(&repository, commit, &build_options, false, false)
-                    .map_err(runtime)?;
+                resolve_materialized(&repository, &commit).map_err(runtime)?;
             let artifacts = history.artifacts(&preferred.id).map_err(runtime)?;
             if format == "graph-json" {
                 if output.is_dir() {

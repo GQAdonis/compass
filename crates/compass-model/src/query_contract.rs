@@ -483,7 +483,7 @@ impl Default for CodeQueryLimits {
             max_nodes: 500,
             max_edges: 1_000,
             max_paths: 100,
-            max_candidates: 20,
+            max_candidates: 64,
             max_source_bytes: 1_048_576,
             max_response_bytes: 8_388_608,
         }
@@ -721,6 +721,7 @@ pub struct QueryDiagnostic {
 pub enum QueryDiagnosticCode {
     NoMatch,
     AmbiguousMatch,
+    RelationshipInconsistency,
     DirectionMismatch,
     UnresolvedHandler,
     IncompleteCoverage,

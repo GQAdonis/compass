@@ -149,6 +149,18 @@
   snapshots. Production validation and reference generation now verify chunks
   without retaining the canonical payload in one allocation, while the public
   full-read API and store formats remain compatible.
+- Improve agent-facing query correctness and recovery: callers, impact, and
+  affected include source-backed alias/import/export usage evidence; CompassQL
+  exposes live node degree and supports ordering by pre-projection bindings;
+  historical reads neutralize configured checkout filters; direction-only
+  trail misses suggest `compass path`; and full reports retain bounded hub,
+  suggested-query, and learned-question entries.
+- Unify bounded relationship resolution across callers, impact, and affected,
+  including importer-consistency diagnostics and explicit relationship
+  provenance. Add the bounded `compass architecture` view, shared agent output
+  formats, visible coverage witnesses, a 64-candidate query default, and
+  read-only historical queries with state-health audit events.
+
 ## 0.3.28 - 2026-09-19
 
 - Improve agent-facing query correctness and recovery across callers, impact,
@@ -730,8 +742,10 @@
   Legacy store snapshots remain readable and report incomplete identifier or
   relationship coverage until they are rebuilt; operation queries use the
   existing bounded fallback until the compact role index is available. The
-  immutable relationship capability is v2, and the disposable SQLite query
-  accelerator now uses internal format v7 and rebuilds automatically.
+  immutable relationship capability remains v1 — snapshots written by any
+  0.3.x-lineage builder carry identical direct-call postings and need no
+  rebuild — and the disposable SQLite query accelerator now uses internal
+  format v7 and rebuilds automatically.
 
 - Configure one-shot graph builds to use mimalloc without its process-wide
   reserved arena while preserving explicit operator allocator settings. This

@@ -67,6 +67,7 @@ use compass_global::{GlobalPaths, global_add};
 use compass_graph::god_nodes;
 use compass_graphdb::{push_to_falkordb, push_to_neo4j};
 use compass_model::GraphError;
+use compass_model::code_graph::{EdgeKind, GraphDocument};
 use compass_model::query_contract::{
     CodeQueryLimits, DiscoveryDirection, DiscoveryLimits, DiscoveryQueryRequest,
     DiscoveryQueryResponse, DiscoveryScope, DiscoveryScopeKind, DiscoveryTraversal, ImpactRequest,
@@ -78,12 +79,12 @@ use compass_output::{
     HtmlOptions, ObsidianOptions, SourceNavigation, SvgOptions, TreeOptions, WikiOptions,
     WorkbenchCoverage, WorkbenchCoverageStatus, WorkbenchModel, WorkbenchView,
     WorkbenchViewContent, affected_lens_view_model, artifact_lens_view_model,
-    build_discovery_query_view, export_obsidian, export_wiki, graph_artifact_identity,
-    graph_community_view_model_document, graph_view_model_bundle_document,
+    build_code_query_view, build_discovery_query_view, export_obsidian, export_wiki,
+    graph_artifact_identity, graph_community_view_model_document, graph_view_model_bundle_document,
     graph_view_model_document, node_filenames, project_architecture,
-    render_agent_query_header_lines, render_orientation_json, validate_orientation_graph_identity,
-    write_callflow_html, write_canvas, write_cypher, write_graphml, write_svg, write_tree_html,
-    write_workbench_html_with_source_navigation,
+    render_agent_query_header_lines, render_agent_query_text, render_orientation_json,
+    validate_orientation_graph_identity, write_callflow_html, write_canvas, write_cypher,
+    write_graphml, write_svg, write_tree_html, write_workbench_html_with_source_navigation,
 };
 use compass_prs::{ProcessRunner, SystemRunner};
 use compass_query::{
@@ -152,6 +153,90 @@ pub struct Outcome {
     pub stdout_trailing_newline: bool,
     pub stderr_trailing_newline: bool,
     html_output: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SharedOutputFormat {
+    Text,
+    Json,
+    AgentJson,
+}
+
+/// Parse the output contract shared by structural code-query commands and the
+/// legacy path/explain projections.  Keeping extraction here means every
+/// command accepts both `--format value` and `--format=value` with identical
+/// validation and does not accidentally treat the flag as a positional node.
+pub(crate) fn parse_shared_output_format(
+    args: &[String],
+    command: &str,
+) -> Result<(SharedOutputFormat, Vec<String>), String> {
+    let mut format = SharedOutputFormat::Text;
+    let mut remaining = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(format!(
+                        "--format requires text, json, or agent-json for {command}"
+                    ));
+                };
+                format = parse_shared_output_format_value(value, command)?;
+                index += 2;
+            }
+            value if value.starts_with("--format=") => {
+                format = parse_shared_output_format_value(&value[9..], command)?;
+                index += 1;
+            }
+            _ => {
+                remaining.push(args[index].clone());
+                index += 1;
+            }
+        }
+    }
+    Ok((format, remaining))
+}
+
+fn parse_shared_output_format_value(
+    value: &str,
+    command: &str,
+) -> Result<SharedOutputFormat, String> {
+    match value {
+        "text" => Ok(SharedOutputFormat::Text),
+        "json" => Ok(SharedOutputFormat::Json),
+        "agent-json" => Ok(SharedOutputFormat::AgentJson),
+        _ => Err(format!(
+            "--format must be text, json, or agent-json for {command}"
+        )),
+    }
+}
+
+fn render_shared_output(format: SharedOutputFormat, command: &str, answer: String) -> Outcome {
+    match format {
+        SharedOutputFormat::Text => Outcome::success(answer),
+        SharedOutputFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "compass.command-result/1",
+            "command": command,
+            "answer": answer,
+            "truncated": false,
+        }))
+        .map_or_else(
+            |error| Outcome::failure(format!("error: could not render JSON: {error}")),
+            Outcome::success,
+        ),
+        SharedOutputFormat::AgentJson => serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "compass.agent-command/1",
+            "command": command,
+            "answer": answer,
+            "status": "answered",
+            "truncated": false,
+            "nextActions": [],
+        }))
+        .map_or_else(
+            |error| Outcome::failure(format!("error: could not render agent JSON: {error}")),
+            Outcome::success,
+        ),
+    }
 }
 
 pub(crate) fn resolve_output_artifact(output: &Path, name: &str) -> Result<PathBuf, String> {
@@ -399,6 +484,7 @@ pub fn run(frontend: Frontend, arguments: impl IntoIterator<Item = OsString>) ->
         "program" => program_commands::command(frontend, &args),
         "path" => command_path(frontend, &args),
         "explain" => command_explain(frontend, &args),
+        "architecture" => command_architecture(frontend, &args),
         "affected" => command_affected(&args),
         "export" => command_export(frontend, &args),
         "benchmark" => command_benchmark(&args),
@@ -1870,6 +1956,98 @@ fn command_build_with_validation(
     outcome
 }
 
+/// Report managed-state drift before a build publishes a new snapshot.  These
+/// checks are deliberately read-only and bounded: they inspect only canonical
+/// marker paths and a capped snapshot directory listing, never source content
+/// or credentials.  A successful ensure still performs the normal repair, but
+/// the operator gets an explicit explanation and a command they can run
+/// independently when the drift is outside the build's ownership boundary.
+fn collect_state_health_notes(
+    root: &Path,
+    output_directory: &Path,
+    graph_healthy: bool,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    let record_attempt = |path: &Path| {
+        let _ =
+            compass_files::BuildGuard::record_state_event(output_directory, "repair_attempt", path);
+    };
+    let project_config = root.join(".compass");
+    if project_config.is_dir() && !graph_healthy {
+        record_attempt(Path::new("graph.json"));
+        notes.push(format!(
+            "[compass health] project configuration is present at {} but the graph snapshot is missing or invalid; ensure is rebuilding it",
+            project_config.display()
+        ));
+    }
+
+    for (platform, relative) in [
+        ("Claude", Path::new(".claude/skills/compass/SKILL.md")),
+        ("Agents", Path::new(".agents/skills/compass/SKILL.md")),
+    ] {
+        let managed_directory = root.join(relative).parent().map(Path::to_path_buf);
+        let skill = root.join(relative);
+        let configured = install_commands::managed_skill_is_configured(&skill);
+        let drifted = configured && !install_commands::managed_skill_is_healthy(&skill);
+        let missing_in_existing_directory =
+            managed_directory.as_deref().is_some_and(Path::is_dir) && !skill.is_file();
+        if drifted || missing_in_existing_directory {
+            record_attempt(relative);
+            notes.push(format!(
+                "[compass health] {platform} managed skill is missing or modified at {}; repair with `compass install --platform {}`",
+                skill.display(),
+                platform.to_ascii_lowercase()
+            ));
+        }
+    }
+
+    let snapshots = output_directory.join("snapshots");
+    if snapshots.is_dir() {
+        let current = output_directory.join("current-snapshot");
+        if !current.is_file() {
+            let has_entries = fs::read_dir(&snapshots)
+                .ok()
+                .and_then(|entries| entries.take(1).next())
+                .is_some();
+            if has_entries {
+                record_attempt(Path::new("current-snapshot"));
+                notes.push(format!(
+                    "[compass health] output snapshots exist under {} but current-snapshot is missing; ensure will publish a fresh pointer",
+                    snapshots.display()
+                ));
+            }
+        } else if let Err(error) =
+            compass_files::BuildGuard::resolve_current_snapshot_directory(output_directory)
+        {
+            record_attempt(Path::new("current-snapshot"));
+            notes.push(format!(
+                "[compass health] current snapshot is invalid or incomplete ({}); ensure will repair it",
+                error
+            ));
+        }
+        let has_incomplete = fs::read_dir(&snapshots)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .take(1_025)
+            .any(|entry| entry.path().join("build-incomplete").is_file());
+        if has_incomplete {
+            record_attempt(Path::new("snapshots"));
+            notes.push(format!(
+                "[compass health] incomplete output snapshots were found under {}; ensure will discard or replace them",
+                snapshots.display()
+            ));
+        }
+    } else if output_directory.join("current-snapshot").is_file() {
+        record_attempt(Path::new("current-snapshot"));
+        notes.push(format!(
+            "[compass health] current-snapshot exists without its snapshots directory at {}; ensure will repair the orphaned pointer",
+            output_directory.display()
+        ));
+    }
+    notes
+}
+
 fn command_build_with_validation_inner(
     frontend: Frontend,
     args: &[String],
@@ -2396,9 +2574,16 @@ fn command_build_with_validation_inner(
         .map(absolute_cli_path)
         .unwrap_or_else(|| root.clone())
         .join(output_name);
-    let graph_existed_before =
-        compass_files::BuildGuard::resolve_artifact(&output_container, "graph.json")
-            .is_ok_and(|path| path.is_file());
+    let graph_health_path =
+        compass_files::BuildGuard::resolve_artifact(&output_container, "graph.json").ok();
+    let graph_existed_before = graph_health_path
+        .as_ref()
+        .is_some_and(|path| path.is_file());
+    let graph_healthy = graph_health_path
+        .as_deref()
+        .filter(|path| path.is_file())
+        .is_some_and(|path| GraphDocument::load(path).is_ok());
+    let health_notes = collect_state_health_notes(&root, &output_container, graph_healthy);
     let extract_incremental = extract
         && !force
         && compass_files::BuildGuard::resolve_artifact(&output_container, "graph.json")
@@ -2532,8 +2717,17 @@ fn command_build_with_validation_inner(
         .map(|result| (result, Vec::new(), Duration::ZERO))
         .map_err(|error| error.to_string())
     };
+    let health_repair_needed = !health_notes.is_empty();
     match built {
         Ok((result, mut notes, _semantic_elapsed)) => {
+            if health_repair_needed {
+                let _ = compass_files::BuildGuard::record_state_event(
+                    &output_container,
+                    "repair_succeeded",
+                    Path::new("current-snapshot"),
+                );
+            }
+            notes.extend(health_notes);
             if let Some(tiebreaker) = dedup_tiebreaker.as_mut() {
                 notes.extend(tiebreaker.take_warnings());
             }
@@ -2630,6 +2824,13 @@ fn command_build_with_validation_inner(
             outcome
         }
         Err(error) => {
+            if health_repair_needed {
+                let _ = compass_files::BuildGuard::record_state_event(
+                    &output_container,
+                    "repair_failed",
+                    Path::new("current-snapshot"),
+                );
+            }
             let mut message = format!("error: {error}");
             if document_ocr_mode != compass_ocr::OcrMode::Off
                 && error.contains("compass models install pp-ocrv6-")
@@ -5459,7 +5660,14 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
     {
         return Outcome::success(query_help(frontend));
     }
-    let (selection, args) = match parse_graph_selection(args) {
+    let format_was_provided = args
+        .iter()
+        .any(|argument| argument == "--format" || argument.starts_with("--format="));
+    let (shared_format, args) = match parse_shared_output_format(args, "query") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let (selection, args) = match parse_graph_selection(&args) {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
@@ -5471,7 +5679,7 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
     let mut page = 1_usize;
     let mode = TraversalMode::Bfs;
     let mut legacy_requested = false;
-    let mut discovery_requested = false;
+    let mut discovery_requested = format_was_provided;
     let mut discovery_text_budget = DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET;
     let mut discovery_cursor = None::<String>;
     let mut discovery_evidence = false;
@@ -5481,7 +5689,12 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
     let mut discovery_traversal = DiscoveryTraversal::Bfs;
     let mut discovery_include_heuristic = false;
     let mut discovery_limits = DiscoveryLimits::default();
-    let mut discovery_format = "text".to_owned();
+    let mut discovery_format = match shared_format {
+        SharedOutputFormat::Text => "text",
+        SharedOutputFormat::Json => "json",
+        SharedOutputFormat::AgentJson => "agent-json",
+    }
+    .to_owned();
     let mut discovery_result_envelope = false;
     let mut seen_discovery_options = HashSet::new();
     let mut index = 1;
@@ -5547,7 +5760,7 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
                 discovery_requested = true;
                 index += 2;
             }
-            "--direction" | "--scope" | "--format" => {
+            "--direction" | "--scope" => {
                 let name = args[index].as_str();
                 let Some(value) = args.get(index + 1) else {
                     return Outcome::failure(format!("error: {name} requires a value"));
@@ -5645,7 +5858,7 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
                 index += 1;
             }
             value
-                if ["--direction=", "--scope=", "--format="]
+                if ["--direction=", "--scope="]
                     .iter()
                     .any(|prefix| value.starts_with(prefix)) =>
             {
@@ -6017,7 +6230,11 @@ fn command_path(frontend: Frontend, args: &[String]) -> Outcome {
     {
         return Outcome::success(path_help(frontend));
     }
-    let (selection, args) = match parse_graph_selection(args) {
+    let (format, args) = match parse_shared_output_format(args, "path") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let (selection, args) = match parse_graph_selection(&args) {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
@@ -6068,10 +6285,177 @@ fn command_path(frontend: Frontend, args: &[String]) -> Outcome {
     match render_shortest_path_with_limit(&loaded.graph, source, target, max_depth) {
         Ok(output) => {
             touch_selected_query_stamp(&selection);
-            Outcome::success(output)
+            render_shared_output(format, "path", output)
         }
         Err(error) => Outcome::failure(error),
     }
+}
+
+fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "-h" | "--help"))
+    {
+        return Outcome::success("Usage: compass architecture [--graph PATH] [--labels PATH] [--format text|json|agent-json]".to_owned());
+    }
+    let (format, args) = match parse_shared_output_format(args, "architecture") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let mut graph_path = default_graph_path();
+    let mut labels_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--graph" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --graph requires a path".to_owned());
+                };
+                graph_path = PathBuf::from(value);
+                index += 2;
+            }
+            value if value.starts_with("--graph=") => {
+                graph_path = PathBuf::from(&value[8..]);
+                index += 1;
+            }
+            "--labels" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --labels requires a path".to_owned());
+                };
+                labels_path = Some(PathBuf::from(value));
+                index += 2;
+            }
+            value if value.starts_with("--labels=") => {
+                labels_path = Some(PathBuf::from(&value[9..]));
+                index += 1;
+            }
+            value if !value.starts_with('-') && index == 0 => {
+                graph_path = PathBuf::from(value);
+                index += 1;
+            }
+            value => {
+                return Outcome::failure(format!(
+                    "error: unexpected architecture argument {value}"
+                ));
+            }
+        }
+    }
+    let graph_path = match compass_files::BuildGuard::resolve_requested_artifact(&graph_path) {
+        Ok(path) => path,
+        Err(error) => return Outcome::failure(format!("error: could not resolve graph: {error}")),
+    };
+    let mut inputs = match ExportInputs::load(&graph_path) {
+        Ok(inputs) => inputs,
+        Err(GraphError::NotFound(_)) => {
+            return Outcome::failure(format!(
+                "error: graph not found: {}. Run `compass ensure` first.",
+                graph_path.display()
+            ));
+        }
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    if let Some(labels_path) = labels_path {
+        match load_usize_string_map(&labels_path) {
+            Ok(labels) => inputs.labels = labels,
+            Err(error) => return Outcome::failure(error),
+        }
+    }
+    let title = export_project_title(&inputs, &graph_path);
+    let model = match architecture_view_model(&inputs, &graph_path, &title) {
+        Ok(model) => model,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let text = render_architecture_text(&model);
+    match format {
+        SharedOutputFormat::Text => Outcome::success(text),
+        SharedOutputFormat::Json => serde_json::to_string_pretty(&model).map_or_else(
+            |error| {
+                Outcome::failure(format!(
+                    "error: could not render architecture JSON: {error}"
+                ))
+            },
+            Outcome::success,
+        ),
+        SharedOutputFormat::AgentJson => {
+            let mut value = match serde_json::to_value(&model) {
+                Ok(serde_json::Value::Object(value)) => value,
+                Ok(_) => {
+                    return Outcome::failure(
+                        "error: architecture model is not an object".to_owned(),
+                    );
+                }
+                Err(error) => {
+                    return Outcome::failure(format!(
+                        "error: could not render architecture agent JSON: {error}"
+                    ));
+                }
+            };
+            value.insert(
+                "schema".to_owned(),
+                serde_json::Value::String("compass.architecture.agent-view/1".to_owned()),
+            );
+            value.insert("answer".to_owned(), serde_json::Value::String(text));
+            value.insert(
+                "nextActions".to_owned(),
+                serde_json::Value::Array(Vec::new()),
+            );
+            serde_json::to_string_pretty(&serde_json::Value::Object(value)).map_or_else(
+                |error| {
+                    Outcome::failure(format!(
+                        "error: could not render architecture agent JSON: {error}"
+                    ))
+                },
+                Outcome::success,
+            )
+        }
+    }
+}
+
+fn render_architecture_text(model: &compass_output::ArchitectureViewModel) -> String {
+    let mut lines = vec![
+        format!("Architecture: {}", model.title),
+        format!(
+            "Graph: {} nodes, {} relationships, {} communities",
+            model.statistics.nodes, model.statistics.relationships, model.statistics.communities
+        ),
+    ];
+    for projection in &model.projections {
+        lines.push(format!(
+            "Scope {:?}: {} groups, {} routes",
+            projection.scope,
+            projection.groups.len(),
+            projection.routes.len()
+        ));
+        for group in projection.groups.iter().take(24) {
+            lines.push(format!(
+                "- {} [{}] nodes={} relationships={} cohesion={:.2}",
+                group.name.value,
+                group.id,
+                group.node_count,
+                group.relationship_count,
+                group.cohesion
+            ));
+        }
+        if projection.omissions.omitted_groups > 0 {
+            lines.push(format!(
+                "  Omitted {} groups ({} shown); witnesses: {}",
+                projection.omissions.omitted_groups,
+                projection.omissions.shown_groups,
+                if projection.omissions.witness_group_ids.is_empty() {
+                    "none".to_owned()
+                } else {
+                    projection.omissions.witness_group_ids.join(", ")
+                }
+            ));
+        }
+        for diagnostic in projection.quality.diagnostics.iter().take(8) {
+            lines.push(format!(
+                "  Diagnostic [{}]: {}",
+                diagnostic.code, diagnostic.message
+            ));
+        }
+    }
+    lines.join("\n")
 }
 
 fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
@@ -6081,7 +6465,11 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
     {
         return Outcome::success(explain_help(frontend));
     }
-    let (selection, args) = match parse_graph_selection(args) {
+    let (format, args) = match parse_shared_output_format(args, "explain") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let (selection, args) = match parse_graph_selection(&args) {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
@@ -6145,7 +6533,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
     touch_selected_query_stamp(&selection);
-    Outcome::success(output)
+    render_shared_output(format, "explain", output)
 }
 
 fn validate_text_pagination(token_budget: usize, page: usize) -> Result<(), String> {
@@ -6159,9 +6547,13 @@ fn validate_text_pagination(token_budget: usize, page: usize) -> Result<(), Stri
 }
 
 fn command_affected(args: &[String]) -> Outcome {
+    let (format, args) = match parse_shared_output_format(args, "affected") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
     let Some(query) = args.first() else {
         return Outcome::failure(
-            "Usage: compass affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]"
+            "Usage: compass affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path] [--format text|json|agent-json]"
                 .to_owned(),
         );
     };
@@ -6219,11 +6611,137 @@ fn command_affected(args: &[String]) -> Outcome {
             .map(|relation| (*relation).to_owned())
             .collect();
     }
+    if let Some(output) = command_affected_typed(query, &graph_path, depth, &relations, format) {
+        return output;
+    }
     let loaded = match load_affected(&graph_path) {
         Ok(loaded) => loaded,
         Err(outcome) => return outcome,
     };
-    Outcome::success(format_affected(&loaded.graph, query, &relations, depth))
+    render_shared_output(
+        format,
+        "affected",
+        format_affected(&loaded.graph, query, &relations, depth),
+    )
+}
+
+/// Use the typed resolver for v1 code graphs so the compatibility `affected`
+/// command shares import/reference recall with callers and impact.  Legacy
+/// node-link graphs still use the bounded compatibility traversal below.
+fn command_affected_typed(
+    query: &str,
+    requested_graph: &Path,
+    depth: usize,
+    relations: &[String],
+    format: SharedOutputFormat,
+) -> Option<Outcome> {
+    let resolved_graph =
+        match compass_files::BuildGuard::resolve_requested_artifact(requested_graph) {
+            Ok(path) => path,
+            Err(_) => return None,
+        };
+    let (document, identity) = match GraphDocument::load_with_artifact_digest(&resolved_graph) {
+        Ok(document) => document,
+        Err(_) => return None,
+    };
+    let cache_root = requested_graph
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("cache");
+    let engine =
+        match open_with_verified_document(document, identity, &resolved_graph, None, &cache_root) {
+            Ok(engine) => engine,
+            Err(error) => return Some(Outcome::failure(format!("error: {error}"))),
+        };
+    let relation_kinds = relations
+        .iter()
+        .filter_map(|relation| affected_relation_kind(relation))
+        .collect::<Vec<_>>();
+    if relation_kinds.is_empty() {
+        return Some(render_shared_output(
+            format,
+            "affected",
+            format!("No supported relationships were requested for {query:?}"),
+        ));
+    }
+    let max_depth = u32::try_from(depth).unwrap_or(u32::MAX);
+    let limits = CodeQueryLimits {
+        max_depth: max_depth.max(1),
+        ..CodeQueryLimits::default()
+    };
+    let response = match engine.affected(
+        ImpactRequest {
+            symbol: query.to_owned(),
+            include_heuristic: false,
+            limits,
+        },
+        &relation_kinds,
+    ) {
+        Ok(response) => response,
+        Err(error) => return Some(Outcome::failure(format!("error: {error}"))),
+    };
+    let mut context = AgentQueryContext::new(
+        response.operation.into(),
+        engine.graph_identity().to_owned(),
+        engine.build_generation_identity().to_owned(),
+    )
+    .with_operand(AgentOperandRole::Symbol, query.to_owned());
+    context = context.with_question(format!("affected {query}"));
+    match format {
+        SharedOutputFormat::Text => Some(
+            build_code_query_view(&response, context)
+                .and_then(|view| render_agent_query_text(&view))
+                .map_or_else(
+                    |error| Outcome::failure(format!("error: {error}")),
+                    Outcome::success,
+                ),
+        ),
+        SharedOutputFormat::Json => Some(serde_json::to_string_pretty(&response).map_or_else(
+            |error| Outcome::failure(format!("error: {error}")),
+            Outcome::success,
+        )),
+        SharedOutputFormat::AgentJson => Some(
+            build_code_query_view(&response, context)
+                .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
+                .map_or_else(
+                    |error| Outcome::failure(format!("error: {error}")),
+                    Outcome::success,
+                ),
+        ),
+    }
+}
+
+fn affected_relation_kind(relation: &str) -> Option<EdgeKind> {
+    match relation
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .as_str()
+    {
+        "calls" | "indirect_call" => Some(EdgeKind::Calls),
+        "imports" | "imports_from" => Some(EdgeKind::Imports),
+        "exports" | "re_exports" => Some(EdgeKind::Exports),
+        "references" => Some(EdgeKind::References),
+        "aliases" => Some(EdgeKind::Aliases),
+        "inherits" | "extends" => Some(EdgeKind::Extends),
+        "implements" => Some(EdgeKind::Implements),
+        "uses" => Some(EdgeKind::DependsOn),
+        "mixes_in" => Some(EdgeKind::MixesIn),
+        "embeds" => Some(EdgeKind::Embeds),
+        "routes_to" => Some(EdgeKind::RoutesTo),
+        "renders" => Some(EdgeKind::Renders),
+        "depends_on" => Some(EdgeKind::DependsOn),
+        "reads" => Some(EdgeKind::Reads),
+        "writes" => Some(EdgeKind::Writes),
+        "publishes" => Some(EdgeKind::Publishes),
+        "subscribes" => Some(EdgeKind::Subscribes),
+        "produces" => Some(EdgeKind::Produces),
+        "consumes" => Some(EdgeKind::Consumes),
+        "schedules" => Some(EdgeKind::Schedules),
+        "triggers" => Some(EdgeKind::Triggers),
+        "maps_to" => Some(EdgeKind::MapsTo),
+        _ => None,
+    }
 }
 
 pub(crate) fn parse_graph_selection(
@@ -6338,7 +6856,7 @@ fn touch_selected_query_stamp(selection: &GraphSelection) {
 fn query_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
     let help = format!(
-        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--evidence] [--format text|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --evidence                        Include full provenance and typed detail in text\n  --format <text|json>              Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 8000]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Approximate tokens per page [default: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text-only pagination/evidence controls. Legacy --traverse, --budget, and --page cannot be mixed with discovery controls."
+        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--evidence] [--format text|agent-json|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --evidence                        Include full provenance and typed detail in text\n  --format <text|agent-json|json>   Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 8000]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Approximate tokens per page [default: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text-only pagination/evidence controls. Legacy --traverse, --budget, and --page cannot be mixed with discovery controls."
     );
     let help = help
         .replace(
@@ -6357,13 +6875,15 @@ fn query_help(frontend: Frontend) -> String {
 fn path_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
     format!(
-        "Usage: {prefix} path \"<source>\" \"<target>\" [--max-depth N] [--graph PATH|--at REV]"
+        "Usage: {prefix} path \"<source>\" \"<target>\" [--max-depth N] [--format text|json|agent-json] [--graph PATH|--at REV]"
     )
 }
 
 fn explain_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
-    format!("Usage: {prefix} explain \"<node>\" [--budget N] [--page N] [--graph PATH|--at REV]")
+    format!(
+        "Usage: {prefix} explain \"<node>\" [--budget N] [--page N] [--format text|json|agent-json] [--graph PATH|--at REV]"
+    )
 }
 
 fn frontend_name(frontend: Frontend) -> &'static str {

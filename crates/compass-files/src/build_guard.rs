@@ -1,4 +1,5 @@
 use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,6 +13,8 @@ const INCOMPLETE_MARKER: &str = "build-incomplete";
 const ROOT_ARTIFACTS_COMPLETE: &str = "root-artifacts-complete";
 const RETAINED_COMPLETE_SNAPSHOTS: usize = 2;
 const MAX_SNAPSHOT_DIRECTORY_ENTRIES: usize = 1_024;
+const STATE_EVENTS_FILE: &str = "state-events.jsonl";
+const STATE_EVENTS_MAX_BYTES: u64 = 1_048_576;
 static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Owns an unpublished output snapshot until every authoritative artifact is sealed.
@@ -178,6 +181,17 @@ impl BuildGuard {
         }
     }
 
+    /// Append one bounded, metadata-only managed-state audit event.  Callers
+    /// use this for health-check repair attempts and outcomes; snapshot
+    /// publication and pruning record their own events internally.
+    pub fn record_state_event(
+        output_directory: &Path,
+        event: &str,
+        path: &Path,
+    ) -> Result<(), FileError> {
+        append_state_event(output_directory, event, path)
+    }
+
     /// Return the stable output container that owns a generated artifact.
     ///
     /// Paths inside the current immutable snapshot map back to their public
@@ -334,7 +348,16 @@ fn profile_internal_duration(label: &str, elapsed: Duration) {
 
 fn remove_file_if_exists(path: &Path) -> Result<(), FileError> {
     match fs::remove_file(path) {
-        Ok(()) => sync_directory(path.parent().unwrap_or_else(|| Path::new("."))),
+        Ok(()) => {
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            let result = sync_directory(parent);
+            if result.is_ok()
+                && path.file_name().and_then(|name| name.to_str()) != Some(STATE_EVENTS_FILE)
+            {
+                let _ = append_state_event(parent, "remove_file", path);
+            }
+            result
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(io_error(path, error)),
     }
@@ -363,10 +386,67 @@ fn prune_complete_snapshots(snapshots: &Path, current: &str) -> Result<(), FileE
         .collect::<std::collections::BTreeSet<_>>();
     for entry in complete {
         if !retained.contains(&entry.file_name()) {
-            fs::remove_dir_all(entry.path()).map_err(|source| io_error(entry.path(), source))?;
+            let path = entry.path();
+            fs::remove_dir_all(&path).map_err(|source| io_error(path.clone(), source))?;
+            if let Some(output) = snapshots.parent() {
+                let _ = append_state_event(output, "prune_snapshot", &path);
+            }
         }
     }
     sync_directory(snapshots)
+}
+
+fn append_state_event(output_directory: &Path, event: &str, path: &Path) -> Result<(), FileError> {
+    fs::create_dir_all(output_directory).map_err(|source| io_error(output_directory, source))?;
+    let log_path = output_directory.join(STATE_EVENTS_FILE);
+    let relative = path
+        .strip_prefix(output_directory)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let record = serde_json::json!({
+        "schema": "compass.state-event/1",
+        "timestamp": timestamp,
+        "event": event,
+        "path": relative,
+    });
+    let line = serde_json::to_string(&record).map_err(|source| FileError::Json {
+        path: log_path.clone(),
+        source,
+    })?;
+    let line_bytes = u64::try_from(line.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    if line_bytes > STATE_EVENTS_MAX_BYTES {
+        return Err(FileError::InvalidSnapshotArtifact(log_path));
+    }
+    let current_bytes = fs::metadata(&log_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if current_bytes.saturating_add(line_bytes) > STATE_EVENTS_MAX_BYTES {
+        remove_file_if_exists_unlogged(&log_path)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|source| io_error(&log_path, source))?;
+    file.write_all(line.as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .and_then(|_| file.sync_all())
+        .map_err(|source| io_error(&log_path, source))
+}
+
+fn remove_file_if_exists_unlogged(path: &Path) -> Result<(), FileError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(path, error)),
+    }
 }
 
 impl Drop for BuildGuard {
@@ -469,6 +549,39 @@ mod tests {
             fs::read(&staged).map_err(|error| io_error(&staged, error))?,
             b"staged"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn state_events_are_bounded_and_record_managed_removals() -> Result<(), FileError> {
+        let directory = tempfile::tempdir().map_err(|source| io_error("tempdir", source))?;
+        let output = directory.path().join("compass-out");
+        fs::create_dir_all(&output).map_err(|source| io_error(&output, source))?;
+        let removed = output.join("old.json");
+        fs::write(&removed, b"old").map_err(|source| io_error(&removed, source))?;
+        remove_file_if_exists(&removed)?;
+        let log = output.join(STATE_EVENTS_FILE);
+        let event: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(&log)
+                .map_err(|source| io_error(&log, source))?
+                .trim(),
+        )
+        .map_err(|source| FileError::Json {
+            path: log.clone(),
+            source,
+        })?;
+        assert_eq!(event["schema"], "compass.state-event/1");
+        assert_eq!(event["event"], "remove_file");
+        assert_eq!(event["path"], "old.json");
+
+        let max_bytes = usize::try_from(STATE_EVENTS_MAX_BYTES)
+            .map_err(|_| FileError::InvalidSnapshotArtifact(log.clone()))?;
+        fs::write(&log, vec![b'x'; max_bytes]).map_err(|source| io_error(&log, source))?;
+        append_state_event(&output, "repair_attempt", &output.join("graph.json"))?;
+        let bytes = fs::metadata(&log)
+            .map_err(|source| io_error(&log, source))?
+            .len();
+        assert!(bytes <= STATE_EVENTS_MAX_BYTES);
         Ok(())
     }
 }

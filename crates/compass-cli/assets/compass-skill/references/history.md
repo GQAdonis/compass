@@ -32,17 +32,20 @@ compass history build main --all --first-parent --code-only --format json
 compass history list --format json
 ```
 
-Explicit historical queries can materialize a missing revision even when eager
-history is disabled:
+Explicit historical queries are read-only. They never materialize a missing
+revision or invoke extraction; build the exact revision first:
 
 ```bash
+compass history build HEAD~20 --code-only
 compass query "authentication flow" --at HEAD~20
 compass path OldHandler Database --at v1.2.0
 compass explain LegacyGateway --at RELEASE_TAG
 ```
 
-Compass resolves a revision to an exact commit and builds it in a protected,
-offline worktree. Report the resolved revision when answering.
+If the selected revision is not already materialized, the command stops with
+the exact `compass history build REV --code-only` prerequisite. Compass still
+resolves every read to an exact immutable realization; report that resolved
+revision when answering.
 
 ## Compare and inspect
 
@@ -61,6 +64,9 @@ compass history export HEAD --format compass-out --output historical-output
 Use `compass diff` for a ranked semantic review. Use `compass history diff`
 when the user needs an exhaustive, deterministic record-level comparison of
 immutable graph roots.
+
+`compass history export` is read-only as well; build an uncached revision with
+`compass history build REV --code-only` before exporting it.
 
 Semantic realizations with different extraction fingerprints are not silently
 treated as equivalent. Use `history list`, `show`, and `prefer` to inspect or

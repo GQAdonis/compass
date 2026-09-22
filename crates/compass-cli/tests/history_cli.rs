@@ -424,8 +424,7 @@ fn explicit_build_uses_the_enabled_repository_profile_when_no_profile_options_ar
 }
 
 #[test]
-fn lazy_materialization_uses_the_retained_profile_after_eager_history_is_disabled()
--> Result<(), Box<dyn std::error::Error>> {
+fn uncached_history_reads_require_an_explicit_build() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     git(directory.path(), &["init", "--quiet"])?;
     git(directory.path(), &["config", "user.name", "Compass Test"])?;
@@ -458,6 +457,24 @@ fn lazy_materialization_uses_the_retained_profile_after_eager_history_is_disable
         run(compass, directory.path(), &["history", "disable"])?
             .status
             .success()
+    );
+    let query = run(
+        compass,
+        directory.path(),
+        &["query", "DisabledProfileService", "--at", "HEAD"],
+    )?;
+    assert!(!query.status.success());
+    assert!(String::from_utf8_lossy(&query.stderr).contains("not materialized"));
+
+    let built = run(
+        compass,
+        directory.path(),
+        &["history", "build", "HEAD", "--code-only"],
+    )?;
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
     );
     let query = run(
         compass,
@@ -1871,7 +1888,8 @@ fn change_counts_report_structure_instead_of_shifted_source_coordinates()
 }
 
 #[test]
-fn missing_code_only_commit_is_built_on_first_query() -> Result<(), Box<dyn std::error::Error>> {
+fn missing_code_only_commit_requires_an_explicit_build_before_query()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     git(directory.path(), &["init", "--quiet"])?;
     git(directory.path(), &["config", "user.name", "Compass Test"])?;
@@ -1898,11 +1916,26 @@ fn missing_code_only_commit_is_built_on_first_query() -> Result<(), Box<dyn std:
         directory.path(),
         &["query", "OldService", "--at", "HEAD~1"],
     )?;
+    assert!(!query.status.success());
+    assert!(String::from_utf8_lossy(&query.stderr).contains("not materialized"));
+    assert!(!directory.path().join("compass-out").exists());
+
+    let built = run(
+        compass,
+        directory.path(),
+        &["history", "build", "HEAD~1", "--code-only"],
+    )?;
     assert!(
-        query.status.success(),
+        built.status.success(),
         "{}",
-        String::from_utf8_lossy(&query.stderr)
+        String::from_utf8_lossy(&built.stderr)
     );
+    let query = run(
+        compass,
+        directory.path(),
+        &["query", "OldService", "--at", "HEAD~1"],
+    )?;
+    assert!(query.status.success());
     assert!(String::from_utf8_lossy(&query.stdout).contains("OldService"));
     assert!(!directory.path().join("compass-out").exists());
     let status = run(compass, directory.path(), &["history", "status", "HEAD~1"])?;
@@ -2062,7 +2095,7 @@ fn current_snapshot_promotion_matches_an_exact_rebuild() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn build_rebuild_and_unseen_diff_publish_complete_realizations()
+fn build_rebuild_and_prebuilt_diff_publish_complete_realizations()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     git(directory.path(), &["init", "--quiet"])?;
@@ -2101,6 +2134,26 @@ fn build_rebuild_and_unseen_diff_publish_complete_realizations()
         ],
     )?;
     assert!(enabled.status.success());
+    for revision in ["HEAD~1", "HEAD"] {
+        let built = run(
+            compass,
+            directory.path(),
+            &[
+                "history",
+                "build",
+                revision,
+                "--code-only",
+                "--exclude",
+                "generated/**",
+                "--format=json",
+            ],
+        )?;
+        assert!(
+            built.status.success(),
+            "{revision}: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+    }
     let diff = run(
         compass,
         directory.path(),
@@ -2142,8 +2195,8 @@ fn build_rebuild_and_unseen_diff_publish_complete_realizations()
     }));
     drop(history);
     let progress = String::from_utf8_lossy(&diff.stderr);
-    assert!(progress.contains("building complete graph"));
-    assert!(progress.contains("publishing immutable realization"));
+    assert!(!progress.contains("building complete graph"));
+    assert!(!progress.contains("publishing immutable realization"));
 
     let first = run(
         compass,
@@ -2240,6 +2293,18 @@ fn semantic_diff_end_to_end_languages() -> Result<(), Box<dyn std::error::Error>
             &["history", "enable", "--code-only"],
         )?;
         assert!(enabled.status.success());
+        for revision in ["HEAD~1", "HEAD"] {
+            let built = run(
+                compass,
+                directory.path(),
+                &["history", "build", revision, "--code-only", "--format=json"],
+            )?;
+            assert!(
+                built.status.success(),
+                "{file} {revision}: {}",
+                String::from_utf8_lossy(&built.stderr)
+            );
+        }
         let diff = run(
             compass,
             directory.path(),
