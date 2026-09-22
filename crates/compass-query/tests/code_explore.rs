@@ -35,6 +35,51 @@ fn explore_connects_symbols_and_groups_digest_verified_source()
     Ok(())
 }
 
+/// A platform without race-resistant source confinement must still answer the query.
+///
+/// `open_beneath` fails closed on non-Unix targets, and the call site propagated that
+/// error with `?` — so every evidence-bearing query (explore, node, callers …) returned
+/// nothing at all on Windows, on both architectures. The graph answer does not depend on
+/// reading the file; only the inlined source evidence does, so this degrades exactly as a
+/// stale digest does.
+///
+/// Asserted here through the shape that reaches the caller, so the contract holds on every
+/// platform: the file is reported with no source, a `SourceConfinementUnsupported`
+/// diagnostic names it, and the response is `Ok`.
+#[test]
+fn explore_degrades_when_source_confinement_is_unavailable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let engine = open(&graph_path, None, &directory.path().join("cache"))?;
+    let request = ExploreRequest {
+        symbols: vec!["Api.caller".to_owned(), "Store.callee".to_owned()],
+        root: directory.path().to_string_lossy().into_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits::default(),
+    };
+
+    // On a platform WITH confinement this is the fresh path; the point of the test is that
+    // the query succeeds and reports per-file source state either way, never aborting.
+    let response = engine.explore(request)?;
+    assert_eq!(response.paths.len(), 1);
+    assert_eq!(response.files.len(), 1);
+
+    let unsupported = response
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == QueryDiagnosticCode::SourceConfinementUnsupported);
+    if unsupported {
+        // The Windows path: evidence withheld, answer intact.
+        assert!(response.files[0].source.is_none());
+    } else {
+        // The Unix path: confinement worked, so evidence is present.
+        assert_eq!(response.files[0].source.as_deref(), Some("code"));
+    }
+    Ok(())
+}
+
 #[test]
 fn explore_derives_repository_root_from_a_snapshot_graph() -> Result<(), Box<dyn std::error::Error>>
 {

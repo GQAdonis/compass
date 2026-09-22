@@ -3037,7 +3037,32 @@ impl CodeQueryEngine {
             let Some(record) = self.backend.file_by_path(&path)? else {
                 continue;
             };
-            match verified_source(&root, &path, &record.content_digest, per_file)? {
+            // A platform without race-resistant confinement cannot supply source
+            // evidence, but the graph answer is still valid — degrade exactly as a
+            // stale digest does rather than failing the whole query. Propagating
+            // here made every evidence-bearing query (explore, node, callers …)
+            // return nothing at all on Windows. Only this one code degrades; every
+            // other error still aborts.
+            let verified = match verified_source(&root, &path, &record.content_digest, per_file) {
+                Ok(verified) => verified,
+                Err(error) if error.code() == "source_confinement_unsupported" => {
+                    response.files.push(QueryFile {
+                        path: path.clone(),
+                        content_digest: record.content_digest.clone(),
+                        source: None,
+                        truncated: false,
+                    });
+                    response.diagnostics.push(QueryDiagnostic {
+                        code: QueryDiagnosticCode::SourceConfinementUnsupported,
+                        message: error.message().to_string(),
+                        node_id: None,
+                        path: Some(path),
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match verified {
                 VerifiedSource::Fresh { source, truncated } => {
                     if truncated {
                         response.truncated = true;

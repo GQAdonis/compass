@@ -725,6 +725,10 @@ pub enum QueryDiagnosticCode {
     UnresolvedHandler,
     IncompleteCoverage,
     StaleSourceDigest,
+    /// Verified source could not be read because race-resistant confinement is
+    /// unavailable on this platform. The graph answer stands; only the inlined
+    /// source evidence is absent.
+    SourceConfinementUnsupported,
     BoundedTruncation,
     ProgramOrphan,
     ProgramConflict,
