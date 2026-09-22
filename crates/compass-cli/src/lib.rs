@@ -67,28 +67,32 @@ use compass_global::{GlobalPaths, global_add};
 use compass_graph::god_nodes;
 use compass_graphdb::{push_to_falkordb, push_to_neo4j};
 use compass_model::GraphError;
+use compass_model::code_graph::{EdgeKind, GraphDocument};
 use compass_model::query_contract::{
     CodeQueryLimits, DiscoveryDirection, DiscoveryLimits, DiscoveryQueryRequest,
     DiscoveryQueryResponse, DiscoveryScope, DiscoveryScopeKind, DiscoveryTraversal, ImpactRequest,
 };
 use compass_output::{
-    AffectedLensOptions, AgentOrientation, ArchitectureOverlay, ArchitectureOverlayGroup,
-    ArchitectureProjectionInput, ArchitectureProjectionOptions, ArtifactLens, CallflowOptions,
-    CallflowSection, CanvasOptions, HtmlOptions, ObsidianOptions, SourceNavigation, SvgOptions,
-    TreeOptions, WikiOptions, WorkbenchCoverage, WorkbenchCoverageStatus, WorkbenchModel,
-    WorkbenchView, WorkbenchViewContent, affected_lens_view_model, artifact_lens_view_model,
-    export_obsidian, export_wiki, graph_artifact_identity, graph_community_view_model_document,
-    graph_view_model_bundle_document, graph_view_model_document, node_filenames,
-    project_architecture, render_orientation_json, validate_orientation_graph_identity,
-    write_callflow_html, write_canvas, write_cypher, write_graphml, write_svg, write_tree_html,
-    write_workbench_html_with_source_navigation,
+    AffectedLensOptions, AgentOperandRole, AgentOperation, AgentOrientation, AgentQueryContext,
+    ArchitectureOverlay, ArchitectureOverlayGroup, ArchitectureProjectionInput,
+    ArchitectureProjectionOptions, ArtifactLens, CallflowOptions, CallflowSection, CanvasOptions,
+    HtmlOptions, ObsidianOptions, SourceNavigation, SvgOptions, TreeOptions, WikiOptions,
+    WorkbenchCoverage, WorkbenchCoverageStatus, WorkbenchModel, WorkbenchView,
+    WorkbenchViewContent, affected_lens_view_model, artifact_lens_view_model,
+    build_code_query_view, build_discovery_query_view, export_obsidian, export_wiki,
+    graph_artifact_identity, graph_community_view_model_document, graph_view_model_bundle_document,
+    graph_view_model_document, node_filenames, project_architecture,
+    render_agent_query_header_lines, render_agent_query_text, render_orientation_json,
+    validate_orientation_graph_identity, write_callflow_html, write_canvas, write_cypher,
+    write_graphml, write_svg, write_tree_html, write_workbench_html_with_source_navigation,
 };
 use compass_prs::{ProcessRunner, SystemRunner};
 use compass_query::{
-    DEFAULT_AFFECTED_RELATIONS, DEFAULT_TEXT_TOKEN_BUDGET, DiscoveryTextPageOptions,
-    TextPageOptions, TraversalMode, discovery_request_digest, format_affected, format_benchmark,
-    open as open_code_query, open_with_verified_document, query_graph_text_page,
-    render_discovery_text_page, render_explanation_page, render_shortest_path, run_benchmark,
+    DEFAULT_AFFECTED_RELATIONS, DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET, DEFAULT_PATH_DEPTH_LIMIT,
+    DEFAULT_TEXT_TOKEN_BUDGET, DiscoveryTextPageOptions, TextPageOptions, TraversalMode,
+    discovery_request_digest, format_affected, format_benchmark, open as open_code_query,
+    open_with_verified_document, query_graph_text_page, render_discovery_text_page_with_prefix,
+    render_explanation_page, render_shortest_path_with_limit, run_benchmark,
 };
 use compass_semantic::{
     CachedCorpusExtractionOptions, CorpusExtractionOptions, PreparedDocumentInputs,
@@ -121,6 +125,7 @@ pub enum Frontend {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BuildOperation {
     Init,
+    Ensure,
     Extract,
     Update,
 }
@@ -129,6 +134,7 @@ impl BuildOperation {
     fn label(self) -> &'static str {
         match self {
             Self::Init => "init",
+            Self::Ensure => "ensure",
             Self::Extract => "extract",
             Self::Update => "update",
         }
@@ -147,6 +153,90 @@ pub struct Outcome {
     pub stdout_trailing_newline: bool,
     pub stderr_trailing_newline: bool,
     html_output: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SharedOutputFormat {
+    Text,
+    Json,
+    AgentJson,
+}
+
+/// Parse the output contract shared by structural code-query commands and the
+/// legacy path/explain projections.  Keeping extraction here means every
+/// command accepts both `--format value` and `--format=value` with identical
+/// validation and does not accidentally treat the flag as a positional node.
+pub(crate) fn parse_shared_output_format(
+    args: &[String],
+    command: &str,
+) -> Result<(SharedOutputFormat, Vec<String>), String> {
+    let mut format = SharedOutputFormat::Text;
+    let mut remaining = Vec::with_capacity(args.len());
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--format" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(format!(
+                        "--format requires text, json, or agent-json for {command}"
+                    ));
+                };
+                format = parse_shared_output_format_value(value, command)?;
+                index += 2;
+            }
+            value if value.starts_with("--format=") => {
+                format = parse_shared_output_format_value(&value[9..], command)?;
+                index += 1;
+            }
+            _ => {
+                remaining.push(args[index].clone());
+                index += 1;
+            }
+        }
+    }
+    Ok((format, remaining))
+}
+
+fn parse_shared_output_format_value(
+    value: &str,
+    command: &str,
+) -> Result<SharedOutputFormat, String> {
+    match value {
+        "text" => Ok(SharedOutputFormat::Text),
+        "json" => Ok(SharedOutputFormat::Json),
+        "agent-json" => Ok(SharedOutputFormat::AgentJson),
+        _ => Err(format!(
+            "--format must be text, json, or agent-json for {command}"
+        )),
+    }
+}
+
+fn render_shared_output(format: SharedOutputFormat, command: &str, answer: String) -> Outcome {
+    match format {
+        SharedOutputFormat::Text => Outcome::success(answer),
+        SharedOutputFormat::Json => serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "compass.command-result/1",
+            "command": command,
+            "answer": answer,
+            "truncated": false,
+        }))
+        .map_or_else(
+            |error| Outcome::failure(format!("error: could not render JSON: {error}")),
+            Outcome::success,
+        ),
+        SharedOutputFormat::AgentJson => serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "compass.agent-command/1",
+            "command": command,
+            "answer": answer,
+            "status": "answered",
+            "truncated": false,
+            "nextActions": [],
+        }))
+        .map_or_else(
+            |error| Outcome::failure(format!("error: could not render agent JSON: {error}")),
+            Outcome::success,
+        ),
+    }
 }
 
 pub(crate) fn resolve_output_artifact(output: &Path, name: &str) -> Result<PathBuf, String> {
@@ -394,6 +484,7 @@ pub fn run(frontend: Frontend, arguments: impl IntoIterator<Item = OsString>) ->
         "program" => program_commands::command(frontend, &args),
         "path" => command_path(frontend, &args),
         "explain" => command_explain(frontend, &args),
+        "architecture" => command_architecture(frontend, &args),
         "affected" => command_affected(&args),
         "export" => command_export(frontend, &args),
         "benchmark" => command_benchmark(&args),
@@ -427,6 +518,7 @@ pub fn run(frontend: Frontend, arguments: impl IntoIterator<Item = OsString>) ->
         "tree" => command_tree(frontend, &args),
         "cluster-only" => command_cluster_only(frontend, &args),
         "diagnose" => command_diagnose(frontend, &args),
+        "ensure" => command_build(frontend, &args, BuildOperation::Ensure),
         "update" => command_build(frontend, &args, BuildOperation::Update),
         "extract" => command_build(frontend, &args, BuildOperation::Extract),
         "init" => Outcome::failure(
@@ -1469,6 +1561,7 @@ fn command_cluster_only(_frontend: Frontend, args: &[String]) -> Outcome {
     let mut no_label = false;
     let mut timing = false;
     let mut resolution = 1.0;
+    let mut resolution_explicit = false;
     let mut exclude_hubs = None;
     let mut min_community_size = 3_usize;
     let mut index = 0;
@@ -1492,6 +1585,7 @@ fn command_cluster_only(_frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --resolution requires a number".to_owned());
                 };
                 resolution = value;
+                resolution_explicit = true;
                 index += 1;
             }
             value if value.starts_with("--resolution=") => {
@@ -1499,6 +1593,7 @@ fn command_cluster_only(_frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --resolution requires a number".to_owned());
                 };
                 resolution = parsed;
+                resolution_explicit = true;
             }
             "--exclude-hubs" => {
                 let Some(argument) = args.get(index + 1) else {
@@ -1525,7 +1620,7 @@ fn command_cluster_only(_frontend: Frontend, args: &[String]) -> Outcome {
                 min_community_size = parsed;
             }
             "-h" | "--help" => {
-                return Outcome::success("Usage: compass cluster-only [PATH] [--graph PATH] [--no-viz] [--no-label] [--resolution N] [--exclude-hubs N] [--min-community-size=N]".to_owned());
+                return Outcome::success("Usage: compass cluster-only [PATH] [--graph PATH] [--no-viz] [--no-label] [--resolution N] [--exclude-hubs N] [--min-community-size=N]\nCommunity resolution: omission uses fixed resolution 1; --resolution N uses exactly N. Automatic multi-resolution selection is qualification-only.".to_owned());
             }
             value if value.starts_with('-') => {
                 return Outcome::failure(format!(
@@ -1571,6 +1666,7 @@ fn command_cluster_only(_frontend: Frontend, args: &[String]) -> Outcome {
         no_viz,
         no_label,
         resolution,
+        resolution_explicit,
         exclude_hubs,
         min_community_size,
     }) {
@@ -1860,6 +1956,98 @@ fn command_build_with_validation(
     outcome
 }
 
+/// Report managed-state drift before a build publishes a new snapshot.  These
+/// checks are deliberately read-only and bounded: they inspect only canonical
+/// marker paths and a capped snapshot directory listing, never source content
+/// or credentials.  A successful ensure still performs the normal repair, but
+/// the operator gets an explicit explanation and a command they can run
+/// independently when the drift is outside the build's ownership boundary.
+fn collect_state_health_notes(
+    root: &Path,
+    output_directory: &Path,
+    graph_healthy: bool,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    let record_attempt = |path: &Path| {
+        let _ =
+            compass_files::BuildGuard::record_state_event(output_directory, "repair_attempt", path);
+    };
+    let project_config = root.join(".compass");
+    if project_config.is_dir() && !graph_healthy {
+        record_attempt(Path::new("graph.json"));
+        notes.push(format!(
+            "[compass health] project configuration is present at {} but the graph snapshot is missing or invalid; ensure is rebuilding it",
+            project_config.display()
+        ));
+    }
+
+    for (platform, relative) in [
+        ("Claude", Path::new(".claude/skills/compass/SKILL.md")),
+        ("Agents", Path::new(".agents/skills/compass/SKILL.md")),
+    ] {
+        let managed_directory = root.join(relative).parent().map(Path::to_path_buf);
+        let skill = root.join(relative);
+        let configured = install_commands::managed_skill_is_configured(&skill);
+        let drifted = configured && !install_commands::managed_skill_is_healthy(&skill);
+        let missing_in_existing_directory =
+            managed_directory.as_deref().is_some_and(Path::is_dir) && !skill.is_file();
+        if drifted || missing_in_existing_directory {
+            record_attempt(relative);
+            notes.push(format!(
+                "[compass health] {platform} managed skill is missing or modified at {}; repair with `compass install --platform {}`",
+                skill.display(),
+                platform.to_ascii_lowercase()
+            ));
+        }
+    }
+
+    let snapshots = output_directory.join("snapshots");
+    if snapshots.is_dir() {
+        let current = output_directory.join("current-snapshot");
+        if !current.is_file() {
+            let has_entries = fs::read_dir(&snapshots)
+                .ok()
+                .and_then(|entries| entries.take(1).next())
+                .is_some();
+            if has_entries {
+                record_attempt(Path::new("current-snapshot"));
+                notes.push(format!(
+                    "[compass health] output snapshots exist under {} but current-snapshot is missing; ensure will publish a fresh pointer",
+                    snapshots.display()
+                ));
+            }
+        } else if let Err(error) =
+            compass_files::BuildGuard::resolve_current_snapshot_directory(output_directory)
+        {
+            record_attempt(Path::new("current-snapshot"));
+            notes.push(format!(
+                "[compass health] current snapshot is invalid or incomplete ({}); ensure will repair it",
+                error
+            ));
+        }
+        let has_incomplete = fs::read_dir(&snapshots)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .take(1_025)
+            .any(|entry| entry.path().join("build-incomplete").is_file());
+        if has_incomplete {
+            record_attempt(Path::new("snapshots"));
+            notes.push(format!(
+                "[compass health] incomplete output snapshots were found under {}; ensure will discard or replace them",
+                snapshots.display()
+            ));
+        }
+    } else if output_directory.join("current-snapshot").is_file() {
+        record_attempt(Path::new("current-snapshot"));
+        notes.push(format!(
+            "[compass health] current-snapshot exists without its snapshots directory at {}; ensure will repair the orphaned pointer",
+            output_directory.display()
+        ));
+    }
+    notes
+}
+
 fn command_build_with_validation_inner(
     frontend: Frontend,
     args: &[String],
@@ -1906,6 +2094,7 @@ fn command_build_with_validation_inner(
     let mut excludes = Vec::new();
     let mut program_artifacts = Vec::new();
     let mut resolution = 1.0;
+    let mut resolution_explicit = false;
     let mut exclude_hubs = None;
     let mut index = 0;
     while index < args.len() {
@@ -2176,6 +2365,7 @@ fn command_build_with_validation_inner(
                     Ok(value) => value,
                     Err(error) => return extract_parse_failure(frontend, error),
                 };
+                resolution_explicit = true;
                 index += 1;
             }
             value if value.starts_with("--resolution=") => {
@@ -2183,6 +2373,7 @@ fn command_build_with_validation_inner(
                     Ok(value) => value,
                     Err(error) => return extract_parse_failure(frontend, error),
                 };
+                resolution_explicit = true;
             }
             "--exclude-hubs" if index + 1 < args.len() => {
                 let Ok(value) = args[index + 1].parse::<f64>() else {
@@ -2240,7 +2431,10 @@ fn command_build_with_validation_inner(
                 return Outcome::success(if extract {
                     extract_help()
                 } else {
-                    "Usage: compass update [path] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--max-source-bytes N] [--max-workers N] [--no-cluster] [--force] [--no-viz] [--timing]".to_owned()
+                    format!(
+                        "Usage: compass {} [path] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--max-source-bytes N] [--max-workers N] [--no-cluster] [--force] [--no-viz] [--timing] [--resolution N]\nCommunity resolution: omission uses fixed resolution 1; --resolution N uses exactly N. Automatic multi-resolution selection is qualification-only.",
+                        operation.label()
+                    )
                 });
             }
             value if value.starts_with('-') => {
@@ -2283,6 +2477,12 @@ fn command_build_with_validation_inner(
     } else {
         root.or_else(saved_graph_root)
             .unwrap_or_else(|| PathBuf::from("."))
+    };
+    let root = if operation == BuildOperation::Ensure && !has_explicit_root {
+        compass_history::Repository::discover(&root)
+            .map_or(root, |repository| repository.root().to_path_buf())
+    } else {
+        root
     };
     let mut options = BuildOptions::new(&root);
     let project_config = match ProjectConfig::load(&root) {
@@ -2346,6 +2546,7 @@ fn command_build_with_validation_inner(
     }
     options.extra_excludes = excludes;
     options.resolution = resolution;
+    options.resolution_explicit = resolution_explicit;
     options.exclude_hubs = exclude_hubs;
     options.code_only = code_only;
     options.purpose = if extract {
@@ -2373,6 +2574,16 @@ fn command_build_with_validation_inner(
         .map(absolute_cli_path)
         .unwrap_or_else(|| root.clone())
         .join(output_name);
+    let graph_health_path =
+        compass_files::BuildGuard::resolve_artifact(&output_container, "graph.json").ok();
+    let graph_existed_before = graph_health_path
+        .as_ref()
+        .is_some_and(|path| path.is_file());
+    let graph_healthy = graph_health_path
+        .as_deref()
+        .filter(|path| path.is_file())
+        .is_some_and(|path| GraphDocument::load(path).is_ok());
+    let health_notes = collect_state_health_notes(&root, &output_container, graph_healthy);
     let extract_incremental = extract
         && !force
         && compass_files::BuildGuard::resolve_artifact(&output_container, "graph.json")
@@ -2506,8 +2717,17 @@ fn command_build_with_validation_inner(
         .map(|result| (result, Vec::new(), Duration::ZERO))
         .map_err(|error| error.to_string())
     };
+    let health_repair_needed = !health_notes.is_empty();
     match built {
         Ok((result, mut notes, _semantic_elapsed)) => {
+            if health_repair_needed {
+                let _ = compass_files::BuildGuard::record_state_event(
+                    &output_container,
+                    "repair_succeeded",
+                    Path::new("current-snapshot"),
+                );
+            }
+            notes.extend(health_notes);
             if let Some(tiebreaker) = dedup_tiebreaker.as_mut() {
                 notes.extend(tiebreaker.take_warnings());
             }
@@ -2569,6 +2789,16 @@ fn command_build_with_validation_inner(
                 )
                 .display()
             );
+            if operation == BuildOperation::Ensure {
+                let disposition = if !graph_existed_before {
+                    "initialized"
+                } else if result.outputs_changed {
+                    "updated"
+                } else {
+                    "current"
+                };
+                output = format!("Compass graph {disposition}.\n{output}");
+            }
             output.push('\n');
             output.push_str(&format_program_analysis(&result));
             if !notes.is_empty() {
@@ -2594,6 +2824,13 @@ fn command_build_with_validation_inner(
             outcome
         }
         Err(error) => {
+            if health_repair_needed {
+                let _ = compass_files::BuildGuard::record_state_event(
+                    &output_container,
+                    "repair_failed",
+                    Path::new("current-snapshot"),
+                );
+            }
             let mut message = format!("error: {error}");
             if document_ocr_mode != compass_ocr::OcrMode::Off
                 && error.contains("compass models install pp-ocrv6-")
@@ -3279,7 +3516,7 @@ fn executable_on_path(name: &str) -> bool {
 }
 
 fn extract_help() -> String {
-    "Usage: compass extract [PATH] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--code-only] [--cargo] [--google-workspace] [--postgres DSN] [--backend NAME] [--model MODEL] [--mode deep] [--ocr off|auto|always] [--ocr-profile NAME] [--ocr-language BCP47] [--token-budget N] [--max-concurrency N] [--max-workers N] [--max-source-bytes N] [--api-timeout SECONDS] [--allow-partial] [--dedup-llm] [--timing] [--out DIR] [--no-cluster] [--force] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--resolution N] [--exclude-hubs N]\nProvider selection: --backend/--model override COMPASS_BACKEND/COMPASS_MODEL. Built-ins: claude, kimi, ollama, gemini, openai, deepseek, azure, bedrock, claude-cli. Set the selected provider's documented credential variable; custom providers use `compass provider add`. Credentials are never written to Compass artifacts.".to_owned()
+    "Usage: compass extract [PATH] [--program] [--program-artifact PATH] [--no-program] [--store json|sqlite|surreal] [--surreal-engine surrealkv|rocksdb|remote] [--surreal-path PATH] [--inference-level low|medium|high|max] [--code-only] [--cargo] [--google-workspace] [--postgres DSN] [--backend NAME] [--model MODEL] [--mode deep] [--ocr off|auto|always] [--ocr-profile NAME] [--ocr-language BCP47] [--token-budget N] [--max-concurrency N] [--max-workers N] [--max-source-bytes N] [--api-timeout SECONDS] [--allow-partial] [--dedup-llm] [--timing] [--out DIR] [--no-cluster] [--force] [--no-viz] [--no-gitignore] [--exclude PATTERN] [--resolution N] [--exclude-hubs N]\nCommunity resolution: omission uses fixed resolution 1; --resolution N uses exactly N. Automatic multi-resolution selection is qualification-only.\nProvider selection: --backend/--model override COMPASS_BACKEND/COMPASS_MODEL. Built-ins: claude, kimi, ollama, gemini, openai, deepseek, azure, bedrock, claude-cli. Set the selected provider's documented credential variable; custom providers use `compass provider add`. Credentials are never written to Compass artifacts.".to_owned()
 }
 
 fn saved_graph_root() -> Option<PathBuf> {
@@ -5423,7 +5660,14 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
     {
         return Outcome::success(query_help(frontend));
     }
-    let (selection, args) = match parse_graph_selection(args) {
+    let format_was_provided = args
+        .iter()
+        .any(|argument| argument == "--format" || argument.starts_with("--format="));
+    let (shared_format, args) = match parse_shared_output_format(args, "query") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let (selection, args) = match parse_graph_selection(&args) {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
@@ -5435,16 +5679,22 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
     let mut page = 1_usize;
     let mode = TraversalMode::Bfs;
     let mut legacy_requested = false;
-    let mut discovery_requested = false;
-    let mut discovery_text_budget = DEFAULT_TEXT_TOKEN_BUDGET;
+    let mut discovery_requested = format_was_provided;
+    let mut discovery_text_budget = DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET;
     let mut discovery_cursor = None::<String>;
+    let mut discovery_evidence = false;
     let mut discovery_text_pagination_requested = false;
     let mut discovery_direction = DiscoveryDirection::Auto;
     let mut discovery_scope = Vec::new();
     let mut discovery_traversal = DiscoveryTraversal::Bfs;
     let mut discovery_include_heuristic = false;
     let mut discovery_limits = DiscoveryLimits::default();
-    let mut discovery_format = "text".to_owned();
+    let mut discovery_format = match shared_format {
+        SharedOutputFormat::Text => "text",
+        SharedOutputFormat::Json => "json",
+        SharedOutputFormat::AgentJson => "agent-json",
+    }
+    .to_owned();
     let mut discovery_result_envelope = false;
     let mut seen_discovery_options = HashSet::new();
     let mut index = 1;
@@ -5510,7 +5760,7 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
                 discovery_requested = true;
                 index += 2;
             }
-            "--direction" | "--scope" | "--format" => {
+            "--direction" | "--scope" => {
                 let name = args[index].as_str();
                 let Some(value) = args.get(index + 1) else {
                     return Outcome::failure(format!("error: {name} requires a value"));
@@ -5537,6 +5787,14 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
                     );
                 }
                 discovery_include_heuristic = true;
+                discovery_requested = true;
+                index += 1;
+            }
+            "--evidence" => {
+                if !seen_discovery_options.insert("--evidence".to_owned()) {
+                    return Outcome::failure("error: --evidence must not be repeated".to_owned());
+                }
+                discovery_evidence = true;
                 discovery_requested = true;
                 index += 1;
             }
@@ -5600,7 +5858,7 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
                 index += 1;
             }
             value
-                if ["--direction=", "--scope=", "--format="]
+                if ["--direction=", "--scope="]
                     .iter()
                     .any(|prefix| value.starts_with(prefix)) =>
             {
@@ -5651,9 +5909,11 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
         );
     }
     if !legacy_requested {
-        if discovery_format == "json" && discovery_text_pagination_requested {
+        if matches!(discovery_format.as_str(), "json" | "agent-json")
+            && (discovery_text_pagination_requested || discovery_evidence)
+        {
             return Outcome::failure(
-                "error: --cursor and --text-budget are text-only and cannot be used with --format json"
+                "error: --cursor, --text-budget, and --evidence are text-only and cannot be used with --format json or agent-json"
                     .to_owned(),
             );
         }
@@ -5676,6 +5936,7 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
             discovery_text_budget,
             discovery_cursor.as_deref(),
             discovery_result_envelope,
+            discovery_evidence,
         );
         if outcome.code == 0 {
             touch_selected_query_stamp(&selection);
@@ -5729,8 +5990,10 @@ fn apply_discovery_option(
         }
         "--scope" => scope.push(parse_discovery_scope(value)?),
         "--format" => {
-            if !matches!(value, "text" | "json") {
-                return Err("--format must be text or json for discovery queries".to_owned());
+            if !matches!(value, "text" | "json" | "agent-json") {
+                return Err(
+                    "--format must be text, json, or agent-json for discovery queries".to_owned(),
+                );
             }
             *format = value.to_owned();
         }
@@ -5810,6 +6073,7 @@ fn command_discovery_query(
     text_budget: usize,
     cursor: Option<&str>,
     result_envelope: bool,
+    include_evidence: bool,
 ) -> Outcome {
     let include_heuristic = request.include_heuristic;
     let execution = match discovery_query(selection, request) {
@@ -5830,13 +6094,52 @@ fn command_discovery_query(
             Ok(output) => Outcome::success(output),
             Err(error) => Outcome::failure(format!("error: {error}")),
         }
+    } else if format == "agent-json" {
+        let context = AgentQueryContext::new(
+            AgentOperation::Discovery,
+            execution.graph_digest.clone(),
+            execution.graph_identity.clone(),
+        )
+        .with_question(execution.response.question.clone())
+        .with_operand(AgentOperandRole::Query, execution.response.question.clone())
+        .with_cursor(cursor.map(str::to_owned))
+        .with_evidence_hidden(!include_evidence);
+        match build_discovery_query_view(&execution.response, context)
+            .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
+        {
+            Ok(output) => Outcome::success(output),
+            Err(error) => Outcome::failure(format!("error: {error}")),
+        }
     } else {
         let request_digest = match discovery_request_digest(&execution.response, include_heuristic)
         {
             Ok(digest) => digest,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };
-        match render_discovery_text_page(
+        let context = AgentQueryContext::new(
+            AgentOperation::Discovery,
+            execution.graph_digest.clone(),
+            execution.graph_identity.clone(),
+        )
+        .with_question(execution.response.question.clone())
+        .with_operand(AgentOperandRole::Query, execution.response.question.clone())
+        .with_cursor(cursor.map(str::to_owned))
+        .with_evidence_hidden(!include_evidence);
+        let view = match build_discovery_query_view(&execution.response, context) {
+            Ok(view) => view,
+            Err(error) => return Outcome::failure(format!("error: {error}")),
+        };
+        let mut prefix = match render_agent_query_header_lines(&view) {
+            Ok(prefix) => prefix,
+            Err(error) => return Outcome::failure(format!("error: {error}")),
+        };
+        if include_evidence {
+            prefix.push(format!(
+                "Semantic result: {}",
+                view.identity.source_result_digest
+            ));
+        }
+        match render_discovery_text_page_with_prefix(
             &execution.response,
             DiscoveryTextPageOptions {
                 token_budget: text_budget,
@@ -5844,7 +6147,9 @@ fn command_discovery_query(
                 request_digest: &request_digest,
                 graph_identity: &execution.graph_identity,
                 graph_digest: &execution.graph_digest,
+                include_evidence,
             },
+            &prefix,
         ) {
             Ok(page) => Outcome::success(page.text),
             Err(error) => Outcome::failure(format!("error: {error}")),
@@ -5925,24 +6230,232 @@ fn command_path(frontend: Frontend, args: &[String]) -> Outcome {
     {
         return Outcome::success(path_help(frontend));
     }
-    let (selection, args) = match parse_graph_selection(args) {
+    let (format, args) = match parse_shared_output_format(args, "path") {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
-    if args.len() != 2 {
+    let (selection, args) = match parse_graph_selection(&args) {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let Some(source) = args.first() else {
         return Outcome::failure(path_help(frontend));
+    };
+    let Some(target) = args.get(1) else {
+        return Outcome::failure(path_help(frontend));
+    };
+    let mut max_depth = DEFAULT_PATH_DEPTH_LIMIT;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--max-depth" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure(
+                        "error: --max-depth requires a positive integer".to_owned(),
+                    );
+                };
+                max_depth = match value.parse::<usize>().ok().filter(|value| *value > 0) {
+                    Some(value) => value,
+                    None => {
+                        return Outcome::failure(
+                            "error: --max-depth requires a positive integer".to_owned(),
+                        );
+                    }
+                };
+                index += 2;
+            }
+            value if value.starts_with("--max-depth=") => {
+                max_depth = match value[12..].parse::<usize>().ok().filter(|value| *value > 0) {
+                    Some(value) => value,
+                    None => {
+                        return Outcome::failure(
+                            "error: --max-depth requires a positive integer".to_owned(),
+                        );
+                    }
+                };
+                index += 1;
+            }
+            value => return Outcome::failure(format!("error: unexpected path argument {value}")),
+        }
     }
     let loaded = match load_selection(frontend, &selection, true) {
         Ok(loaded) => loaded,
         Err(outcome) => return outcome,
     };
-    match render_shortest_path(&loaded.graph, &args[0], &args[1]) {
+    match render_shortest_path_with_limit(&loaded.graph, source, target, max_depth) {
         Ok(output) => {
             touch_selected_query_stamp(&selection);
-            Outcome::success(output)
+            render_shared_output(format, "path", output)
         }
         Err(error) => Outcome::failure(error),
     }
+}
+
+fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "-h" | "--help"))
+    {
+        return Outcome::success("Usage: compass architecture [--graph PATH] [--labels PATH] [--format text|json|agent-json]".to_owned());
+    }
+    let (format, args) = match parse_shared_output_format(args, "architecture") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let mut graph_path = default_graph_path();
+    let mut labels_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--graph" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --graph requires a path".to_owned());
+                };
+                graph_path = PathBuf::from(value);
+                index += 2;
+            }
+            value if value.starts_with("--graph=") => {
+                graph_path = PathBuf::from(&value[8..]);
+                index += 1;
+            }
+            "--labels" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --labels requires a path".to_owned());
+                };
+                labels_path = Some(PathBuf::from(value));
+                index += 2;
+            }
+            value if value.starts_with("--labels=") => {
+                labels_path = Some(PathBuf::from(&value[9..]));
+                index += 1;
+            }
+            value if !value.starts_with('-') && index == 0 => {
+                graph_path = PathBuf::from(value);
+                index += 1;
+            }
+            value => {
+                return Outcome::failure(format!(
+                    "error: unexpected architecture argument {value}"
+                ));
+            }
+        }
+    }
+    let graph_path = match compass_files::BuildGuard::resolve_requested_artifact(&graph_path) {
+        Ok(path) => path,
+        Err(error) => return Outcome::failure(format!("error: could not resolve graph: {error}")),
+    };
+    let mut inputs = match ExportInputs::load(&graph_path) {
+        Ok(inputs) => inputs,
+        Err(GraphError::NotFound(_)) => {
+            return Outcome::failure(format!(
+                "error: graph not found: {}. Run `compass ensure` first.",
+                graph_path.display()
+            ));
+        }
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    if let Some(labels_path) = labels_path {
+        match load_usize_string_map(&labels_path) {
+            Ok(labels) => inputs.labels = labels,
+            Err(error) => return Outcome::failure(error),
+        }
+    }
+    let title = export_project_title(&inputs, &graph_path);
+    let model = match architecture_view_model(&inputs, &graph_path, &title) {
+        Ok(model) => model,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let text = render_architecture_text(&model);
+    match format {
+        SharedOutputFormat::Text => Outcome::success(text),
+        SharedOutputFormat::Json => serde_json::to_string_pretty(&model).map_or_else(
+            |error| {
+                Outcome::failure(format!(
+                    "error: could not render architecture JSON: {error}"
+                ))
+            },
+            Outcome::success,
+        ),
+        SharedOutputFormat::AgentJson => {
+            let mut value = match serde_json::to_value(&model) {
+                Ok(serde_json::Value::Object(value)) => value,
+                Ok(_) => {
+                    return Outcome::failure(
+                        "error: architecture model is not an object".to_owned(),
+                    );
+                }
+                Err(error) => {
+                    return Outcome::failure(format!(
+                        "error: could not render architecture agent JSON: {error}"
+                    ));
+                }
+            };
+            value.insert(
+                "schema".to_owned(),
+                serde_json::Value::String("compass.architecture.agent-view/1".to_owned()),
+            );
+            value.insert("answer".to_owned(), serde_json::Value::String(text));
+            value.insert(
+                "nextActions".to_owned(),
+                serde_json::Value::Array(Vec::new()),
+            );
+            serde_json::to_string_pretty(&serde_json::Value::Object(value)).map_or_else(
+                |error| {
+                    Outcome::failure(format!(
+                        "error: could not render architecture agent JSON: {error}"
+                    ))
+                },
+                Outcome::success,
+            )
+        }
+    }
+}
+
+fn render_architecture_text(model: &compass_output::ArchitectureViewModel) -> String {
+    let mut lines = vec![
+        format!("Architecture: {}", model.title),
+        format!(
+            "Graph: {} nodes, {} relationships, {} communities",
+            model.statistics.nodes, model.statistics.relationships, model.statistics.communities
+        ),
+    ];
+    for projection in &model.projections {
+        lines.push(format!(
+            "Scope {:?}: {} groups, {} routes",
+            projection.scope,
+            projection.groups.len(),
+            projection.routes.len()
+        ));
+        for group in projection.groups.iter().take(24) {
+            lines.push(format!(
+                "- {} [{}] nodes={} relationships={} cohesion={:.2}",
+                group.name.value,
+                group.id,
+                group.node_count,
+                group.relationship_count,
+                group.cohesion
+            ));
+        }
+        if projection.omissions.omitted_groups > 0 {
+            lines.push(format!(
+                "  Omitted {} groups ({} shown); witnesses: {}",
+                projection.omissions.omitted_groups,
+                projection.omissions.shown_groups,
+                if projection.omissions.witness_group_ids.is_empty() {
+                    "none".to_owned()
+                } else {
+                    projection.omissions.witness_group_ids.join(", ")
+                }
+            ));
+        }
+        for diagnostic in projection.quality.diagnostics.iter().take(8) {
+            lines.push(format!(
+                "  Diagnostic [{}]: {}",
+                diagnostic.code, diagnostic.message
+            ));
+        }
+    }
+    lines.join("\n")
 }
 
 fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
@@ -5952,7 +6465,11 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
     {
         return Outcome::success(explain_help(frontend));
     }
-    let (selection, args) = match parse_graph_selection(args) {
+    let (format, args) = match parse_shared_output_format(args, "explain") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let (selection, args) = match parse_graph_selection(&args) {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
@@ -6016,7 +6533,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
     touch_selected_query_stamp(&selection);
-    Outcome::success(output)
+    render_shared_output(format, "explain", output)
 }
 
 fn validate_text_pagination(token_budget: usize, page: usize) -> Result<(), String> {
@@ -6030,9 +6547,13 @@ fn validate_text_pagination(token_budget: usize, page: usize) -> Result<(), Stri
 }
 
 fn command_affected(args: &[String]) -> Outcome {
+    let (format, args) = match parse_shared_output_format(args, "affected") {
+        Ok(parsed) => parsed,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
     let Some(query) = args.first() else {
         return Outcome::failure(
-            "Usage: compass affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]"
+            "Usage: compass affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path] [--format text|json|agent-json]"
                 .to_owned(),
         );
     };
@@ -6090,11 +6611,137 @@ fn command_affected(args: &[String]) -> Outcome {
             .map(|relation| (*relation).to_owned())
             .collect();
     }
+    if let Some(output) = command_affected_typed(query, &graph_path, depth, &relations, format) {
+        return output;
+    }
     let loaded = match load_affected(&graph_path) {
         Ok(loaded) => loaded,
         Err(outcome) => return outcome,
     };
-    Outcome::success(format_affected(&loaded.graph, query, &relations, depth))
+    render_shared_output(
+        format,
+        "affected",
+        format_affected(&loaded.graph, query, &relations, depth),
+    )
+}
+
+/// Use the typed resolver for v1 code graphs so the compatibility `affected`
+/// command shares import/reference recall with callers and impact.  Legacy
+/// node-link graphs still use the bounded compatibility traversal below.
+fn command_affected_typed(
+    query: &str,
+    requested_graph: &Path,
+    depth: usize,
+    relations: &[String],
+    format: SharedOutputFormat,
+) -> Option<Outcome> {
+    let resolved_graph =
+        match compass_files::BuildGuard::resolve_requested_artifact(requested_graph) {
+            Ok(path) => path,
+            Err(_) => return None,
+        };
+    let (document, identity) = match GraphDocument::load_with_artifact_digest(&resolved_graph) {
+        Ok(document) => document,
+        Err(_) => return None,
+    };
+    let cache_root = requested_graph
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("cache");
+    let engine =
+        match open_with_verified_document(document, identity, &resolved_graph, None, &cache_root) {
+            Ok(engine) => engine,
+            Err(error) => return Some(Outcome::failure(format!("error: {error}"))),
+        };
+    let relation_kinds = relations
+        .iter()
+        .filter_map(|relation| affected_relation_kind(relation))
+        .collect::<Vec<_>>();
+    if relation_kinds.is_empty() {
+        return Some(render_shared_output(
+            format,
+            "affected",
+            format!("No supported relationships were requested for {query:?}"),
+        ));
+    }
+    let max_depth = u32::try_from(depth).unwrap_or(u32::MAX);
+    let limits = CodeQueryLimits {
+        max_depth: max_depth.max(1),
+        ..CodeQueryLimits::default()
+    };
+    let response = match engine.affected(
+        ImpactRequest {
+            symbol: query.to_owned(),
+            include_heuristic: false,
+            limits,
+        },
+        &relation_kinds,
+    ) {
+        Ok(response) => response,
+        Err(error) => return Some(Outcome::failure(format!("error: {error}"))),
+    };
+    let mut context = AgentQueryContext::new(
+        response.operation.into(),
+        engine.graph_identity().to_owned(),
+        engine.build_generation_identity().to_owned(),
+    )
+    .with_operand(AgentOperandRole::Symbol, query.to_owned());
+    context = context.with_question(format!("affected {query}"));
+    match format {
+        SharedOutputFormat::Text => Some(
+            build_code_query_view(&response, context)
+                .and_then(|view| render_agent_query_text(&view))
+                .map_or_else(
+                    |error| Outcome::failure(format!("error: {error}")),
+                    Outcome::success,
+                ),
+        ),
+        SharedOutputFormat::Json => Some(serde_json::to_string_pretty(&response).map_or_else(
+            |error| Outcome::failure(format!("error: {error}")),
+            Outcome::success,
+        )),
+        SharedOutputFormat::AgentJson => Some(
+            build_code_query_view(&response, context)
+                .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
+                .map_or_else(
+                    |error| Outcome::failure(format!("error: {error}")),
+                    Outcome::success,
+                ),
+        ),
+    }
+}
+
+fn affected_relation_kind(relation: &str) -> Option<EdgeKind> {
+    match relation
+        .trim()
+        .to_ascii_lowercase()
+        .replace('-', "_")
+        .as_str()
+    {
+        "calls" | "indirect_call" => Some(EdgeKind::Calls),
+        "imports" | "imports_from" => Some(EdgeKind::Imports),
+        "exports" | "re_exports" => Some(EdgeKind::Exports),
+        "references" => Some(EdgeKind::References),
+        "aliases" => Some(EdgeKind::Aliases),
+        "inherits" | "extends" => Some(EdgeKind::Extends),
+        "implements" => Some(EdgeKind::Implements),
+        "uses" => Some(EdgeKind::DependsOn),
+        "mixes_in" => Some(EdgeKind::MixesIn),
+        "embeds" => Some(EdgeKind::Embeds),
+        "routes_to" => Some(EdgeKind::RoutesTo),
+        "renders" => Some(EdgeKind::Renders),
+        "depends_on" => Some(EdgeKind::DependsOn),
+        "reads" => Some(EdgeKind::Reads),
+        "writes" => Some(EdgeKind::Writes),
+        "publishes" => Some(EdgeKind::Publishes),
+        "subscribes" => Some(EdgeKind::Subscribes),
+        "produces" => Some(EdgeKind::Produces),
+        "consumes" => Some(EdgeKind::Consumes),
+        "schedules" => Some(EdgeKind::Schedules),
+        "triggers" => Some(EdgeKind::Triggers),
+        "maps_to" => Some(EdgeKind::MapsTo),
+        _ => None,
+    }
 }
 
 pub(crate) fn parse_graph_selection(
@@ -6209,7 +6856,7 @@ fn touch_selected_query_stamp(selection: &GraphSelection) {
 fn query_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
     let help = format!(
-        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--format text|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --format <text|json>              Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 2000]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Approximate tokens per page [default: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text pagination controls. Legacy --traverse, --budget, and --page cannot be mixed with discovery controls."
+        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--evidence] [--format text|agent-json|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --evidence                        Include full provenance and typed detail in text\n  --format <text|agent-json|json>   Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 8000]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Approximate tokens per page [default: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text-only pagination/evidence controls. Legacy --traverse, --budget, and --page cannot be mixed with discovery controls."
     );
     let help = help
         .replace(
@@ -6227,12 +6874,16 @@ fn query_help(frontend: Frontend) -> String {
 
 fn path_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
-    format!("Usage: {prefix} path \"<source>\" \"<target>\" [--graph PATH|--at REV]")
+    format!(
+        "Usage: {prefix} path \"<source>\" \"<target>\" [--max-depth N] [--format text|json|agent-json] [--graph PATH|--at REV]"
+    )
 }
 
 fn explain_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
-    format!("Usage: {prefix} explain \"<node>\" [--budget N] [--page N] [--graph PATH|--at REV]")
+    format!(
+        "Usage: {prefix} explain \"<node>\" [--budget N] [--page N] [--format text|json|agent-json] [--graph PATH|--at REV]"
+    )
 }
 
 fn frontend_name(frontend: Frontend) -> &'static str {

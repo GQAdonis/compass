@@ -1,5 +1,92 @@
 # Update Log
 
+## 2026-09-22
+* **Ingest**: [Karpathy session cabe533c0e52](/karpathy-session-cabe533c0e527e70.md)
+* **Ingest**: [Karpathy session 84ce9bfe58ca](/karpathy-session-84ce9bfe58cadf0e.md)
+* **Ingest**: [Karpathy session 2d490bb70e01](/karpathy-session-2d490bb70e01964c.md)
+* **Ingest**: [Karpathy session 07c1dac7f999](/karpathy-session-07c1dac7f9992cec.md)
+* **Ingest**: [Karpathy session 16c483b09fe0](/karpathy-session-16c483b09fe0e8b2.md)
+* **Ingest**: [Karpathy session 358c4391ca2e](/karpathy-session-358c4391ca2e108a.md)
+* **Ingest**: [Karpathy session 78412e7138bc](/karpathy-session-78412e7138bc816d.md)
+* **Ingest**: [Karpathy session 5d25a224a05c](/karpathy-session-5d25a224a05c69b8.md)
+* **Ingest**: [Karpathy session dcf8ccb4b978](/karpathy-session-dcf8ccb4b9785b7e.md)
+* **Ingest**: [Karpathy session 79679bfae177](/karpathy-session-79679bfae177870d.md)
+* **Ingest**: [Karpathy session 38fbf7a20dab](/karpathy-session-38fbf7a20dab72b8.md)
+
+## 2026-09-21
+* **Ingest**: [Karpathy session cd7a4d8c5e4d](/karpathy-session-cd7a4d8c5e4d11e4.md)
+* **Ingest**: [Karpathy session 0c9efca0691c](/karpathy-session-0c9efca0691cb8e3.md)
+* **Ingest**: [Karpathy session 21ea870eb04a](/karpathy-session-21ea870eb04abbaa.md)
+* **Ingest**: [Karpathy session bf8b851033e6](/karpathy-session-bf8b851033e66f58.md)
+* **Ingest**: [Karpathy session 6cdc9ec872c5](/karpathy-session-6cdc9ec872c5dc61.md)
+* **Ingest**: [Karpathy session 9fe266153136](/karpathy-session-9fe2661531363045.md)
+* **Ingest**: [Karpathy session 836dcc717a37](/karpathy-session-836dcc717a3766f8.md)
+* **Ingest**: [Karpathy session eceda52ff540](/karpathy-session-eceda52ff5405dec.md)
+* **Ingest**: [Karpathy session be064d5ff587](/karpathy-session-be064d5ff5871927.md)
+* **Ingest**: [Karpathy session 7b7a5d5c56a6](/karpathy-session-7b7a5d5c56a6d62a.md)
+* **Ingest**: [Karpathy session 538d0952e012](/karpathy-session-538d0952e01257f8.md)
+* **Ingest**: [Karpathy session dc3bcf745c58](/karpathy-session-dc3bcf745c58edd1.md)
+* **Ingest**: [Karpathy session afed98eee274](/karpathy-session-afed98eee27411e8.md)
+* **Ingest**: [Karpathy session 662d5a006353](/karpathy-session-662d5a006353e5b7.md)
+* **Ingest**: [Karpathy session 94255ed7c1e2](/karpathy-session-94255ed7c1e2505c.md)
+* **Ingest**: [Karpathy session e864eaacca54](/karpathy-session-e864eaacca54e55f.md)
+* **Ingest**: [Karpathy session 50589df9cfe4](/karpathy-session-50589df9cfe48936.md)
+* **Ingest**: [Karpathy session 0f0568b07d0d](/karpathy-session-0f0568b07d0d60b2.md)
+* **Ingest**: [Karpathy session 2dd07fbc0873](/karpathy-session-2dd07fbc0873bcf2.md)
+* **Ingest**: [Karpathy session 8707b239e3a6](/karpathy-session-8707b239e3a664f3.md)
+* **Ingest**: [Karpathy session 9eb8a7bd9cd8](/karpathy-session-9eb8a7bd9cd863e3.md)
+* **Ingest**: [Karpathy session 27e34b55b1e9](/karpathy-session-27e34b55b1e9a2ce.md)
+* **Ingest**: [Karpathy session 7cb5c7767650](/karpathy-session-7cb5c77676501c0b.md)
+* **Ingest**: [Karpathy session 5eab6e3f8f41](/karpathy-session-5eab6e3f8f414bda.md)
+* **Ingest**: [Karpathy session 841c3d026fe7](/karpathy-session-841c3d026fe73012.md)
+* **Ingest**: [Karpathy session fbbb1c4cdb27](/karpathy-session-fbbb1c4cdb27a12b.md)
+* **Ingest**: [Karpathy session 207bd6a468a3](/karpathy-session-207bd6a468a309ef.md)
+* **Ingest**: [Karpathy session a270cc63a00b](/karpathy-session-a270cc63a00b30e1.md)
+* **Ingest**: [Karpathy session e9819b8111c9](/karpathy-session-e9819b8111c9f8fc.md)
+* **Ingest**: [Karpathy session 60f7c385af8b](/karpathy-session-60f7c385af8b8844.md)
+* **Ingest**: [Karpathy session 151726fe1dba](/karpathy-session-151726fe1dba1eab.md)
+* **Ingest**: [Karpathy session 7e51545e2c50](/karpathy-session-7e51545e2c50a74b.md)
+* **Ingest**: [Karpathy session 2d1742746af6](/karpathy-session-2d1742746af69d35.md)
+* **Ingest**: [Karpathy session b3b6859c2c39](/karpathy-session-b3b6859c2c39e33b.md)
+* **Ingest**: [Karpathy session 7b6f5beb3976](/karpathy-session-7b6f5beb3976cf27.md)
+* **Ingest**: [Karpathy session 18e6d79ec04c](/karpathy-session-18e6d79ec04c6423.md)
+* **Ingest**: [Karpathy session e22193bf571b](/karpathy-session-e22193bf571b8289.md)
+* **Ingest**: [Karpathy session bf07a4a3678d](/karpathy-session-bf07a4a3678d93dd.md)
+* **Ingest**: [Karpathy session 2926d79ef961](/karpathy-session-2926d79ef961bea4.md)
+* **Ingest**: [Karpathy session 0137108cc763](/karpathy-session-0137108cc763ad71.md)
+* **Ingest**: [Karpathy session 50fc56eae489](/karpathy-session-50fc56eae4892b50.md)
+
+## 2026-09-18
+* **Ingest**: [Karpathy session e61b3703089e](/karpathy-session-e61b3703089ee170.md)
+* **Ingest**: [Karpathy session 768f31dcc40d](/karpathy-session-768f31dcc40d3523.md)
+* **Ingest**: [Karpathy session 7478eed89f67](/karpathy-session-7478eed89f6784e4.md)
+* **Ingest**: [Karpathy session 5e24d5c77d19](/karpathy-session-5e24d5c77d194655.md)
+* **Ingest**: [Karpathy session 43c3b0fa1aaf](/karpathy-session-43c3b0fa1aaf7b56.md)
+* **Ingest**: [Karpathy session 42c3023e3b20](/karpathy-session-42c3023e3b202ea6.md)
+* **Ingest**: [Karpathy session 25d69a7441ad](/karpathy-session-25d69a7441ad9ed3.md)
+* **Ingest**: [Karpathy session 1582f28a960f](/karpathy-session-1582f28a960fcedd.md)
+* **Ingest**: [Karpathy session 0ce0d8d46027](/karpathy-session-0ce0d8d46027e654.md)
+* **Ingest**: [Karpathy session 0cbf391153b1](/karpathy-session-0cbf391153b1c569.md)
+
+## 2026-09-17
+* **Update**: [Compass scoping and bounds executor completion status](/compass-scoping-and-bounds-executor-completion-status.md)
+
+## 2026-09-16
+* **Update**: [Compass scoping and bounds session completion marker](/compass-scoping-and-bounds-executor-completion-status.md)
+* **Update**: [Compass scoping and bounds executor completion marker](/compass-scoping-and-bounds-executor-completion-status.md)
+
+## 2026-09-15
+* **Update**: [Compass scoping and bounds executor completion status](/compass-scoping-and-bounds-executor-completion-status.md)
+* **Update**: [Compass scoping and bounds executor completion marker](/compass-scoping-and-bounds-executor-completion-status.md)
+* **Update**: [Compass scoping and bounds executor completion marker](/compass-scoping-and-bounds-executor-completion-status.md)
+
+## 2026-09-14
+* **Update**: [Compass scoping and bounds executor completion marker](/compass-scoping-and-bounds-executor-completion-status.md)
+
+## 2026-09-13
+* **Update**: [Compass scoping and bounds executor completion status](/compass-scoping-and-bounds-executor-completion-status.md)
+* **Update**: [Compass scoping and bounds executor session completion](/compass-scoping-and-bounds-executor-completion-status.md)
+
 ## 2026-08-28
 * **Update**: [Compass scoping and bounds executor session complete](/compass-scoping-and-bounds-executor-completion-status.md)
 * **Ingest**: [Karpathy session 0c9f8df23506](/karpathy-session-0c9f8df23506c16a.md)

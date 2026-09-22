@@ -51,8 +51,14 @@ fn current_history_profile() -> Result<compass_history::BuildProfile, compass_hi
         ("program_analyzer_version", "1"),
         ("enabled_features", "workspace-default"),
         ("direction", "native-source-semantics"),
-        ("cluster_algorithm", "seeded-louvain/v1"),
+        ("cluster_algorithm", "seeded-leiden-modularity/v1"),
         ("cluster_seed", "42"),
+        ("cluster_topology", "typed-evidence-undirected/v1"),
+        ("cluster_quality", "community-quality/v1"),
+        ("cluster_selector", "fixed-resolution/v1"),
+        ("cluster_resolution_policy", "fixed/v1"),
+        ("cluster_hub_policy", "none/v1"),
+        ("cluster_limits_version", "community-limits/v1"),
         ("gitignore", "true"),
         ("code_only", "true"),
         ("cargo", "false"),
@@ -69,6 +75,83 @@ fn current_history_profile() -> Result<compass_history::BuildProfile, compass_hi
         ("provider_region", "none"),
     ] {
         profile.insert(key, value)?;
+    }
+    for (key, value) in [
+        ("document_schema", compass_media::DOCUMENT_SCHEMA.to_owned()),
+        (
+            "document_normalizer_version",
+            compass_media::DOCUMENT_NORMALIZER_VERSION.to_string(),
+        ),
+        ("ocr_protocol", compass_ocr::OCR_PROTOCOL_SCHEMA.to_owned()),
+        ("ocr_policy", compass_ocr::OCR_POLICY_VERSION.to_string()),
+        (
+            "ocr_preprocessing",
+            compass_ocr::OCR_PREPROCESSING_VERSION.to_string(),
+        ),
+        (
+            "pdf_rasterizer",
+            compass_media::PDF_RASTERIZER_IDENTITY.to_owned(),
+        ),
+        (
+            "document_raw_bytes_limit",
+            compass_media::MEDIA_MAX_RAW_BYTES.to_string(),
+        ),
+        (
+            "ocr_pdf_pages_limit",
+            compass_media::OCR_MAX_PDF_PAGES.to_string(),
+        ),
+        (
+            "ocr_office_images_limit",
+            compass_media::OCR_MAX_OOXML_IMAGES.to_string(),
+        ),
+        (
+            "ocr_raster_pixels_limit",
+            compass_ocr::OCR_MAX_RASTER_PIXELS.to_string(),
+        ),
+        (
+            "ocr_raster_edge_limit",
+            compass_ocr::OCR_MAX_RASTER_LONG_EDGE.to_string(),
+        ),
+        (
+            "ocr_engine_side_limit",
+            compass_ocr::OCR_ENGINE_MAX_SIDE.to_string(),
+        ),
+        (
+            "ocr_tile_overlap",
+            compass_ocr::OCR_TILE_OVERLAP.to_string(),
+        ),
+        (
+            "ocr_aggregate_pixels_limit",
+            compass_media::OCR_MAX_AGGREGATE_PIXELS.to_string(),
+        ),
+        (
+            "ocr_regions_raster_limit",
+            compass_ocr::OCR_MAX_OBSERVATIONS_PER_RASTER.to_string(),
+        ),
+        (
+            "ocr_regions_document_limit",
+            compass_ocr::OCR_MAX_OBSERVATIONS_PER_DOCUMENT.to_string(),
+        ),
+        (
+            "ocr_text_region_limit",
+            compass_ocr::OCR_MAX_TEXT_BYTES_PER_OBSERVATION.to_string(),
+        ),
+        (
+            "ocr_text_document_limit",
+            compass_ocr::OCR_MAX_TEXT_CHARS_PER_DOCUMENT.to_string(),
+        ),
+        (
+            "ocr_wall_time_seconds",
+            compass_ocr::OCR_MAX_DOCUMENT_WALL_TIME_SECS.to_string(),
+        ),
+        ("ocr_mode", "off".to_owned()),
+        ("ocr_profile", "pp-ocrv6-small".to_owned()),
+        (
+            "ocr_model_manifest",
+            compass_ocr::profile_manifest_digest(compass_ocr::ModelProfile::PpOcrV6Small),
+        ),
+    ] {
+        profile.insert(key, &value)?;
     }
     profile.insert(
         "semantic_prompt_sha256",
@@ -341,8 +424,7 @@ fn explicit_build_uses_the_enabled_repository_profile_when_no_profile_options_ar
 }
 
 #[test]
-fn lazy_materialization_uses_the_retained_profile_after_eager_history_is_disabled()
--> Result<(), Box<dyn std::error::Error>> {
+fn uncached_history_reads_require_an_explicit_build() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     git(directory.path(), &["init", "--quiet"])?;
     git(directory.path(), &["config", "user.name", "Compass Test"])?;
@@ -375,6 +457,24 @@ fn lazy_materialization_uses_the_retained_profile_after_eager_history_is_disable
         run(compass, directory.path(), &["history", "disable"])?
             .status
             .success()
+    );
+    let query = run(
+        compass,
+        directory.path(),
+        &["query", "DisabledProfileService", "--at", "HEAD"],
+    )?;
+    assert!(!query.status.success());
+    assert!(String::from_utf8_lossy(&query.stderr).contains("not materialized"));
+
+    let built = run(
+        compass,
+        directory.path(),
+        &["history", "build", "HEAD", "--code-only"],
+    )?;
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
     );
     let query = run(
         compass,
@@ -1378,6 +1478,9 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
             "graph delta field {field} is not an array"
         );
     }
+    // The two published realizations differ by the added node "c"; nothing is
+    // removed. Assert that shape exactly, so a delta that invented a removal
+    // would fail rather than pass an "is not empty" check.
     assert!(
         envelope["graph_delta"]["added_nodes"]
             .as_array()
@@ -1386,7 +1489,7 @@ fn diff_emits_semantic_text_json_html_and_rejects_removed_flags()
     assert!(
         envelope["graph_delta"]["removed_nodes"]
             .as_array()
-            .is_some_and(|nodes| !nodes.is_empty())
+            .is_some_and(|nodes| nodes.is_empty())
     );
     assert!(envelope.get("changes").is_none());
 
@@ -1785,7 +1888,8 @@ fn change_counts_report_structure_instead_of_shifted_source_coordinates()
 }
 
 #[test]
-fn missing_code_only_commit_is_built_on_first_query() -> Result<(), Box<dyn std::error::Error>> {
+fn missing_code_only_commit_requires_an_explicit_build_before_query()
+-> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     git(directory.path(), &["init", "--quiet"])?;
     git(directory.path(), &["config", "user.name", "Compass Test"])?;
@@ -1812,11 +1916,26 @@ fn missing_code_only_commit_is_built_on_first_query() -> Result<(), Box<dyn std:
         directory.path(),
         &["query", "OldService", "--at", "HEAD~1"],
     )?;
+    assert!(!query.status.success());
+    assert!(String::from_utf8_lossy(&query.stderr).contains("not materialized"));
+    assert!(!directory.path().join("compass-out").exists());
+
+    let built = run(
+        compass,
+        directory.path(),
+        &["history", "build", "HEAD~1", "--code-only"],
+    )?;
     assert!(
-        query.status.success(),
+        built.status.success(),
         "{}",
-        String::from_utf8_lossy(&query.stderr)
+        String::from_utf8_lossy(&built.stderr)
     );
+    let query = run(
+        compass,
+        directory.path(),
+        &["query", "OldService", "--at", "HEAD~1"],
+    )?;
+    assert!(query.status.success());
     assert!(String::from_utf8_lossy(&query.stdout).contains("OldService"));
     assert!(!directory.path().join("compass-out").exists());
     let status = run(compass, directory.path(), &["history", "status", "HEAD~1"])?;
@@ -1976,7 +2095,7 @@ fn current_snapshot_promotion_matches_an_exact_rebuild() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn build_rebuild_and_unseen_diff_publish_complete_realizations()
+fn build_rebuild_and_prebuilt_diff_publish_complete_realizations()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     git(directory.path(), &["init", "--quiet"])?;
@@ -2015,6 +2134,26 @@ fn build_rebuild_and_unseen_diff_publish_complete_realizations()
         ],
     )?;
     assert!(enabled.status.success());
+    for revision in ["HEAD~1", "HEAD"] {
+        let built = run(
+            compass,
+            directory.path(),
+            &[
+                "history",
+                "build",
+                revision,
+                "--code-only",
+                "--exclude",
+                "generated/**",
+                "--format=json",
+            ],
+        )?;
+        assert!(
+            built.status.success(),
+            "{revision}: {}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+    }
     let diff = run(
         compass,
         directory.path(),
@@ -2056,8 +2195,8 @@ fn build_rebuild_and_unseen_diff_publish_complete_realizations()
     }));
     drop(history);
     let progress = String::from_utf8_lossy(&diff.stderr);
-    assert!(progress.contains("building complete graph"));
-    assert!(progress.contains("publishing immutable realization"));
+    assert!(!progress.contains("building complete graph"));
+    assert!(!progress.contains("publishing immutable realization"));
 
     let first = run(
         compass,
@@ -2154,6 +2293,18 @@ fn semantic_diff_end_to_end_languages() -> Result<(), Box<dyn std::error::Error>
             &["history", "enable", "--code-only"],
         )?;
         assert!(enabled.status.success());
+        for revision in ["HEAD~1", "HEAD"] {
+            let built = run(
+                compass,
+                directory.path(),
+                &["history", "build", revision, "--code-only", "--format=json"],
+            )?;
+            assert!(
+                built.status.success(),
+                "{file} {revision}: {}",
+                String::from_utf8_lossy(&built.stderr)
+            );
+        }
         let diff = run(
             compass,
             directory.path(),

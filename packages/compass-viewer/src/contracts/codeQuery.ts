@@ -51,7 +51,7 @@ export const CODE_QUERY_CONTRACT_MANIFEST = {
     confidence: ["exact", "inferred", "ambiguous"],
     resolution: ["exact", "ambiguous", "unresolved"],
     diagnosticCode: [
-      "no_match", "ambiguous_match", "direction_mismatch", "unresolved_handler", "incomplete_coverage",
+      "no_match", "ambiguous_match", "relationship_inconsistency", "direction_mismatch", "unresolved_handler", "incomplete_coverage",
       "stale_source_digest", "bounded_truncation", "program_orphan",
       "program_conflict", "program_unavailable"
     ]
@@ -362,7 +362,7 @@ export const CodeQueryPathSchema = z.strictObject({
 
 export const CodeQueryDiagnosticSchema = z.strictObject({
   code: z.enum([
-    "no_match", "ambiguous_match", "direction_mismatch", "unresolved_handler", "incomplete_coverage",
+    "no_match", "ambiguous_match", "relationship_inconsistency", "direction_mismatch", "unresolved_handler", "incomplete_coverage",
     "stale_source_digest", "bounded_truncation", "program_orphan",
     "program_conflict", "program_unavailable"
   ]),

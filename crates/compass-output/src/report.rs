@@ -571,7 +571,6 @@ pub fn agent_orientation(
     };
     sanitize_orientation_model(&mut model);
     fit_orientation_json_budget(&mut model);
-    fit_orientation_budget(&mut model);
     fit_report_budget(&mut model, options.obsidian);
     model
 }
@@ -608,7 +607,6 @@ pub fn agent_orientation_with_blind_spots(
     model.blind_spots = blind_spots.cloned();
     sanitize_orientation_model(&mut model);
     fit_orientation_json_budget(&mut model);
-    fit_orientation_budget(&mut model);
     fit_report_budget(&mut model, options.obsidian);
     model
 }
@@ -689,7 +687,8 @@ pub fn graph_artifact_identity(path: &Path) -> Result<String, OutputError> {
 
 pub fn render_orientation_markdown(model: &AgentOrientation) -> Result<String, OutputError> {
     validate_orientation_model(model)?;
-    let rendered = render_orientation_markdown_unchecked(model);
+    let compact = compact_orientation_model(model);
+    let rendered = render_orientation_markdown_unchecked(&compact);
     let rendered_chars = char_count(&rendered);
     if rendered_chars > ORIENTATION_MARKDOWN_MAX_CHARS {
         return Err(OutputError::OrientationBudgetExceeded {
@@ -2067,6 +2066,12 @@ fn fit_orientation_budget(model: &mut AgentOrientation) {
     }
 }
 
+fn compact_orientation_model(model: &AgentOrientation) -> AgentOrientation {
+    let mut compact = model.clone();
+    fit_orientation_budget(&mut compact);
+    compact
+}
+
 fn fit_orientation_json_budget(model: &mut AgentOrientation) {
     while let Ok(rendered) = serde_json::to_vec_pretty(model) {
         if rendered.len() <= ORIENTATION_JSON_FIT_BYTES {
@@ -2075,7 +2080,7 @@ fn fit_orientation_json_budget(model: &mut AgentOrientation) {
         if trim_blind_spots_for_budget(model) {
             continue;
         }
-        if model.communities.is_empty() {
+        if model.communities.len() <= 1 {
             break;
         }
         let scaled = model
@@ -2083,7 +2088,7 @@ fn fit_orientation_json_budget(model: &mut AgentOrientation) {
             .len()
             .saturating_mul(ORIENTATION_JSON_FIT_BYTES)
             / rendered.len();
-        let next = scaled.min(model.communities.len().saturating_sub(1));
+        let next = scaled.max(1).min(model.communities.len().saturating_sub(1));
         model.communities.truncate(next);
         model
             .omissions
@@ -2128,13 +2133,13 @@ fn fit_report_budget(model: &mut AgentOrientation, obsidian: bool) {
                 .omissions
                 .surprising_connections
                 .set_shown(model.details.surprising_connections.len());
-        } else if !model.communities.is_empty() {
+        } else if model.communities.len() > 1 {
             let scaled = model
                 .communities
                 .len()
                 .saturating_mul(REPORT_MARKDOWN_FIT_CHARS)
                 / rendered_chars;
-            let next = scaled.min(model.communities.len().saturating_sub(1));
+            let next = scaled.max(1).min(model.communities.len().saturating_sub(1));
             model.communities.truncate(next);
             model
                 .omissions
@@ -2305,6 +2310,24 @@ fn render_orientation_markdown_with_community_limit(
             shown_communities,
         )),
     ];
+    if shown_communities == 0 && model.omissions.communities.total > 0 {
+        let witness_ids = model
+            .communities
+            .iter()
+            .take(1)
+            .map(|community| community.id.to_string())
+            .collect::<Vec<_>>();
+        lines.push(
+            format!(
+                "- Architecture entries were omitted by the report budget; retained witness IDs: {}. Use the bounded architecture export or query those IDs instead of treating this section as empty evidence.",
+                if witness_ids.is_empty() {
+                    "none (no safe witness survived)".to_owned()
+                } else {
+                    witness_ids.join(", ")
+                }
+            ),
+        );
+    }
     for community in model.communities.iter().take(shown_communities) {
         lines.push(format!(
             "### {}",

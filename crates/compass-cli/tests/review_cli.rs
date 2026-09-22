@@ -92,7 +92,11 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
         directory.path().join("feature.rs"),
         "pub fn feature() -> u8 { 2 }\n",
     )?;
-    git(directory.path(), &["add", "feature.rs"])?;
+    std::fs::write(
+        directory.path().join("package.json"),
+        "{\"dependencies\":{\"fixture-package\":\"1.0.0\"}}\n",
+    )?;
+    git(directory.path(), &["add", "feature.rs", "package.json"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "feature"])?;
     let head = git(directory.path(), &["rev-parse", "HEAD"])?;
     git(directory.path(), &["checkout", "--quiet", "main"])?;
@@ -137,6 +141,24 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
     assert_eq!(report.identity.revisions.target_head, base);
     assert_eq!(report.identity.revisions.pull_request_head, head);
     assert!(report.identity.revisions.merge_result.is_clean());
+    let repository = Repository::discover(directory.path())?;
+    let comparison = report
+        .identity
+        .revisions
+        .merge_result
+        .object_id()
+        .ok_or("clean review has no merge result")?;
+    let history = HistoryStore::open_existing(&repository)?.ok_or("review history store")?;
+    let realization = history
+        .preferred(&repository.resolve(comparison)?)?
+        .ok_or("review comparison realization")?;
+    let graph = history.reader(&realization.id)?.graph_document()?;
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| node.string("uri") == "pkg:fixture-package")
+    );
 
     let preserved_path = directory.path().join("bounded-review.md");
     std::fs::write(&preserved_path, "preserve-me")?;

@@ -38,6 +38,16 @@ pub(super) fn project_rows(
                     );
                 }
             }
+            if !clause.distinct {
+                let mut order_scope = row.clone();
+                order_scope.extend(next.clone());
+                for (index, sort) in clause.order_by.iter().enumerate() {
+                    next.insert(
+                        hidden_order_key(index),
+                        eval(&sort.expression, &order_scope, None, context)?,
+                    );
+                }
+            }
             projected.push(next);
         }
         projected
@@ -62,8 +72,12 @@ pub(super) fn project_rows(
         let mut decorated = Vec::with_capacity(output.len());
         for row in output {
             let mut keys = Vec::with_capacity(clause.order_by.len());
-            for sort in &clause.order_by {
-                keys.push(eval(&sort.expression, &row, None, context)?);
+            for (index, sort) in clause.order_by.iter().enumerate() {
+                if let Some(value) = row.get(&hidden_order_key(index)) {
+                    keys.push(value.clone());
+                } else {
+                    keys.push(eval(&sort.expression, &row, None, context)?);
+                }
             }
             decorated.push((keys, row));
         }
@@ -81,6 +95,11 @@ pub(super) fn project_rows(
             Ordering::Equal
         });
         output = decorated.into_iter().map(|(_, row)| row).collect();
+    }
+    for row in &mut output {
+        for index in 0..clause.order_by.len() {
+            row.remove(&hidden_order_key(index));
+        }
     }
 
     let empty = BindingRow::new();
@@ -111,6 +130,10 @@ pub(super) fn project_rows(
     }
     output.shrink_to_fit();
     Ok(output)
+}
+
+fn hidden_order_key(index: usize) -> String {
+    format!("\0compass.order.{index}")
 }
 
 fn project_aggregate(
@@ -794,6 +817,9 @@ pub(super) fn property_value(
             if property == "label" {
                 return Ok(CompassValue::String(Arc::from(node.label())));
             }
+            if property == "degree" {
+                return usize_to_integer(context.graph.degree(reference.index)?);
+            }
             node.property(property)
                 .map_or(Ok(CompassValue::Null), |value| json_value(&value))
         }
@@ -838,6 +864,10 @@ fn properties_function(
             values.insert(
                 "label".to_owned(),
                 CompassValue::String(Arc::from(record.label())),
+            );
+            values.insert(
+                "degree".to_owned(),
+                usize_to_integer(context.graph.degree(node.index)?)?,
             );
             Ok(CompassValue::Map(Arc::new(values)))
         }

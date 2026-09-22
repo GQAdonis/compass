@@ -43,6 +43,27 @@ compass update . --force --store surreal --surreal-engine surrealkv
 compass store validate compass-out --engine surreal --format json
 ```
 
+### Building a SurrealDB-enabled binary on Windows
+
+Native Windows is supported without WSL, but building *with* any SurrealDB
+feature needs a C toolchain. `surrealdb-core` enables `jsonwebtoken/aws-lc-rs`
+unconditionally, so `aws-lc-sys` is compiled for every SurrealDB feature —
+including `surreal-remote` — and requires **CMake** and **NASM** on
+`x86_64-pc-windows-msvc`, plus the Visual Studio C++ build tools:
+
+```powershell
+choco install cmake nasm --no-progress -y
+```
+
+This is a SurrealDB upstream requirement, not a Compass one. The default
+build has no such dependency: SurrealDB is absent from its dependency tree
+entirely, so a feature-free `compass` binary builds on Windows with only the
+Rust toolchain.
+
+Ship `surreal-surrealkv` rather than `surreal-rocksdb` on Windows. SurrealKV is
+pure Rust, whereas RocksDB adds a C++ build through
+`surrealdb-librocksdb-sys`. RocksDB remains available from source.
+
 Project configuration version 2 persists the storage selection. Version-1
 configuration files still load with their previous behavior; run `compass init
 --force --store surreal` only when you intentionally want to rewrite the saved
@@ -54,6 +75,36 @@ closed until that reference is present and valid.
 The fully wired projection is `compass.graph.surreal/2`. Existing
 library-only `compass.graph.surreal/1` generations are not migrated in place;
 rerun the forced update above to create a new typed/indexed generation.
+## Query text and path resolution
+
+Plain `compass query` output is now concise by default and its page budget is
+8,000 approximate tokens. Scripts or review workflows that need the previous
+expanded provenance should pass `--evidence`. Existing
+`compass.query.discovery-text-page/1` cursors cannot be resumed; start the query
+again to receive a `/2` cursor, and keep the concise/evidence tier unchanged
+while paging. Discovery JSON remains `compass.query.discovery/1`.
+
+Natural structural queries now mark every fuzzy execution or suggestion with
+`NO EXACT MATCH`/the typed `no_match` diagnostic. Handle that signal and retry
+with a suggested exact ID when exact identity is required. `compass path` no
+longer promotes a fuzzy symbol candidate into an endpoint; it is
+weighted toward structural relations, defaults to an eight-hop bound, and
+reports `NO PATH FOUND` separately when both endpoints exist but are
+unreachable. Consumers that parsed the prior human path prose should migrate to
+these explicit signals; machine-query schema versions are unchanged.
+
+Typed relationship commands now share source-backed import/reference
+resolution. `callers`, `impact`, and typed `affected` may therefore return
+additional importer evidence and can emit a `relationship_inconsistency`
+diagnostic when their bounded traversal disagrees with the importer probe.
+Treat that diagnostic as incomplete coverage rather than an empty answer.
+The default typed search candidate limit is now 64; count-shaped automation
+should inspect the structured `truncated` flag and diagnostics.
+
+`ask`, `search`, `query`, `callers`, `callees`, `impact`, `path`, and `explain`
+accept the shared `--format text|json|agent-json` contract where applicable.
+Use `compass architecture --format agent-json` for a bounded repository
+overview with omission counts and witness IDs.
 
 ## Rebuild SQLite adjacency sidecars
 
@@ -74,6 +125,33 @@ compass store validate compass-out --format json
 Use `--engine json` until the rebuild completes. Do not edit or copy SQLite
 tables to add the capability marker; the directional index key order must be
 rebuilt from the validated graph.
+
+## Rebuild communities for the Leiden profile
+
+Typed clustered graphs now use `seeded-leiden-modularity/v1` over
+`typed-evidence-undirected/v1` with the fixed-resolution selector. Run a normal
+forced build after upgrading:
+
+```bash
+compass update --force
+```
+
+Community membership, numeric IDs, labels, architecture groupings, and derived
+reports may change. Do not copy old `community` attributes or label signatures
+into the new graph. Base Graph node and relationship identity, direction,
+multiplicity, anchors, and provenance are unchanged by clustering.
+
+Omitting `--resolution` uses fixed resolution `1`; an explicit
+`--resolution N` uses exactly one positive finite value. Automatic
+multi-resolution selection is not a production default. Clustered typed builds
+add `community-quality.json`, bound to the exact `graph.json`. Upgrade strict
+artifact readers to accept `compass.community-quality/1` and reject unknown
+majors, unknown fields, digest mismatch, or profile mismatch. Missing evidence
+on an older or legacy graph means unavailable, not zero quality.
+
+Published historical realizations remain immutable. New materializations use
+the complete Leiden profile fingerprint; Compass does not rewrite or silently
+reinterpret older memberships.
 
 ## Frontend graph vocabulary
 
@@ -136,6 +214,15 @@ must accept `django-rest-framework-python`. No settings, middleware, or admin
 registration edge is synthesized: the current descriptor vocabulary cannot
 advertise those registrations without incorrectly claiming bean-container
 semantics.
+
+## Rust receiver and macro evidence rebuild
+
+Rust universal evidence now uses producer version 2. The first graph build
+after upgrading re-extracts cached Rust files automatically. No graph schema
+migration or manual artifact editing is required. The new producer follows
+source-proven `Arc`, `Rc`, and `Box` field chains and recovers calls from a
+bounded local `macro_rules!` shape only when the captured expression or
+statement is proven to be evaluated; ambiguous cases remain unresolved.
 
 ## Ruby universal evidence rebuild
 
@@ -534,18 +621,45 @@ upgrade; there is no legacy stdio compatibility flag.
 
 ### Read core navigation results through the MCP envelope
 
-The structured content returned by `search_symbols`, `get_callers`,
-`get_callees`, and `get_impact` now uses `compass.code_context.v1`. If a client
-previously read `schema`, `operation`, `nodes`, `edges`, `paths`, `diagnostics`,
-`limits`, or `truncated` directly from `structuredContent`, read the same fields
-from `structuredContent.data` instead. The nested object remains
-`compass.query/1`; no query record or ordering changed.
+**Breaking in this release.** The structured content returned by
+`search_symbols`, `get_callers`, `get_callees`, `get_impact`, `explore_code`,
+and `get_node` is now `compass.mcp.tool-result/1`. It previously used this
+fork's `compass.code_context.v1`, which has been withdrawn in favor of the
+upstream contract.
+
+Move each read one field:
+
+| Was (`compass.code_context.v1`)   | Now (`compass.mcp.tool-result/1`)              |
+| --------------------------------- | ---------------------------------------------- |
+| `structuredContent.data`          | `structuredContent.result`                     |
+| `structuredContent.repository`    | `structuredContent.agentView.identity.graphIdentity` |
+| `structuredContent.generation`    | `structuredContent.agentView.identity.buildGenerationIdentity` |
+| `structuredContent.freshness`     | `structuredContent.agentView.status`           |
+| `structuredContent.truncation`    | `structuredContent.transportTruncation`        |
+
+The nested query record is unchanged: `structuredContent.result` is still
+`compass.query/1` with the same fields and ordering. A client that only read
+`data` needs a one-word rename.
+
+These tools no longer advertise a raw output schema in discovery, matching
+upstream. `outputSchemaSha256` is now null for every tool. A client that
+required a declared output schema must validate `structuredContent.schema`
+itself.
+
+New alongside the result: `agentView` (`compass.query.agent-view/1`) carries the
+bounded answer-first projection, and `semanticResultDigest` pins the result
+identity. Reject unknown `agentView` major versions explicitly rather than
+guessing.
 
 Use `structuredContent.schema` to select the Compass decoder. Do not treat MCP
 `resultType` as that schema: for these synchronous MCP 2026 results it is the
-separate protocol value `complete`. A `truncation.next` value of null means this
-envelope version exposes no continuation token; reduce or adjust the request
-bounds rather than inventing a page cursor.
+separate protocol value `complete`.
+
+`max_response_bytes` still bounds what you receive. It is measured after the
+agent view and transport fields are attached, so a request whose query result
+fits but whose envelope does not fails with `query_response_too_large` rather
+than returning an oversized payload. Lower the requested bounds instead of
+retrying the same call.
 
 Legacy text results remain callable, but discovery marks `get_neighbors`,
 `get_community`, `god_nodes`, `graph_stats`, `shortest_path`, `list_prs`,

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use compass_analysis::{AnalysisBundle, analyze};
 use compass_history::{
@@ -57,25 +58,13 @@ fn trusted_graph_partitions_store_full_typed_node_records() -> Result<(), Box<dy
         "generated":false,
         "extractionStatus":"extracted"
     }]);
-    graph["nodes"] = json!([{
-        "id":"symbol:test",
-        "kind":"function",
-        "name":"test",
-        "qualifiedName":"fixture.test",
-        "source":{
-            "file":"src/lib.rs",
-            "startByte":0,
-            "endByte":4,
-            "startLine":1,
-            "startColumn":0,
-            "endLine":1,
-            "endColumn":4
-        },
-        "evidence":[{
-            "origin":"config",
-            "extractor":"fixture",
-            "confidence":"exact",
-            "anchors":[{
+    graph["nodes"] = json!([
+        {
+            "id":"symbol:test",
+            "kind":"function",
+            "name":"test",
+            "qualifiedName":"fixture.test",
+            "source":{
                 "file":"src/lib.rs",
                 "startByte":0,
                 "endByte":4,
@@ -83,28 +72,91 @@ fn trusted_graph_partitions_store_full_typed_node_records() -> Result<(), Box<dy
                 "startColumn":0,
                 "endLine":1,
                 "endColumn":4
+            },
+            "evidence":[{
+                "origin":"config",
+                "extractor":"fixture",
+                "confidence":"exact",
+                "anchors":[{
+                    "file":"src/lib.rs",
+                    "startByte":0,
+                    "endByte":4,
+                    "startLine":1,
+                    "startColumn":0,
+                    "endLine":1,
+                    "endColumn":4
+                }]
+            }],
+            "coverage":[{
+                "capability":"node:function",
+                "producer":"fixture",
+                "status":"partial",
+                "reason":"fixture"
+            }],
+            "diagnostics":[{
+                "severity":"warning",
+                "code":"fixture",
+                "message":"fixture warning"
             }]
-        }],
-        "coverage":[{
-            "capability":"node:function",
-            "producer":"fixture",
-            "status":"partial",
-            "reason":"fixture"
-        }],
-        "diagnostics":[{
-            "severity":"warning",
-            "code":"fixture",
-            "message":"fixture warning"
-        }]
-    }]);
+        },
+        {
+            "id":"resource:guide",
+            "kind":"resource",
+            "name":"Guide",
+            "qualifiedName":"Guide",
+            "details":{
+                "type":"resource",
+                "data":{
+                    "resourceKind":"document",
+                    "uri":"#guide"
+                }
+            },
+            "source":{
+                "file":"src/lib.rs",
+                "startByte":0,
+                "endByte":4,
+                "startLine":1,
+                "startColumn":0,
+                "endLine":1,
+                "endColumn":4
+            },
+            "evidence":[{
+                "origin":"config",
+                "extractor":"fixture",
+                "confidence":"exact",
+                "anchors":[{
+                    "file":"src/lib.rs",
+                    "startByte":0,
+                    "endByte":4,
+                    "startLine":1,
+                    "startColumn":0,
+                    "endLine":1,
+                    "endColumn":4
+                }]
+            }]
+        }
+    ]);
     std::fs::write(
         directory.path().join("graph.json"),
         canonical_json_bytes(&graph)?,
     )?;
     let partition = GraphArtifacts::load(directory.path())?.partition(&completion())?;
-    let record = VersionedValue::from_bytes(&partition.nodes[0].1)?;
-    assert_eq!(record.schema, "compass.graph.node.v1");
-    let payload: Value = serde_json::from_slice(&record.payload)?;
+    for (_, encoded) in &partition.nodes {
+        let record = VersionedValue::from_bytes(encoded)?;
+        assert_eq!(record.schema, "compass.graph.node.v1");
+        let _: compass_model::code_graph::NodeRecord = serde_json::from_slice(&record.payload)?;
+    }
+    let payload = partition
+        .nodes
+        .iter()
+        .map(|(_, encoded)| VersionedValue::from_bytes(encoded))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|record| serde_json::from_slice::<Value>(&record.payload))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|payload| payload["id"] == "symbol:test")
+        .ok_or("missing symbol payload")?;
     assert_eq!(payload["evidence"][0]["origin"], "config");
     assert_eq!(payload["coverage"][0]["status"], "partial");
     assert_eq!(payload["diagnostics"][0]["code"], "fixture");
@@ -136,6 +188,67 @@ fn trusted_graph_partition_does_not_duplicate_full_graph_as_metadata()
 
     let restored = GraphArtifacts::reconstruct(&partition)?;
     assert_eq!(restored.graph_json_bytes()?, graph_bytes);
+    Ok(())
+}
+
+#[test]
+fn community_quality_sidecar_round_trips_and_remains_graph_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = empty_trusted_graph();
+    let graph_bytes = canonical_json_bytes(&graph)?;
+    std::fs::write(directory.path().join("graph.json"), &graph_bytes)?;
+    let typed: compass_model::code_graph::GraphDocument = serde_json::from_value(graph)?;
+    let changed_sources = BTreeSet::new();
+    let limits = compass_graph::CommunityLimits::default();
+    let result = compass_graph::build_communities(
+        &typed,
+        &compass_graph::CommunityRequest {
+            profile: compass_graph::CommunityProfile::QualityV1,
+            resolution: compass_graph::ResolutionPolicy::Fixed(1.0),
+            exclude_hubs_percentile: None,
+            previous: None,
+            incremental: false,
+            changed_sources: &changed_sources,
+            limits,
+        },
+    )?;
+    let graph_digest = format!("sha256:{:x}", Sha256::digest(&graph_bytes));
+    let artifact = compass_graph::CommunityQualityArtifact::new(
+        typed.graph.build.generation_id.clone(),
+        graph_digest.clone(),
+        result.identity.clone(),
+        limits,
+        result.quality.clone(),
+    )?;
+    let artifact_bytes = serde_json::to_vec_pretty(&artifact)?;
+    std::fs::write(
+        directory.path().join("community-quality.json"),
+        &artifact_bytes,
+    )?;
+
+    let loaded = GraphArtifacts::load(directory.path())?;
+    assert_eq!(
+        loaded.export_sidecars()["community-quality.json"],
+        artifact_bytes
+    );
+    let partition = loaded.partition(&completion())?;
+    let restored = GraphArtifacts::reconstruct(&partition)?;
+    assert_eq!(restored.export_sidecars(), loaded.export_sidecars());
+
+    let wrong_graph = compass_graph::CommunityQualityArtifact::new(
+        "wrong-generation".to_owned(),
+        graph_digest,
+        result.identity,
+        limits,
+        result.quality,
+    )?;
+    std::fs::write(
+        directory.path().join("community-quality.json"),
+        serde_json::to_vec_pretty(&wrong_graph)?,
+    )?;
+    let error = GraphArtifacts::load(directory.path()).expect_err("binding mismatch must fail");
+    assert!(error.to_string().contains("graph identity does not match"));
     Ok(())
 }
 

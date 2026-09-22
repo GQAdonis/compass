@@ -239,7 +239,7 @@ async fn exercise(backend: Backend) -> Result<(), Box<dyn std::error::Error>> {
             "engine" => {
                 wrong.engine = match wrong.engine {
                     SurrealEngine::SurrealKv => SurrealEngine::RocksDb,
-                    SurrealEngine::RocksDb => SurrealEngine::SurrealKv,
+                    _ => SurrealEngine::SurrealKv,
                 };
             }
             "location" => wrong.location = temporary.path().to_string_lossy().into_owned(),
@@ -517,6 +517,43 @@ fn embedded_sessions_survive_replacement_of_publication_runtimes()
             reader.validate_contents(&first_ref).await?;
             reader.validate_contents(&second_ref).await
         })?;
+    }
+    Ok(())
+}
+
+/// A store directory whose name contains a colon opens the directory it names.
+///
+/// Embedded addresses are built as `scheme://` plus the path, so the SDK's
+/// split lands on that prefix and any colon inside the path stays part of the
+/// path. This is what carries a Windows drive letter (`C:\\...`) through
+/// unchanged, so assert the property directly rather than rejecting such paths.
+///
+/// Unix-only: NTFS reserves `:` for alternate data streams, so a colon cannot
+/// appear in a Windows file name. Every Windows absolute path exercises the
+/// same property through its drive letter, which the other tests here cover.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn embedded_store_paths_preserve_colons_in_directory_names()
+-> Result<(), Box<dyn std::error::Error>> {
+    let backends = [
+        #[cfg(feature = "surrealkv")]
+        Backend::SurrealKv,
+        #[cfg(feature = "rocksdb")]
+        Backend::RocksDb,
+    ];
+    for backend in backends {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("store:colon");
+        let plan = ProjectionPlan::from_graph("colon-path", &graph('8', "")?)?;
+        let reference = SurrealRef::from_plan(&plan, backend.engine(), &path, digest('c'))?;
+        let projection = backend.open(&path).await?;
+        projection.stage_for_reference(&plan, &reference).await?;
+        projection.validate_contents(&reference).await?;
+        assert!(
+            path.is_dir(),
+            "the colon-bearing directory itself must hold the store: {}",
+            path.display()
+        );
     }
     Ok(())
 }

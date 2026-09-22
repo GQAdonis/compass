@@ -11,7 +11,8 @@ whether a Compass capability is covered by the installed skill. Run
 - `compass ask`: route a direct natural-language structural question to a
   bounded, deterministic typed query operation.
 - `compass search`: find typed symbols by name using the local FTS index.
-- `compass callers`: list direct typed call-graph predecessors.
+- `compass callers`: list direct typed incoming usages, including calls,
+  routes, references, imports, exports, and aliases.
 - `compass callees`: list direct typed call-graph successors.
 - `compass impact`: compute bounded transitive change impact, excluding
   heuristic evidence unless explicitly requested.
@@ -34,8 +35,12 @@ whether a Compass capability is covered by the installed skill. Run
 - `compass path`: shortest known graph route between two matched nodes.
 - `compass explain`: budgeted, deterministic pages for one matched node plus
   its local neighborhood.
+- `compass architecture`: bounded architecture projection with explicit
+  coverage, omissions, and witness IDs for agent inspection.
 - `compass affected`: downstream review candidates, optionally filtered by
-  relation and depth.
+  relation and depth. Typed graphs use the same source-backed relationship
+  resolver as `callers` and `impact`; use `--format json|agent-json` when an
+  agent needs diagnostics and evidence counts.
 - `compass tree`: repository hierarchy enriched with graph metadata.
 - `compass history`: configure, materialize, inspect, export, prefer, or garbage
   collect immutable commit realizations.
@@ -54,13 +59,15 @@ whether a Compass capability is covered by the installed skill. Run
 - `compass store restore`: validate that manifest, graph export, selector, and
   sidecar before restoring into a new or empty output directory.
 
-These are read-only unless a missing historical realization must be materialized.
-An `--at REV` query can therefore create local history-store artifacts even
-though the query itself does not edit the working tree.
+These commands are read-only. An `--at REV` query requires an existing
+materialized realization; run `compass history build REV --code-only` explicitly
+before querying an uncached revision. Query caches may still be refreshed, but
+no extraction or credential-dependent provider runs implicitly.
 
 ## Build and enrich
 
-- `compass update`: deterministic structural refresh.
+- `compass ensure`: idempotent session/worktree bootstrap using the incremental structural pipeline.
+- `compass update`: deterministic structural refresh after project changes.
 - `compass extract`: structural plus optional semantic, Cargo, PostgreSQL, or
   Google Workspace layers.
 - `compass document`: inspect PDF, DOCX, PPTX, or XLSX content locally, with

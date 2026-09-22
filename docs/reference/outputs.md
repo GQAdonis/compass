@@ -31,6 +31,7 @@ compass-out/
 ├── manifest.json
 ├── program.json                 # only with --program or --program-artifact
 ├── graph-overview.json          # clustered builds
+├── community-quality.json       # clustered typed builds
 ├── cache/                       # Compass-owned disposable cache layout
 ├── current-snapshot
 ├── snapshots/<current>/
@@ -91,6 +92,7 @@ paths.
 | `program.json` (optional) | provenance-aware Program IR | program inspection, semantic analysis |
 | `GRAPH_REPORT.md` | derived human orientation | architecture survey |
 | `orientation.json` | versioned Agent Orientation bound to the same graph generation | coding assistants and MCP |
+| `community-quality.json` | strict graph-bound community evidence | detector inspection, qualification, immutable history |
 | `graph.html` | derived optional visualization | interactive exploration |
 | `manifest.json` | incremental build state | next compatible update |
 | binary query caches | disposable acceleration | internal query loading |
@@ -176,6 +178,27 @@ Compass sets `multigraph` from the emitted links. It is `true` when two links
 share an endpoint pair (ordered for directed graphs, unordered for undirected
 graphs), including repeated self-loops. Consumers do not need to request this
 promotion.
+
+## `community-quality.json`
+
+Clustered typed builds publish schema `compass.community-quality/1`. The
+artifact records the exact `graphGeneration` and SHA-256 `graphDigest`, the
+algorithm/topology/quality/selector/seed/limits identity, the numeric limits,
+partition metrics, per-community evidence, candidate summaries, bounded
+witnesses, exact omissions, and `resultDigest`.
+
+Consumers must reject unknown schemas or fields and call the equivalent of
+`validate_for_graph` against the selected canonical `graph.json`. A digest,
+generation, or profile mismatch means the files are not one coherent artifact
+set. `resultDigest` detects mutation of the quality payload itself. A missing
+artifact is valid for an older graph, a schema-less legacy recluster, or a
+`--no-cluster` build and means quality evidence is unavailable.
+
+Metrics form a vector rather than a pass/fail truth label. Modularity is
+reported at the named evaluation resolution; conductance, connectedness,
+largest-community fraction, singleton count, topology evidence mixes, and
+witness omissions must be interpreted alongside it. Numeric community IDs are
+local to this graph realization.
 
 ### Inference levels
 
@@ -460,7 +483,7 @@ A forced/cold build can regenerate current output.
 ## `program.json`
 
 `program.json` is the optional canonical, language-neutral Program IR produced
-by native `init`, `update`, `extract`, and `watch` builds when `--program` or
+by native `init`, `ensure`, `update`, `extract`, and `watch` builds when `--program` or
 `--program-artifact` is selected. Its public schema identifier is:
 
 ```text
@@ -503,6 +526,40 @@ When exact automation is required, use:
 - history JSON;
 - diff JSON;
 - direct graph JSON.
+
+### Agent Query View
+
+The focused query commands and MCP query tools also expose the strict,
+bounded projection `compass.query.agent-view/1`. It is intended for coding
+agents that need to decide whether a result is usable before reading all graph
+evidence. The projection is derived from the authoritative raw response; it
+does not run another resolver or change ranking, direction, provenance, or
+limits.
+
+```text
+RESULT
+ANSWER
+CAVEATS
+PRIMARY RESULTS
+PATHS
+RELATIONSHIPS
+NEXT ACTIONS
+DETAILS
+```
+
+The JSON form has `status.resultState` (`answered`, `candidates`,
+`needs_resolution`, `no_match`, or `no_path`), separate match/evidence and
+execution states, explicit caveats, full stable IDs, source locations, and
+`identity.sourceResultDigest` plus `identity.viewDigest`. A no-match or
+ambiguous response is never presented as a positive answer. `coverage` is
+`incomplete` only when the raw query says so; otherwise it is `unknown`.
+
+The fixed presentation profile retains at most 12 primary results, 24
+relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is
+limited to 256 KiB and text to 64 KiB. `omissions` and
+`projectionTruncated` make projection loss explicit; raw JSON remains the
+complete audit result. Human text may evolve, so automation should consume
+Agent View JSON or the raw versioned response rather than parse headings.
 
 ## CompassQL JSON
 
@@ -639,12 +696,14 @@ authority. It binds exact revision and graph-profile identity, evidence
 manifest, completeness, ordered `cmpprv1` findings, rubric factors, advisory
 risk, deterministic gates, canonical omissions, and a content digest.
 
-Markdown and text expose the same fingerprints and finding count unless an
-explicit Markdown projection budget omits findings. In that case the footer
-states the exact omitted count; the canonical report and digest are unchanged.
-Finding statements and SARIF messages resolve retained entity identities to
-human-readable names. Stable source and target identities remain available in
-the canonical JSON for machine traceability.
+Markdown and text show compact revision and finding references, plain-language
+statuses, and relationship-only evidence-path summaries. They expose the same
+finding count unless an explicit Markdown projection budget omits findings; in
+that case the footer states the exact omitted count. The canonical report and
+digest are unchanged. Finding statements and SARIF messages resolve retained
+entity identities to human-readable names. Full revisions, fingerprints,
+stable source/target identities, and witness endpoints remain available in
+canonical JSON and SARIF for machine traceability.
 SARIF 2.1.0 stores each Compass fingerprint in `partialFingerprints` and keeps
 report identity, completeness, factors, gates, evidence, and omissions in
 properties. SARIF severity is a presentation hint, not merge policy.

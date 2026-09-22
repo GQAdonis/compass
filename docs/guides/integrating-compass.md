@@ -23,6 +23,28 @@ boundaries and failure-safe consumption.
 Human text is optimized for clarity and can evolve. Machine consumers should
 prefer explicitly versioned JSON or documented graph schemas.
 
+### Agent View for coding assistants
+
+For focused code questions, use the Agent View projection when the consumer
+must make a follow-up decision:
+
+```bash
+compass callers PaymentService.charge --format agent-json
+compass query "who calls PaymentService.charge?" --format agent-json
+```
+
+The first fields to inspect are `status`, `answer`, and `caveats`. A
+`no_match`, `needs_resolution`, or `no_path` state is not a positive answer;
+fallback candidates remain suggestions. Check `sourceExecution` and
+`projection` before claiming completeness, and use `nextActions` when an exact
+retry or evidence lookup is suggested. `identity.sourceResultDigest` binds the
+projection to the raw result and `identity.viewDigest` detects mutation.
+
+Use `--format json` when you need the complete raw `compass.query/1` response,
+or when a consumer needs evidence fields omitted by the bounded view. Human
+text follows the same order (`RESULT`, `ANSWER`, `CAVEATS`, then details), but
+headings are presentation and are not a machine schema.
+
 ## Integration pattern: produce, validate, publish, consume
 
 Treat a graph build as a producer job:
@@ -225,23 +247,33 @@ Codex receives `mcp_servers` TOML, Claude receives an `.mcp.json`
 form intentionally uses a loopback URL; add authentication deliberately before
 changing the bind boundary.
 
-The four core navigation tools—`search_symbols`, `get_callers`, `get_callees`,
-and `get_impact`—publish a closed structured output schema and return
-`compass.code_context.v1`. Read the previous `compass.query/1` result from
-`structuredContent.data`. The surrounding envelope adds graph identity,
-evidence-scoped freshness, evidence/confidence summaries, truncation state, and
-warnings. MCP `resultType` is a separate protocol field and is `complete` for
-these synchronous calls.
+The typed navigation tools—`search_symbols`, `get_callers`, `get_callees`,
+`get_impact`, `explore_code`, and `get_node`—return
+`compass.mcp.tool-result/1`. Read the `compass.query/1` result from
+`structuredContent.result`. Alongside it, `agentView`
+(`compass.query.agent-view/1`) carries the bounded answer-first projection with
+graph identity and result state, and `semanticResultDigest` pins the result
+identity. These tools do not advertise a raw output schema; select the decoder
+from `structuredContent.schema`. MCP `resultType` is a separate protocol field
+and is `complete` for these synchronous calls.
 
-Treat `freshness.status: "unknown"` as unknown rather than current. When
-`truncation.truncated` is true and `truncation.next` is null, this schema version
-has no continuation token; issue a narrower request or raise an explicit bound.
+Treat `agentView.status.coverage: "unknown"` as unknown rather than current.
+`transportTruncation` reports whether the transport bound elided anything, while
+`max_response_bytes` bounds the delivered envelope and fails the call with
+`query_response_too_large` rather than returning an oversized payload.
 
 Discovery marks the remaining text-only tools and explicit `query_graph`
 traversal text mode deprecated from 0.4.0. Their names and current text outputs
 remain available while typed replacements are designed; no removal release is
 scheduled yet. Prefer the four envelope-backed navigation tools for new
 machine consumers.
+
+Typed query tools return answer-first Agent View text. Their structured result
+keeps the raw response in `result`, adds `semanticResultDigest`, and carries
+the optional `agentView` sibling with schema `compass.query.agent-view/1`.
+Consumers that do not use Agent View can ignore that optional sibling while
+continuing to validate the transport envelope and raw result. Consumers that
+do use it must reject unknown Agent View major versions explicitly.
 
 ## Cross-repository registry
 

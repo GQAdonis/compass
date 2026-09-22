@@ -93,6 +93,50 @@ Compare a proposed change with a previously approved Compass result captured on
 the same runner and corpus. A median regression above 10% requires explicit
 review and evidence explaining the tradeoff.
 
+## Community detection performance
+
+The 2026-09-12 Leiden hot-path qualification used Compass `0.3.24` candidate
+commit `7e216079`, Rust `1.97.1`, and an Apple M2 Max with 32 GiB of memory on
+arm64 macOS `26.5.2`. The public FastAPI package was pinned at commit
+`0c2b6aafd7a2e3a5bf1055ea0ed0a41da15ba5f4` and treated as a read-only input.
+
+The release-mode `community_quality_qualification graph-profile` harness ran
+each profile in a fresh process, alternated profile order, discarded five
+warmups, and recorded 51 observations. The measurement therefore includes
+loading the same typed graph document as well as community construction.
+`fixed` selected one resolution-1 Leiden candidate;
+`compatibility` selected seeded Louvain. The max-inference graph contained
+4,152 nodes and 10,038 relationships with canonical graph digest
+`sha256:1c73b3e98a9ef536bda92111cb4268b656345dd0e8fedffe6dcc4303861374e9`.
+The low-inference graph contained 2,335 nodes and 3,370 relationships with
+digest
+`sha256:1d43315e188f68e0b1f0b45e871dd5ef990ea53bece884cc26c035151369d09f`.
+
+| Graph | Profile | Median | Mean | p95 | Leiden/compatibility median |
+| --- | --- | ---: | ---: | ---: | ---: |
+| max inference | compatibility Louvain | 205.449 ms | 213.967 ms | 246.507 ms | 1.000x |
+| max inference | fixed Leiden | 202.579 ms | 211.193 ms | 252.089 ms | 0.986x |
+| low inference | compatibility Louvain | 78.761 ms | 79.302 ms | 85.671 ms | 1.000x |
+| low inference | fixed Leiden | 74.355 ms | 75.188 ms | 80.964 ms | 0.944x |
+
+Seven additional max-inference observations recorded median peak resident
+memory of 134.19 MiB for compatibility Louvain and 136.13 MiB for fixed
+Leiden, a 1.44% increase. The optimized result is byte-identical to the
+pre-optimization FastAPI profile report
+(`sha256:4f26ed16c66b5f939e2436255dfff884defa431392b26a3e322c331f957a4e75`), and
+the complete checked-in fixture qualification remains byte-identical.
+
+Before the one-pass modularity change, seven release observations of the same
+max-inference fixed profile had a 1.46 s median. The 202.579 ms candidate median
+is an 86.12% reduction. An in-process release harness that excludes graph JSON
+loading ran all 15 fixture families 50 times per observation. Across 15
+alternating observations, fixed Leiden had a 129.774 ms median versus
+212.570 ms for compatibility Louvain (`0.611×`). A separate cold low-inference
+production extraction completed in 1.00 s, of which internal Leiden detection
+used 42 ms; the matching `--no-cluster` observation completed in 0.68 s. Those
+two full-build values are single observations and do not substitute for the
+multi-corpus release matrix.
+
 ## Canonical graph size qualification
 
 `COMPASS_MAX_GRAPH_BYTES` is enforced against the canonical JSON bytes emitted
@@ -1358,6 +1402,31 @@ Candidate peak RSS remained informational for this qualification and had a
 three-sample median of about 2,353 MiB. These native-volume measurements avoid
 the multi-second publication variance observed on the mounted workspace, but
 remain runner-specific rather than a cross-platform guarantee.
+
+## Community detection qualification
+
+The version-1 community-quality runner evaluates 15 deterministic fixture
+families, including input permutations, planted partitions, articulation, hub,
+direction, confidence, containment, isolate, and resolution-limit cases:
+
+```bash
+./scripts/qualify_code_graph_v1.sh --community-quality
+```
+
+On 2026-09-12, an aarch64 macOS debug build ran the complete compact fixture
+set 50 times per process. Seven-process medians were 1.25 seconds for
+compatibility Louvain, 1.82 seconds for fixed-resolution typed Leiden, and
+3.01 seconds for three-candidate typed Leiden. Compact setup-heavy debug
+timings are diagnostic, not the pinned real-repository release oracle, and no
+RSS or cold-build claim is derived from them.
+
+The fixture quality gates pass, including deterministic equality, connected
+communities, exact required recovery, and improved ring-of-cliques and
+articulation recovery. Production nevertheless uses fixed resolution; the
+automatic selector remains qualification-only until pinned-corpus clustering,
+cold-build, RSS, and incremental gates pass. See the
+[qualification report](docs/implementation/community-detection-quality-qualification.md)
+for exact fixture results and omissions.
 
 ## Versioned history qualification
 

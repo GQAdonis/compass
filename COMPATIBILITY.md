@@ -119,6 +119,43 @@ history profiles, and cache identities.
 
 ## Evolving contracts
 
+
+Rust structural evidence now uses producer version 2. The evidence and graph
+schema majors are unchanged, but Rust extraction caches from producer version
+1 are rebuilt so source-proven standard-library dereference chains and
+evaluating local macro inputs can publish newly recovered exact calls.
+Unsupported macro shapes, non-evaluating inputs, and ambiguous receiver owners
+remain unresolved rather than being guessed.
+
+### Agent Query View
+
+Compass adds the additive strict projection `compass.query.agent-view/1` for
+typed CLI and MCP consumers. It is derived from, and digest-bound to, the raw
+`compass.query/1` or `compass.query.discovery/1` response. The raw CLI `json`
+shape, MCP `structuredContent.result`, graph schemas, and discovery
+`compass.query.discovery-text-page/2` cursor meaning are unchanged.
+
+The typed commands accept `--format agent-json`; default text is an
+answer-first presentation. MCP keeps `compass.mcp.tool-result/1` and adds the
+optional `agentView` sibling plus a code-query `semanticResultDigest`. Existing
+consumers may ignore the optional projection. Consumers that consume Agent
+View must reject unknown major versions, enforce the documented bounds, and
+distinguish `no_match`, `needs_resolution`, `no_path`, source truncation, and
+projection truncation from a positive complete answer.
+
+The additive `relationship_inconsistency` diagnostic extends the strict
+`compass.query/1` diagnostic enum and changes its contract fingerprint. Strict
+TypeScript consumers and the checked-in manifest must accept the new value
+before interpreting a relationship result that carries it.
+
+Immutable history now accepts up to 5 GiB of aggregate authoritative key and
+value bytes per realization, raised from 512 MiB. The history schema and
+canonical encoding are unchanged, as are the per-key, per-value, per-tree,
+JSON-depth, job, and diagnostic bounds. Readers from older Compass releases
+continue to reject a realization whose authoritative content exceeds 512 MiB;
+deploy a reader containing this limit widening before sharing larger
+realizations.
+
 The closed route-stage vocabulary used by `compass.graph/1`,
 `compass.query/1`, and `compass.framework-context/1` now includes the additive
 `dependency` and `security` values. The query contract manifest and fingerprint
@@ -301,19 +338,25 @@ usage-error, or runtime-error exit codes.
 
 ## MCP structured result compatibility
 
-`search_symbols`, `get_callers`, `get_callees`, and `get_impact` advertise a
-closed output schema and return `compass.code_context.v1`. The envelope carries
-repository and generation identity, evidence-scoped freshness, evidence and
-confidence summaries, truncation state, and warnings. Its `data` field is the
-unchanged `compass.query/1` response. MCP `resultType: "complete"` remains the
+`search_symbols`, `get_callers`, `get_callees`, `get_impact`, `explore_code`,
+and `get_node` return `compass.mcp.tool-result/1` and advertise no raw output
+schema. Its `result` field is the unchanged `compass.query/1` response;
+`agentView` (`compass.query.agent-view/1`) carries the bounded answer-first
+projection, including graph and build-generation identity and result state;
+`semanticResultDigest` pins the result identity; and `transportTruncation`
+reports transport-level elision. MCP `resultType: "complete"` remains the
 protocol-level discriminator and is not overloaded with a Compass schema name.
-Strict `compass.graph/1` validation requires non-empty `sourceTreeDigest` and
-`generationId` build identities, so a successful envelope always satisfies its
-advertised non-empty identity fields.
+
+`max_response_bytes` bounds the delivered envelope, measured after the agent
+view and transport fields are attached. A request whose query result fits but
+whose envelope does not fails with `query_response_too_large`; a bound breach is
+a distinct outcome, never a silently truncated or emptied result.
 
 This top-level shape is compatibility-sensitive. Consumers must reject an
-unknown `compass.code_context` major version and must not infer freshness when
-the envelope reports `unknown`. Other typed and legacy text tools retain their
+unknown `compass.mcp.tool-result` or `compass.query.agent-view` major version
+and must not infer coverage when `agentView.status.coverage` reports `unknown`.
+The fork-local `compass.code_context.v1` envelope was withdrawn in 0.3.28; see
+MIGRATION.md for the field mapping. Other typed and legacy text tools retain their
 existing result shapes until separately versioned. The text-result tools
 `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`,
 `list_prs`, `get_pr_impact`, and `triage_prs`, plus explicit traversal text mode
@@ -439,8 +482,20 @@ now defaults to `compass.query.discovery/1`; `--dfs` and `--context` compose
 with discovery. Explicit `--traverse` or legacy-only `--budget`/`--page`
 preserve the established text traversal and reject discovery controls.
 CompassQL and explicit typed query commands remain unchanged. Discovery text
-pagination uses the versioned `compass.query.discovery-text-page/1` cursor;
-JSON rejects those presentation-only controls.
+pagination now uses the versioned `compass.query.discovery-text-page/2` cursor.
+Text is concise by default, `--evidence` restores full provenance detail, and
+the selected tier is bound into the cursor. Version-1 cursors fail explicitly
+rather than resuming into a different representation. The default text-page
+budget is 8,000 approximate tokens. JSON rejects those presentation-only
+controls and the discovery JSON schema remains `compass.query.discovery/1`.
+
+Exact-looking discovery or typed-query operands that have only fuzzy or lexical
+candidates now carry a structured `no_match` diagnostic before any fallback
+content or bounded natural-query execution. Dedicated `compass path` endpoints
+require unique exact identities;
+weighted path selection prefers structural evidence over reference/document
+shortcuts and reports an eligible shorter-but-weaker alternative separately.
+These are human-query semantic changes, not graph or JSON schema changes.
 `compass ask --at REV` uses the same immutable trusted `compass.graph/1`
 realization selection as revision discovery. The response remains the unchanged
 `compass.query/1` contract; an older realization without that trusted graph is
@@ -591,7 +646,7 @@ fallback. Snapshots without the declaration capability remain readable and
 continue through general recall; no candidate meaning is invented from either
 missing accelerator. Relationship membership is also stored as a bounded
 unit-valued `(source, term)` key so a complete sparse posting can prove
-membership in one truncated dense posting without scanning adjacency. The v2
+membership in one truncated dense posting without scanning adjacency. The
 relationship capability also stores bounded unit-valued
 `(source, term, target)` evidence so ranking can count distinct query-supporting
 callees without inflating parallel calls or one callee that matches multiple
@@ -679,6 +734,12 @@ human-readable names. Stable entity identities remain in the canonical finding
 `source_entities` and `target_entities` fields, so this presentation change
 does not alter finding fingerprints or machine traceability.
 
+Human-facing review projections use short revision and fingerprint references,
+plain-language status labels, and relationship-only witness summaries. Exact
+revision IDs, graph entity IDs, fingerprints, and witness endpoints remain in
+canonical JSON and SARIF. Text and Markdown are presentation formats and must
+not be parsed as machine contracts.
+
 This is additive in the `0.3.x` line. Existing `compass prs`, graph, history,
 and MCP contracts are unchanged; `compass diff` gains only the optional typed
 topology field above. Consumers that adopt the new
@@ -696,6 +757,38 @@ omission. This addition does not change
 The `extract --code-only` profile excludes document extractors from structural
 node and edge publication while retaining the scanned file inventory and its
 status records.
+
+## Community detection profile cutover
+
+Typed clustered graphs use the complete profile
+`seeded-leiden-modularity/v1` + `typed-evidence-undirected/v1` +
+`community-quality/v1` + `fixed-resolution/v1`, seed `42`, and
+`community-limits/v1`. The default resolution is fixed at `1`; an explicit
+`--resolution N` remains a single fixed positive finite resolution. The
+bounded three-candidate selector has identity `bounded-multiresolution/v1` but
+remains qualification-only until its complete pinned-corpus release matrix
+passes the latency, memory, stability, and quality gates.
+
+This is a compatibility-sensitive membership cutover without a
+`compass.graph/1` schema change. Community numeric IDs, membership, labels,
+reports, and architecture groupings may change. Base Graph node and edge
+identity, direction, multiplicity, anchors, provenance, and canonical encoding
+do not change as a consequence of clustering. The complete profile enters the
+configuration digest and current/history build profiles, so old output is
+rebuilt coherently rather than partially reused.
+
+Clustered typed builds add strict `compass.community-quality/1` at
+`community-quality.json`. Readers must validate its self-digest, graph
+generation, exact canonical graph digest, and profile identity and reject
+unknown majors or fields. Missing evidence on an older, schema-less legacy, or
+unclustered graph means unavailable. Direct reclustering of a schema-less
+legacy graph retains `seeded-louvain/v1` compatibility and publishes no quality
+sidecar.
+
+Historical realizations and their sidecars are immutable. Compass never
+substitutes Louvain results under a Leiden profile or interprets one profile's
+member IDs as another profile's result. Existing `cohesion` remains the public
+density projection, now calculated by the shared quality evaluator.
 
 ## Compass Store release contract
 

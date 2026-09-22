@@ -26,7 +26,9 @@ JSON uses the version tag `compass.cql.result/1`, explicit typed values, columns
 
 ## Graph mapping
 
-- Each Compass node is a Cypher node. Stable `id`, display `label`, `name`, and `qualified_name` are logical properties; stored attributes retain their names.
+- Each Compass node is a Cypher node. Stable `id`, display `label`, live incident
+  `degree`, `name`, and `qualified_name` are logical properties; stored
+  attributes retain their names.
 - The single Cypher label is derived from the typed `kind` (for example `Function`, `Class`, or `Route`). Legacy `file_type` is a compatibility alias, not the source of truth; a missing or unusable kind falls back to `:Entity`.
 - Each stored edge is a directed relationship. Its type is the normalized uppercase `relation`; missing values become `RELATES_TO`.
 - Relationship attributes retain their names. Typed `source`/`relationshipSite` fields project to `source_file`, `source_location`, `line_start`, and `line_end`. Missing `confidence` reads as `EXTRACTED`; when evidence contains multiple claims, the most conservative confidence wins (`AMBIGUOUS` > `INFERRED` > `EXTRACTED`).
@@ -40,6 +42,9 @@ do not depend on the nested wire names (`source`, `relationshipSite`, or
 `evidence`) unless you are intentionally inspecting raw JSON.
 
 Use `n.id` for the portable stable Compass string ID. `id(n)` and `id(r)` return snapshot-local integer indexes and must not be persisted or compared across graph snapshots.
+
+For a non-aggregate, non-`DISTINCT` projection, `ORDER BY` may reference either
+a returned alias or an input binding such as `ORDER BY n.degree DESC`.
 
 ## Supported language
 

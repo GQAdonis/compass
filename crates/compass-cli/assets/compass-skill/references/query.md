@@ -55,6 +55,23 @@ compass query "authentication flow" --at HEAD~20
 
 `--graph` and `--at` are mutually exclusive.
 
+For agent-controlled follow-up, use the versioned Agent View projection:
+
+```bash
+compass query "who calls PaymentGateway.charge?" --format agent-json
+compass callers PaymentGateway.charge --format agent-json
+```
+
+Read `status.resultState`, `answer`, and `caveats` before `primaryResults`,
+`paths`, or `relationships`. `no_match`, `needs_resolution`, and `no_path`
+must remain non-answers; fallback candidates are leads only. Check both
+`sourceExecution` and `projection` for truncation and treat `coverage:
+unknown` as unknown rather than complete. Use exact `nextActions` arguments and
+IDs rather than rebuilding shell commands. Agent View JSON is
+`compass.query.agent-view/1`; raw `--format json` remains the full audit
+result, and human text headings are presentation rather than a parser
+contract.
+
 ## Focused graph operations
 
 ```bash
@@ -68,6 +85,7 @@ compass explore CheckoutController PaymentGateway --root .
 compass node route:/checkout CheckoutController.create
 compass explain PaymentGateway
 compass explain PaymentGateway --budget 8000 --page 2
+compass architecture --format agent-json
 compass path CheckoutHandler PaymentGateway
 compass affected authorizePayment --depth 3
 compass tree
@@ -78,7 +96,9 @@ compass tree
   node trail. Treat the reported operation and any ambiguity as part of the
   result.
 - `search` resolves typed symbols by exact or fuzzy name.
-- `callers` and `callees` walk one attributable call-graph hop.
+- `callers` returns one attributable incoming usage hop across calls, routes,
+  references, imports, exports, and aliases. `callees` walks one outgoing call
+  hop.
 - `impact` traverses a bounded transitive radius and excludes heuristic
   evidence by default.
 - `explore` returns related source and paths together under source and response
@@ -86,10 +106,11 @@ compass tree
 - `node` exposes the evidence trail and provenance between two symbols.
 - `explain` reports a matched node and connected context; follow its pagination
   metadata when connections or ambiguous candidates span multiple pages.
-- `path` reports the shortest known directed graph route from source to target.
-  A `direction_mismatch` diagnostic means a route exists only by ignoring one
-  or more edge directions; swap the operands only when the reverse route is
-  the intended question.
+- `node` reports a directed evidence trail. A `direction_mismatch` diagnostic
+  includes a `compass path SOURCE TARGET` next action when a connection exists
+  only by ignoring edge direction.
+- `path` ranks an undirected traversal while preserving stored relationship
+  direction in its displayed arrows.
 - `affected` follows impact relations and returns a review candidate set.
 - `tree` combines repository structure with graph metadata.
 

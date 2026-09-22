@@ -122,7 +122,8 @@ fn project_codex_install_creates_native_compass_skill() -> Result<(), Box<dyn Er
     assert!(body.contains("Load the continuous-enrichment reference"));
     assert!(body.contains("references/labeling.md"));
     assert!(body.contains("references/security-and-boundaries.md"));
-    assert!(body.contains("run `compass update .`\nonce and continue"));
+    assert!(body.contains("run `compass ensure`\nonce and continue"));
+    assert!(body.contains("whenever the working\ndirectory moves to another Git worktree"));
     assert!(body.contains("--budget N"));
     assert!(body.contains("--page N"));
     assert!(body.contains("next=none"));
@@ -143,6 +144,8 @@ fn project_codex_install_creates_native_compass_skill() -> Result<(), Box<dyn Er
     assert!(query.contains("2,000-token default"));
     assert!(query.contains("additional pages remain"));
     assert!(query.contains("repeat the unchanged question"));
+    assert!(query.contains("compass.query.agent-view/1"));
+    assert!(query.contains("Read `status.resultState`, `answer`, and `caveats`"));
     assert!(query.contains("filters relationships by their stored evidence context"));
     assert!(query.contains("Use repeatable `--scope KIND:VALUE`"));
     assert!(query.contains("every scope must resolve canonically"));
@@ -812,6 +815,11 @@ fn repeated_platforms_share_one_package_and_dry_run_is_read_only() -> Result<(),
     assert!(next_actions.iter().any(|action| {
         action
             .as_str()
+            .is_some_and(|action| action.contains("compass ensure"))
+    }));
+    assert!(next_actions.iter().any(|action| {
+        action
+            .as_str()
             .is_some_and(|action| action.contains("/hooks"))
     }));
     assert!(next_actions.iter().any(|action| {
@@ -1108,6 +1116,7 @@ fn assert_daily_workflow(root: &Path, platform: &str) -> Result<(), Box<dyn Erro
         "compass init",
         "compass install",
         "compass watch",
+        "compass ensure",
         "second terminal",
         "focused task",
         "broad repository orientation",

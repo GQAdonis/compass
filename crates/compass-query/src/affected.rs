@@ -10,7 +10,9 @@ pub const DEFAULT_AFFECTED_RELATIONS: &[&str] = &[
     "references",
     "imports",
     "imports_from",
+    "exports",
     "re_exports",
+    "aliases",
     "inherits",
     "extends",
     "implements",
@@ -82,15 +84,24 @@ pub fn affected_nodes(
     let mut seen = HashSet::from([seed]);
     let mut queue = VecDeque::from([(seed, 0_usize)]);
     let mut hits = Vec::new();
-    for edge_index in graph.outgoing_edges(seed) {
-        let edge = graph.edge(edge_index);
-        if !["method", "contains"].contains(&edge.string("relation").as_str()) {
-            continue;
-        }
-        if let Some(member) = graph.node_index(&edge.target)
-            && seen.insert(member)
-        {
-            queue.push_back((member, 0));
+    // Relationship commands must answer for the resolved declaration as well
+    // as its containing file/module.  Seed all canonical members before
+    // walking incoming dependency edges; this mirrors the source-backed
+    // relationship resolution used by typed search instead of silently
+    // stopping at whichever container happened to resolve first.
+    let mut member_queue = VecDeque::from([seed]);
+    while let Some(container) = member_queue.pop_front() {
+        for edge_index in graph.outgoing_edges(container) {
+            let edge = graph.edge(edge_index);
+            if !["method", "contains"].contains(&edge.string("relation").as_str()) {
+                continue;
+            }
+            if let Some(member) = graph.node_index(&edge.target)
+                && seen.insert(member)
+            {
+                queue.push_back((member, 0));
+                member_queue.push_back(member);
+            }
         }
     }
     while let Some((current, current_depth)) = queue.pop_front() {
@@ -123,7 +134,24 @@ pub fn affected_nodes(
 #[must_use]
 pub fn format_affected(graph: &Graph, query: &str, relations: &[String], depth: usize) -> String {
     let Some(seed) = resolve_seed(graph, query) else {
-        return format!("No unique node match for {query}");
+        let normalized = normalize_label(query);
+        let mut candidates = graph
+            .nodes()
+            .filter(|(_, node)| {
+                let label = normalize_label(node.label());
+                label.contains(&normalized) || normalized.contains(&label)
+            })
+            .map(|(index, node)| format!("{} ({})", node.label(), graph.node(index).id))
+            .collect::<Vec<_>>();
+        candidates.sort();
+        candidates.truncate(8);
+        if candidates.is_empty() {
+            return format!("NO EXACT MATCH for {query:?}");
+        }
+        return format!(
+            "No unique node match for {query:?}. Candidates: {}",
+            candidates.join(", ")
+        );
     };
     let hits = affected_nodes(graph, seed, relations, depth);
     let mut lines = vec![
@@ -254,7 +282,7 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(graph.node(hits[0].node).label(), "caller()");
         assert!(format_affected(&graph, "file", &relations, 2).contains("caller() [calls] -"));
-        assert!(format_affected(&graph, "missing", &relations, 2).contains("No unique"));
+        assert!(format_affected(&graph, "missing", &relations, 2).contains("NO EXACT MATCH"));
         assert!(format_affected(&graph, "file", &relations, 0).contains("No affected"));
         Ok(())
     }
@@ -262,5 +290,6 @@ mod tests {
     #[test]
     fn default_affected_relations_include_frontend_renderers() {
         assert!(DEFAULT_AFFECTED_RELATIONS.contains(&"renders"));
+        assert!(DEFAULT_AFFECTED_RELATIONS.contains(&"aliases"));
     }
 }

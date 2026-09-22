@@ -88,6 +88,34 @@ Inference defaults to `low` and publishes exact relationships only. Use
 explicitly qualified external references, or explicit `max` to retain all
 inferred relationships including deferred receivers.
 
+### `ensure`
+
+Ensure the active checkout or linked worktree has a current local graph:
+
+```text
+compass ensure [PATH] [UPDATE_OPTIONS]
+```
+
+With no `PATH`, `ensure` resolves the active Git worktree root even when the
+agent starts in a nested directory. It uses the same incremental, atomic
+pipeline and build profile as `update`. It reports whether the worktree-local
+graph was `initialized`, `updated`, or already `current`. Run it once when an
+agent session starts, resumes in a different worktree, or acquires a new
+working directory. Do not pass `--force` during normal session bootstrap;
+compatible manifests and caches make repeated calls inexpensive.
+
+Keep the default `compass-out/` below each worktree. Multiple worktrees may
+contain different uncommitted changes and must not write one shared mutable
+output directory. Repository-wide immutable history and its verified-content
+cache remain shared through the Git common directory.
+
+Clustered builds use deterministic fixed-resolution Leiden over the typed
+evidence topology. Omitting `--resolution` uses `1`; `--resolution N` uses the
+single positive finite value `N`. Higher values generally create smaller
+communities. The three-candidate automatic selector is qualification-only and
+is not enabled by omitting this option. `--no-cluster` skips community
+membership, analysis, labels, and `community-quality.json`.
+
 ### `extract`
 
 Expose the full build surface:
@@ -174,7 +202,7 @@ On Intel (`x86_64`) macOS, managed OCR is unavailable because the pinned ONNX
 runtime has no self-contained distribution; `models install` fails before any
 download, while native document processing and `--ocr off` remain available.
 
-`update`, `extract`, and watch rebuilds may succeed with a warning that Compass
+`ensure`, `update`, `extract`, and watch rebuilds may succeed with a warning that Compass
 published a partial graph. The warning reports exact omitted node, omitted
 edge, and identity-collision counts. The retained `graph.json` remains strictly
 valid and queryable; record examples and the exact summary are in
@@ -230,6 +258,12 @@ compass cluster-only [PATH]
   [--min-community-size=N]
 ```
 
+For a typed `compass.graph/1` input this uses the same fixed-resolution Leiden
+profile as a normal build and atomically republishes graph-bound
+`community-quality.json`. A schema-less legacy graph retains compatibility
+Louvain behavior and does not publish quality evidence. The command never
+interprets a missing older quality artifact as successful evidence.
+
 ### `label`
 
 Generate/update semantic community labels:
@@ -254,6 +288,9 @@ and in the bounded architecture report. It does not remove nodes, edges, or
 community assignments from the graph; omitted communities remain queryable and
 are included in the report's coverage disclosure. The default is `3`.
 
+When labeling first reclusters a typed graph, its resolution behavior and
+quality artifact are the same as `cluster-only`.
+
 ## Read and query
 
 ### `query`
@@ -271,6 +308,7 @@ compass query "<question>"
   [--result-envelope]
   [--text-budget N]
   [--cursor TOKEN]
+  [--evidence]
   [--budget N]
   [--page N]
   [--max-nodes N]
@@ -295,10 +333,17 @@ as `call`, `import`, or `route`. It is not a node, file, package, community, or
 subsystem selector. Use repeatable `--scope KIND:VALUE` for explicit OR scope
 over `community`, `source`, `package`, or `node`.
 
-`--text-budget` bounds the discovery text projection. Its opaque cursor binds
+The default text projection is concise: it prints match confidence, seed terms,
+nodes, edges, and source locations without expanding provenance records or the
+semantic digest. `--evidence` selects the full audit projection. Exact-looking
+operands that do not resolve emit `NO EXACT MATCH`; bounded fuzzy and lexical
+candidates can still follow as suggestions but are not represented as exact.
+
+`--text-budget` bounds the discovery text projection and defaults to 8,000
+approximate tokens. Its opaque cursor binds
 the contract version, normalized request/options, selected graph generation and
-digest, semantic-response digest, and next stable section/item. Fetch the next
-page with `--cursor TOKEN` and otherwise unchanged semantic inputs. The
+digest, semantic-response digest, evidence tier, and next stable section/item.
+Fetch the next page with `--cursor TOKEN` and otherwise unchanged semantic inputs. The
 presentation-only `--text-budget` may change between pages. Pages contain whole
 deterministic entries; changed inputs fail instead of silently continuing a
 different result. JSON rejects text pagination controls. Legacy `--budget` and
@@ -355,15 +400,76 @@ example `RETURN n.id ORDER BY n.id SKIP 100 LIMIT 100`.
 
 Canonical language contract: [CompassQL](../COMPASSQL.md).
 
+### Typed query commands
+
+The focused typed commands share one output profile:
+
+```text
+compass ask "<question>"       [--format text|agent-json|json]
+compass search "<query>"       [--format text|agent-json|json]
+compass callers "<symbol>"     [--format text|agent-json|json]
+compass callees "<symbol>"     [--format text|agent-json|json]
+compass impact "<symbol>"      [--format text|agent-json|json]
+compass explore "<symbol>" ... [--format text|agent-json|json]
+compass node "<source>" "<target>" [--format text|agent-json|json]
+```
+
+`text` is the answer-first Agent View projection. It starts with `RESULT`,
+`ANSWER`, and any blocking `CAVEATS`, then shows source-located entities,
+paths, relationships, and bounded next actions. `agent-json` emits the strict
+`compass.query.agent-view/1` object. `json` remains the unchanged raw
+`compass.query/1` response and is the right choice when an audit consumer needs
+every evidence record. The natural `query` command accepts the same
+`agent-json` format for discovery; its text header is answer-first while the
+existing discovery entry ledger and v2 cursor remain unchanged.
+
+`agent-json` is incompatible with text-only `--cursor`, `--text-budget`,
+`--evidence`, and `--result-envelope` controls. Agent View JSON contains
+bounded `nextActions` as argv arrays or JSON argument objects; clients should
+use those values instead of reconstructing shell commands from result text.
+
+`callers` returns incoming relationship evidence: calls, routes, references,
+imports, exports, and aliases. `callees` remains the direct outgoing call view.
+When an import or reference ends at a containing module rather than the
+selected declaration, `callers`, `impact`, and `affected` retain the real
+owner-targeted edge and emit an `incomplete_coverage` precision warning.
+Such an edge proves a module-level dependency, not a direct symbol call;
+impact paths include the containment hop instead of silently jumping from
+the selected symbol to the importer.
+
+### `architecture`
+
+```text
+compass architecture
+  [--graph PATH]
+  [--labels PATH]
+  [--format text|json|agent-json]
+```
+
+Returns the existing bounded architecture projection as a first-class command.
+The text form is answer-first and names the graph totals, groups, routes,
+diagnostics, and any omitted groups. `agent-json` adds the versioned
+`compass.architecture.agent-view/1` envelope while preserving coverage counts
+and witness group IDs, so an empty displayed section cannot be mistaken for an
+empty architecture.
+
 ### `path`
 
 ```text
-compass path "<source>" "<target>" [--graph PATH | --at REV]
+compass path "<source>" "<target>" [--max-depth N]
+  [--format text|json|agent-json] [--graph PATH | --at REV]
 ```
 
-Renders a shortest known graph path while preserving relationship direction.
-If a route exists only by ignoring one or more edge directions, the typed response
-reports `direction_mismatch`; swap the operands to request that route.
+Resolves both endpoints by exact node ID, name, or qualified name before doing
+any graph search; missing and ambiguous endpoints fail explicitly. The text path
+search is bounded to eight hops by default and ranks structural relationships
+such as calls, containment, imports, and dependencies ahead of weak references
+or documentation links. When a meaningfully weaker route is up to two hops
+shorter, Compass shows it separately. Output names the resolved target ID, and
+an unreachable target is reported as `NO PATH FOUND` with the depth bound and
+visited-node count. Relationship arrows always preserve their stored direction.
+Traversal may follow a relationship in either direction; the arrows make that
+choice visible rather than rewriting the graph.
 
 ### `explain`
 
@@ -371,6 +477,7 @@ reports `direction_mismatch`; swap the operands to request that route.
 compass explain "<node>"
   [--budget N]
   [--page N]
+  [--format text|json|agent-json]
   [--graph PATH | --at REV]
 ```
 
@@ -389,10 +496,14 @@ after the first group.
 compass affected "<node-or-label>"
   [--relation R]
   [--depth N]
+  [--format text|json|agent-json]
   [--graph PATH]
 ```
 
-Traverses incoming impact-relevant relations.
+Traverses incoming impact-relevant relations. Typed `compass.graph/1` inputs use
+the same bounded resolver and source-backed relationship postings as callers
+and impact; legacy node-link inputs retain the compatibility traversal. JSON
+and agent JSON retain diagnostics, evidence, and explicit ambiguity candidates.
 
 ### `context`
 
@@ -505,7 +616,9 @@ changes, affected callers/modules, and test evidence. Routine symbol churn is
 collapsed; `--limit N` changes the visible per-section budget, while `--all`
 expands routine findings and is exhaustive. `--explain` prints the evidence
 and reasoning for one finding. Diff requires comparable build profiles;
-rebuild the newer revision with `--profile-from OLD` when needed.
+rebuild the newer revision with `--profile-from OLD` when needed. `diff` never
+materializes a revision: build each uncached revision explicitly with
+`compass history build REV --code-only` before comparing.
 `--format html` requires `--output PATH` and writes a self-contained
 interactive report containing the reviewer findings, unified/split source
 diffs, the exact Git patch fallback, and meaningful code-graph changes.
@@ -1039,9 +1152,13 @@ count. `history change-counts` requires existing preferred realizations with
 the same complete build profile and never builds them. Its bounded structural
 counts exclude source-coordinate, clustering/layout, and anchor-derived edge
 identity churn while preserving topology and relationship multiplicity.
+`history export` is also read-only; run `compass history build REV --code-only`
+before exporting an uncached revision.
 `history diff` streams an exhaustive,
-deterministic record-level diff for selected immutable roots. It may lazily
-materialize a missing revision, requires identical complete build profiles and
+deterministic record-level diff for selected immutable roots. It is read-only:
+both revisions must already be materialized, and an uncached revision returns
+the exact `compass history build REV --code-only` prerequisite instead of
+starting extraction. It requires identical complete build profiles and
 compatible graph engines, refuses to overwrite `--output`, and bounds stdout
 for safety. This is distinct from the ranked `compass diff` semantic-review
 report. Guided writers accept `--events jsonl`; stdout then contains

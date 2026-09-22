@@ -52,8 +52,14 @@ or global graph must preserve repository origin. If a command fails to load the
 selected graph, stop and diagnose that selection instead of answering from a
 different graph.
 
+At the start of an installed coding session, and again whenever the working
+directory moves to another Git worktree, run `compass ensure` once unless the
+user prohibited generated files or repository guidance selects another build
+command. Keep the default output worktree-local; never point linked worktrees
+at one mutable `compass-out/`. A `current` result is a successful no-op.
+
 When the current project graph is absent and the request needs repository-wide
-architecture, dependency, history, or impact evidence, run `compass update .`
+architecture, dependency, history, or impact evidence, run `compass ensure`
 once and continue with the query workflow. Do not interrupt the user for routine
 confirmation: this is a local deterministic build into `compass-out/`. Skip the
 build for a narrow task that already identifies the files to edit, when the user
@@ -87,7 +93,8 @@ Use the specialized navigation commands when they fit:
 - `compass ask "<question>"` to require bounded, typed intent routing directly;
   inspect the reported operation and ambiguity.
 - `compass search "<symbol>"` for exact or fuzzy typed-symbol lookup.
-- `compass callers` or `compass callees` for one-hop call-graph evidence.
+- `compass callers` for one-hop incoming usage evidence, or `compass callees`
+  for one-hop outgoing call evidence.
 - `compass call-graph` for a bounded caller/callee trace from a source position
   or symbol, optionally enriched with Program IR.
 - `compass impact` for bounded transitive impact; use `affected` for review
@@ -98,9 +105,13 @@ Use the specialized navigation commands when they fit:
 - `compass explain "<concept>"` for one node and its neighborhood; use the same
   `--budget N` and `--page N` continuation workflow for large neighborhoods or
   ambiguity lists.
+- `compass architecture` for a bounded repository overview with explicit
+  coverage, omissions, and witness group IDs.
 - `compass program` for normalized functions, call evidence, or capability
   completeness rather than graph topology.
-- `compass affected "<symbol>" --depth N` for downstream review scope.
+- `compass affected "<symbol>" --depth N` for downstream review scope; on a
+  typed graph it shares importer/reference resolution with `impact`, and
+  `--format agent-json` preserves bounded diagnostics for an agent.
 - `compass query --cql "..."` for exact, deterministic graph patterns.
 - `compass tree` for a graph-aware repository tree.
 - `compass query "<question>" --at REV` for an immutable historical graph.
@@ -190,9 +201,9 @@ recovery, and MCP setup.
 Classify the effect before selecting a command:
 
 - Read-only local: `ask`, `search`, `callers`, `callees`, `impact`, `explore`,
-  `node`, `call-graph`, `query`, `program`, `path`, `explain`, `affected`,
+  `node`, `call-graph`, `query`, `program`, `path`, `explain`, `architecture`, `affected`,
   `tree`, `document`, `models list`, `models verify`, and local diagnostics.
-- Local publication: `init`, `update`, `extract`, `watch`, `cluster-only`,
+- Local publication: `init`, `ensure`, `update`, `extract`, `watch`, `cluster-only`,
   `label`, `models install`, history materialization, installation, and
   file-based exports.
 - External or credentialed: semantic providers, URL ingestion, cloning, PR
@@ -215,6 +226,7 @@ Choose the least expensive command that satisfies the request:
 
 - `compass init` to choose and persist repository scope before the first build.
 - `compass update .` for local, deterministic structural extraction.
+- `compass ensure` for idempotent session and worktree bootstrap.
 - `compass extract PATH --code-only` for explicit no-model extraction with
   optional native integrations.
 - `compass extract PATH` when the user wants semantic facts from documents,
@@ -253,7 +265,8 @@ the user wants human-readable community labels and accepts provider use. Use
 
 Do not force every request through `query`:
 
-- Architecture or concept: `query`, then `explain`.
+- Architecture or concept: `architecture`, then `query` or `explain` for a
+  focused relationship.
 - Dependency route: `path`.
 - Change-review scope: `affected`.
 - Exact relationship or automation: `query --cql`.

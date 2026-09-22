@@ -1,5 +1,5 @@
 {
-  "serverInfo": { "name": "compass", "version": "0.3.23" },
+  "serverInfo": { "name": "compass", "version": "0.3.28" },
   "capabilities": {
     "experimental": {},
     "resources": { "subscribe": false, "listChanged": false },
@@ -10,28 +10,28 @@
       "name": "search_symbols",
       "description": "Search Compass code symbols with the trusted FTS5 index.",
       "inputSchemaSha256": "523a1c967403f4820b39c5360bfe549b97bda2619cf60710bcd603c981b0c325",
-      "outputSchemaSha256": "72d1addd06e7b86cbd21ad8046c9fbcf20d0cd93e32f9ddfc53fa96405769492",
+      "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "get_callers",
       "description": "Return one-hop callers and route bindings for a symbol.",
       "inputSchemaSha256": "5d82222c8c5ef1ec1309bc5bfbcfce1ae45d56575093a45f3c3b2e329d21a66e",
-      "outputSchemaSha256": "5e9b5eefbffaaa25232298a72ed9d6723a770d272f37fd758f732d4ef03521e1",
+      "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "get_callees",
       "description": "Return one-hop callees for a symbol.",
       "inputSchemaSha256": "5d82222c8c5ef1ec1309bc5bfbcfce1ae45d56575093a45f3c3b2e329d21a66e",
-      "outputSchemaSha256": "a1354aa83497c9d24b5d49a1a3a68d1b65634d0a9a4b483bec190ccf79c507a8",
+      "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "get_impact",
       "description": "Return the bounded transitive impact radius for a symbol.",
       "inputSchemaSha256": "5d82222c8c5ef1ec1309bc5bfbcfce1ae45d56575093a45f3c3b2e329d21a66e",
-      "outputSchemaSha256": "9cb2a788634ceb6e6cdb940ca7d456b86c881b9b1f5e47b324fcc0c09ce2dcf1",
+      "outputSchemaSha256": null,
       "meta": null
     },
     {

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Align Surreal-backed traversal with the typed engines. Directed trails now
+  rank candidates by relation kind before evidence quality, matching the
+  weighted selection 0.3.28 introduced for JSON and SQLite, so a Surreal graph
+  returns the same path as the other backends instead of preferring a
+  higher-confidence but weaker-related edge. The CompassQL `degree` property
+  counts incident relations directly rather than resolving adjacency, so a node
+  whose neighbor falls outside the current selection reports its real degree
+  instead of failing the read.
+
+- Withdraw this fork's `compass.code_context.v1` MCP result envelope in favor of
+  the upstream contract. `search_symbols`, `get_callers`, `get_callees`,
+  `get_impact`, `explore_code`, and `get_node` now return
+  `compass.mcp.tool-result/1`, carrying the unchanged `compass.query/1` record
+  under `result` alongside `agentView` and `semanticResultDigest`. These tools
+  no longer advertise a raw output schema, matching upstream. Clients that read
+  `structuredContent.data` read `structuredContent.result` instead; see
+  MIGRATION.md for the full field mapping. `max_response_bytes` continues to
+  bound the delivered envelope, not only the query result.
+
+- Support native Windows for the optional SurrealDB surfaces, with no WSL
+  dependency. Embedded store addresses reject a path containing `://` instead of
+  silently retargeting the store, failed restores report cleanup that could not
+  complete rather than discarding the error and leaving a partially populated
+  directory that the next attempt rejects as non-empty, and the Surreal
+  repository id hashes its root losslessly so two distinct non-UTF-8 roots can no
+  longer collide. SurrealDB surfaces are now qualified on `windows-2025` in CI;
+  building any SurrealDB feature there needs CMake and NASM for the transitive
+  `aws-lc-sys` dependency, which the default build does not pull in.
+
 - Reject query artifacts produced before Compass 0.3.23 at engine loading,
   before record decoding or cache reuse. JSON uses a 64 KiB builder-version
   preamble; SQLite and Surreal use pinned snapshot metadata without JSON
@@ -120,6 +149,94 @@
   snapshots. Production validation and reference generation now verify chunks
   without retaining the canonical payload in one allocation, while the public
   full-read API and store formats remain compatible.
+- Improve agent-facing query correctness and recovery: callers, impact, and
+  affected include source-backed alias/import/export usage evidence; CompassQL
+  exposes live node degree and supports ordering by pre-projection bindings;
+  historical reads neutralize configured checkout filters; direction-only
+  trail misses suggest `compass path`; and full reports retain bounded hub,
+  suggested-query, and learned-question entries.
+- Unify bounded relationship resolution across callers, impact, and affected,
+  including importer-consistency diagnostics and explicit relationship
+  provenance. Add the bounded `compass architecture` view, shared agent output
+  formats, visible coverage witnesses, a 64-candidate query default, and
+  read-only historical queries with state-health audit events.
+
+## 0.3.28 - 2026-09-19
+
+- Improve agent-facing query correctness and recovery across callers, impact,
+  affected, CompassQL ordering, historical reads, directed trail guidance, and
+  bounded full-report sections. Incoming usage results now retain
+  source-backed alias, import, export, route, and reference evidence.
+
+- Keep query answers deterministic and actionable: live node degree is
+  available to CompassQL, ordering may use pre-projection bindings, configured
+  checkout filters are neutralized for historical reads, and direction-only
+  trail misses recommend the matching `compass path` command.
+
+## 0.3.27 - 2026-09-17
+
+- Improve Rust call-graph recall for source-proven `Arc`, `Rc`, and `Box`
+  receiver chains, typed chained-call results, and local evaluating
+  `macro_rules!` inputs. Rust universal evidence advances to producer version
+  2 so cached Rust files rebuild; ambiguous and non-evaluating macro inputs
+  continue to fail closed.
+
+- Add the bounded `compass.query.agent-view/1` projection for coding agents.
+  Typed CLI and MCP query text now lead with result state, answer, and caveats;
+  `--format agent-json` and MCP `agentView` expose the same deterministic
+  source-linked view while raw query JSON remains unchanged. Discovery text
+  keeps its v2 cursor ledger and adds only an answer-first fixed header.
+
+## 0.3.26 - 2026-09-15
+
+- Make query failures and paths more trustworthy: exact-looking missing symbols
+  now return structured `no_match` signals across discovery and typed natural
+  queries; `compass path` requires exact endpoints, reports unreachable targets,
+  and uses deterministic relation-weighted routing with a visible shorter weak
+  alternative.
+
+- Make plain query output concise by default, add `--evidence` for full
+  provenance, raise the default text-page budget to 8,000 tokens, and move text
+  cursors to `compass.query.discovery-text-page/2`. Generic relationship words
+  no longer dominate discovery seeding.
+
+- Update the Rust TLS dependency to 0.23.45 to address the security advisory
+  covered by the release branch.
+
+## 0.3.25 - 2026-09-13
+
+- Raise the immutable-history aggregate authoritative-evidence limit from
+  512 MiB to 5 GiB so large repositories can publish, validate, and compare
+  complete realizations while retaining the existing per-record and record-count
+  bounds.
+
+- Make `compass review` text and Markdown easier to scan by shortening commit
+  and report references, using plain-language status labels, and summarizing
+  witness relationships without printing opaque graph-node IDs. Canonical JSON
+  and SARIF retain every exact identity and remain unchanged.
+
+- Replace production community detection for typed graphs with deterministic
+  native Leiden over a versioned typed-evidence topology. Publish strict,
+  digest-bound `compass.community-quality/1` evidence while preserving frozen
+  influence and full-quality fallback during incremental updates.
+
+- Speed up fixed-resolution Leiden modularity evaluation by reusing graph
+  invariants and scratch space, reducing repeated community scans, and making
+  Leiden faster than the compatibility Louvain implementation on the pinned
+  release qualification corpus.
+
+- Improve community detection quality with typed Leiden while retaining fixed
+  resolution as the default; the bounded three-candidate selector remains
+  gated on complete pinned-corpus qualification.
+
+## 0.3.24 - 2026-09-11
+
+- Add `compass ensure` as an idempotent agent-session and linked-worktree
+  bootstrap. It preserves worktree-local mutable graph output, reuses the
+  incremental update pipeline, and reports whether the graph was initialized,
+  updated, or already current. Installed assistant guidance now directs agents
+  to run it when a session starts or moves between worktrees.
+
 - Reset all 14 registered universal-evidence producer versions to v1 and keep
   them `Qualified` under the refreshed release decision at
   `tests/qualification/universal-evidence-promotion.json`. Cached evidence
@@ -133,7 +250,6 @@
   edge-ordered adjacency capability; older sidecars remain valid recovery
   inputs but directional store queries fail with an explicit rebuild
   instruction instead of returning a backend-dependent truncated subset.
-
 - Refactor universal language metadata around `UniversalEvidenceProducer` and
   `UniversalEvidencePipeline`. `UniversalCandidate`/`UniversalComplete` are
   now the clearer lifecycle states `Qualifying`/`Qualified`; the serialized
@@ -626,8 +742,10 @@
   Legacy store snapshots remain readable and report incomplete identifier or
   relationship coverage until they are rebuilt; operation queries use the
   existing bounded fallback until the compact role index is available. The
-  immutable relationship capability is v2, and the disposable SQLite query
-  accelerator now uses internal format v7 and rebuilds automatically.
+  immutable relationship capability remains v1 — snapshots written by any
+  0.3.x-lineage builder carry identical direct-call postings and need no
+  rebuild — and the disposable SQLite query accelerator now uses internal
+  format v7 and rebuilds automatically.
 
 - Configure one-shot graph builds to use mimalloc without its process-wide
   reserved arena while preserving explicit operator allocator settings. This

@@ -46,6 +46,7 @@ pub fn command(frontend: Frontend, args: &[String]) -> Outcome {
             ("surreal_remote", cfg!(feature = "surreal-remote")),
             ("surreal_yaml_config", true),
             ("init", true),
+            ("ensure", true),
             ("update", true),
             ("watch", true),
             ("graph", true),

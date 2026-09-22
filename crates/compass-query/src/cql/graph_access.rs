@@ -26,6 +26,8 @@ pub(crate) trait QueryGraph {
         node: NodeIndex,
         pattern: &RelationshipPattern,
     ) -> Result<Vec<(EdgeIndex, NodeIndex)>, QueryError>;
+    /// Live incident-edge count, exposed to CompassQL as the `degree` property.
+    fn degree(&self, node: NodeIndex) -> Result<usize, QueryError>;
 }
 
 impl QueryGraph for Graph {
@@ -50,6 +52,9 @@ impl QueryGraph for Graph {
                 self.query_index().nodes_with_source_file(path).to_vec()
             }
         })
+    }
+    fn degree(&self, node: NodeIndex) -> Result<usize, QueryError> {
+        Ok(Graph::degree(self, node))
     }
     fn adjacent(
         &self,

@@ -279,10 +279,7 @@ fn backup(args: &[String]) -> Result<Value, String> {
             "backup": destination,
             "manifest": manifest,
         })),
-        Err(error) => {
-            let _ = fs::remove_dir_all(&destination);
-            Err(error)
-        }
+        Err(error) => Err(with_restore_cleanup(error, &destination)),
     }
 }
 
@@ -360,8 +357,7 @@ fn restore(args: &[String]) -> Result<Value, String> {
         Ok::<_, String>(())
     })();
     if let Err(error) = result {
-        let _ = fs::remove_dir_all(&destination);
-        return Err(error);
+        return Err(with_restore_cleanup(error, &destination));
     }
     Ok(json!({
         "schema": "compass.store.restore/1",
@@ -396,6 +392,9 @@ fn surreal_status(output: &Path) -> Value {
         feature = "surreal-remote"
     ))]
     {
+        // The `return` keeps this cfg block and its `not(...)` counterpart
+        // interchangeable; without it the two would have to be one expression.
+        #[allow(clippy::needless_return)]
         return match validate_surreal(output) {
             Ok(value) => value,
             Err(error) => json!({
@@ -521,8 +520,7 @@ fn backup_surreal(output: &Path, destination: &Path) -> Result<Value, String> {
         Ok::<(), String>(())
     })();
     if let Err(error) = result {
-        let _ = fs::remove_dir_all(destination);
-        return Err(error);
+        return Err(with_restore_cleanup(error, destination));
     }
     Ok(json!({
         "schema": SURREAL_BACKUP_SCHEMA_V1,
@@ -538,6 +536,26 @@ fn backup_surreal(output: &Path, destination: &Path) -> Result<Value, String> {
 )))]
 fn backup_surreal(_output: &Path, _destination: &Path) -> Result<Value, String> {
     Err("this Compass binary was built without a SurrealDB engine".to_owned())
+}
+
+/// Roll a failed restore back, reporting cleanup that could not complete.
+///
+/// Embedded store owners are retained for the process lifetime, so the files
+/// under `destination` may still be open and locked when a restore fails.
+/// POSIX unlinks them anyway; Windows refuses, which used to leave a partially
+/// populated directory that the next attempt rejected as non-empty. Report both
+/// the original failure and the manual step that unblocks a retry rather than
+/// discarding the cleanup result.
+fn with_restore_cleanup(error: String, destination: &Path) -> String {
+    match fs::remove_dir_all(destination) {
+        Ok(()) => error,
+        Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => error,
+        Err(cleanup) => format!(
+            "{error} (could not remove the partially restored directory {}: {cleanup}; \
+remove it manually before retrying, closing any process still using the store)",
+            destination.display()
+        ),
+    }
 }
 
 #[cfg(any(
@@ -613,8 +631,7 @@ fn restore_surreal(
     let projection = match result {
         Ok(projection) => projection,
         Err(error) => {
-            let _ = fs::remove_dir_all(destination);
-            return Err(error);
+            return Err(with_restore_cleanup(error, destination));
         }
     };
     let publication = (|| {
@@ -639,8 +656,7 @@ fn restore_surreal(
         Ok::<(), String>(())
     })();
     if let Err(error) = publication {
-        let _ = fs::remove_dir_all(destination);
-        return Err(error);
+        return Err(with_restore_cleanup(error, destination));
     }
     Ok(json!({
         "schema": "compass.surreal.restore/1",

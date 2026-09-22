@@ -1,6 +1,7 @@
 //! Closed generation-pinned native graph reads.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 
 use compass_model::code_graph::{EdgeKind, EdgeRecord, NodeRecord};
 use compass_model::provenance::EvidenceConfidence;
@@ -1164,6 +1165,10 @@ impl SurrealProjection {
         Ok((merged, truncated))
     }
 
+    // Every parameter is a distinct traversal bound or selector that the
+    // caller owns; grouping them into a struct would only move the same
+    // values behind one more indirection.
+    #[allow(clippy::too_many_arguments)]
     async fn shortest_path(
         &self,
         selector: &QuerySelector,
@@ -1185,12 +1190,29 @@ impl SurrealProjection {
             return Ok((None, BTreeMap::new(), true));
         }
         let max_depth = usize::try_from(limits.max_depth).unwrap_or(usize::MAX);
-        let mut queue = VecDeque::from([(source.to_owned(), 0_usize)]);
-        let mut visited = BTreeSet::from([source.to_owned()]);
+        // Weighted-shortest trail selection, mirroring the JSON engine's
+        // Dijkstra in `compass-query::code_query::CodeQueryEngine::shortest_path`.
+        // The priority key is (cost, depth, path_key, node); `best` records the
+        // winning (cost, depth, path_key) per node so a stale heap entry is
+        // discarded on pop. Every order-dependent decision comes from that
+        // explicit total ordering, never from map iteration order.
+        let mut queue = BinaryHeap::from([Reverse((
+            0_u32,
+            0_usize,
+            source.to_owned(),
+            source.to_owned(),
+        ))]);
+        let mut best = BTreeMap::from([(source.to_owned(), (0_u32, 0_usize, source.to_owned()))]);
+        let mut admitted = BTreeSet::from([source.to_owned()]);
         let mut predecessor = BTreeMap::<String, (String, String)>::new();
         let mut selected = BTreeMap::<String, EdgeRecord>::new();
         let mut truncated = false;
-        while let Some((node, depth)) = queue.pop_front() {
+        while let Some(Reverse((cost, depth, path_key, node))) = queue.pop() {
+            if best.get(&node).is_none_or(|current| {
+                current.0 != cost || current.1 != depth || current.2 != path_key
+            }) {
+                continue;
+            }
             if node == target {
                 let mut nodes = vec![target.to_owned()];
                 let mut edges = Vec::new();
@@ -1244,22 +1266,31 @@ impl SurrealProjection {
                 }
             }
             adjacent.sort_by(|left, right| {
-                evidence_quality(&right.1)
-                    .cmp(&evidence_quality(&left.1))
+                code_relation_weight(left.1.kind)
+                    .cmp(&code_relation_weight(right.1.kind))
+                    .then_with(|| evidence_quality(&right.1).cmp(&evidence_quality(&left.1)))
+                    .then_with(|| left.0.cmp(&right.0))
                     .then_with(|| left.1.id.cmp(&right.1.id))
             });
             for (next, edge) in adjacent {
-                if visited.contains(&next) {
+                let next_depth = depth.saturating_add(1);
+                let next_cost = cost.saturating_add(code_relation_weight(edge.kind));
+                let next_key = format!("{path_key}\0{}\0{next}", edge.id);
+                let candidate = (next_cost, next_depth, next_key.clone());
+                if best
+                    .get(&next)
+                    .is_some_and(|current| candidate >= current.clone())
+                {
                     continue;
                 }
-                if !budget.consume_node() {
+                if admitted.insert(next.clone()) && !budget.consume_node() {
                     truncated = true;
                     continue;
                 }
-                visited.insert(next.clone());
+                best.insert(next.clone(), candidate);
                 predecessor.insert(next.clone(), (node.clone(), edge.id.clone()));
                 selected.insert(edge.id.clone(), edge);
-                queue.push_back((next, depth + 1));
+                queue.push(Reverse((next_cost, next_depth, next_key, next)));
             }
         }
         Ok((None, selected, truncated))
@@ -1410,6 +1441,29 @@ fn evidence_quality(edge: &EdgeRecord) -> u8 {
         })
         .max()
         .unwrap_or(0)
+}
+
+/// Traversal cost of one relation kind during weighted trail selection.
+///
+/// Source of truth: `code_relation_weight` in
+/// `crates/compass-query/src/code_query.rs`. That function is private to
+/// `compass-query`, and `compass-graphdb-surreal` depends on it only as a
+/// dev-dependency, so the mapping is replicated verbatim here rather than
+/// widening the public contract or adding a normal dependency edge. Both
+/// engines must agree exactly: any change there must be mirrored here.
+const fn code_relation_weight(kind: EdgeKind) -> u32 {
+    match kind {
+        EdgeKind::Contains
+        | EdgeKind::Calls
+        | EdgeKind::Imports
+        | EdgeKind::Extends
+        | EdgeKind::Implements
+        | EdgeKind::RoutesTo
+        | EdgeKind::Handles
+        | EdgeKind::DependsOn => 1,
+        EdgeKind::References | EdgeKind::Documents => 4,
+        _ => 2,
+    }
 }
 
 fn encode_cursor(selector: &QuerySelector, last_identity: &str) -> Result<String, ProjectionError> {

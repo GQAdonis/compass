@@ -1,0 +1,58 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -8,6 +8,30 @@
+   names and input schemas, and resource inventory. Add `server/discover`
+   compatibility coverage against the pre-migration golden contract.
+ 
++- Extract storage-neutral partition records, stable typed-key construction, and
++  canonical JSON encoding into a dependency-light `compass-partition` crate.
++  Existing history APIs, encoded bytes, persisted formats, and round trips
++  remain compatible.
++
++- Honor `COMPASS_MAX_GRAPH_BYTES` consistently across canonical graph
++  preflight, snapshot publication, validation, and reads while retaining the
++  2 GiB default and failing closed on invalid override values.
++
++- Add a deterministic, bounded canonical graph-size preflight after discovery,
++  so inputs estimated above the snapshot limit fail before project-wide
++  extraction with the existing actionable scope-reduction guidance.
++
++- Make oversized canonical graph failures actionable by naming `--exclude`
++  and `.compassignore` as safe ways to reduce publication scope. The CLI keeps
++  runtime exit code 1 and does not advertise the graph-byte override until the
++  snapshot publication path supports it. Oversized manifests now surface as
++  resource-limit failures rather than corruption failures.
++
++- Add manifest-only and bounded chunk-streaming reads for SQLite graph
++  snapshots. Production validation and reference generation now verify chunks
++  without retaining the canonical payload in one allocation, while the public
++  full-read API and store formats remain compatible.
++
+ - Add a digest-pinned 500-question, AI-reviewed synthetic relevance matrix
+   covering all query classes, execute it in CI with strict ranking, recall,
+   intent, structural, no-answer, and work bounds, and keep its generated JSON
+diff --git a/docs/reference/configuration.md b/docs/reference/configuration.md
+--- a/docs/reference/configuration.md
++++ b/docs/reference/configuration.md
+@@ -112,6 +112,20 @@ applied as built-in safety skips, Git ignores, configured includes, configured
+ excludes, then command-line exclusions. Invalid configuration stops the build
+ instead of silently widening its scope.
+ 
++`vendor/` is deliberately not a built-in skip. Vendored directories can contain
++real Go source and can also be explicit workspace members, as Compass's vendored
++parser pack is. A language-neutral discovery layer cannot infer that this source
++is disposable from the directory name alone. Repositories that do not want
++vendored source in a graph should exclude it explicitly and reviewably:
++
++```bash
++compass init . --exclude 'vendor/**' --yes
++```
++
++The same pattern may be placed in `.compassignore`. Keeping this opt-out explicit
++preserves existing discovery behavior and applies consistently to builds and
++filesystem watching.
++
+ Common explicit options:
+ 
+ | Concern | Options |

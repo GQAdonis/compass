@@ -483,7 +483,7 @@ impl Default for CodeQueryLimits {
             max_nodes: 500,
             max_edges: 1_000,
             max_paths: 100,
-            max_candidates: 20,
+            max_candidates: 64,
             max_source_bytes: 1_048_576,
             max_response_bytes: 8_388_608,
         }
@@ -721,10 +721,15 @@ pub struct QueryDiagnostic {
 pub enum QueryDiagnosticCode {
     NoMatch,
     AmbiguousMatch,
+    RelationshipInconsistency,
     DirectionMismatch,
     UnresolvedHandler,
     IncompleteCoverage,
     StaleSourceDigest,
+    /// Verified source could not be read because race-resistant confinement is
+    /// unavailable on this platform. The graph answer stands; only the inlined
+    /// source evidence is absent.
+    SourceConfinementUnsupported,
     BoundedTruncation,
     ProgramOrphan,
     ProgramConflict,
