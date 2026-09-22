@@ -1581,6 +1581,16 @@ fn agent_caveat(diagnostic: &QueryDiagnostic) -> AgentCaveat {
                 diagnostic.message
             ),
         ),
+        // Distinct from a stale digest: there is no excerpt at all, correct or otherwise.
+        // The graph answer stands, so this is not a Blocker — but an agent must not
+        // proceed as though it holds the file's contents.
+        QueryDiagnosticCode::SourceConfinementUnsupported => (
+            AgentSeverity::Warning,
+            format!(
+                "No source excerpt is available for this file; read it directly before quoting or editing. {}",
+                diagnostic.message
+            ),
+        ),
         QueryDiagnosticCode::IncompleteCoverage => (
             AgentSeverity::Warning,
             format!(
@@ -1638,6 +1648,7 @@ fn diagnostic_code_name(code: QueryDiagnosticCode) -> &'static str {
         QueryDiagnosticCode::UnresolvedHandler => "unresolved_handler",
         QueryDiagnosticCode::IncompleteCoverage => "incomplete_coverage",
         QueryDiagnosticCode::StaleSourceDigest => "stale_source_digest",
+        QueryDiagnosticCode::SourceConfinementUnsupported => "source_confinement_unsupported",
         QueryDiagnosticCode::BoundedTruncation => "bounded_truncation",
         QueryDiagnosticCode::ProgramOrphan => "program_orphan",
         QueryDiagnosticCode::ProgramConflict => "program_conflict",
