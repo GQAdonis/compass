@@ -67,27 +67,8 @@ pub(crate) fn verified_source(
             format!("source path escapes the repository: {relative}"),
         ));
     }
-    let mut file = open_beneath(&canonical_root, relative_path).map_err(|error| {
-        let unsupported = error.kind() == std::io::ErrorKind::Unsupported;
-        let unsafe_path = unsupported || is_unsafe_open_error(&error);
-        QueryError::new(
-            if unsafe_path {
-                QueryErrorKind::UnsafePath
-            } else {
-                QueryErrorKind::Internal
-            },
-            if unsafe_path {
-                if unsupported {
-                    "source_confinement_unsupported"
-                } else {
-                    "unsafe_source_path"
-                }
-            } else {
-                "source_read_failed"
-            },
-            format!("{relative}: {error}"),
-        )
-    })?;
+    let mut file = open_beneath(&canonical_root, relative_path)
+        .map_err(|error| classify_open_error(&error, relative))?;
     let opened_size = file.metadata().map_err(|error| {
         QueryError::new(
             QueryErrorKind::Internal,
@@ -161,6 +142,34 @@ fn is_unsafe_open_error(_error: &std::io::Error) -> bool {
     false
 }
 
+/// How a failed confined open becomes a `QueryError`.
+///
+/// Extracted so the classification is testable on every platform rather than only where
+/// it fires. `source_confinement_unsupported` is the one code the query layer degrades on
+/// (see `add_verified_files`); the others abort, as they should — an unsafe path or a read
+/// failure is a real problem, while an unavailable mechanism only costs evidence.
+fn classify_open_error(error: &std::io::Error, relative: &str) -> QueryError {
+    let unsupported = error.kind() == std::io::ErrorKind::Unsupported;
+    let unsafe_path = unsupported || is_unsafe_open_error(error);
+    QueryError::new(
+        if unsafe_path {
+            QueryErrorKind::UnsafePath
+        } else {
+            QueryErrorKind::Internal
+        },
+        if unsafe_path {
+            if unsupported {
+                "source_confinement_unsupported"
+            } else {
+                "unsafe_source_path"
+            }
+        } else {
+            "source_read_failed"
+        },
+        format!("{relative}: {error}"),
+    )
+}
+
 #[cfg(unix)]
 fn open_beneath(root: &Path, relative: &Path) -> std::io::Result<File> {
     use rustix::fs::{Mode, OFlags, open, openat};
@@ -216,5 +225,38 @@ mod tests {
             result,
             Err(ref error) if error.kind() == std::io::ErrorKind::Unsupported
         ));
+    }
+}
+
+/// Runs on EVERY platform, unlike the module above, which is `not(unix)` — which is why
+/// the propagation bug it guards against survived: nothing on Unix exercised the shape.
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    /// The degrade at the `add_verified_files` call site keys on this exact code. If the
+    /// classification below ever stops producing it, that call site silently goes back to
+    /// aborting every evidence-bearing query on Windows — so pin it here, on all platforms.
+    #[test]
+    fn an_unsupported_open_is_classified_as_confinement_unsupported() {
+        let error = std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "race-resistant source confinement is unavailable on this platform",
+        );
+
+        let classified = classify_open_error(&error, "src/lib.rs");
+
+        assert_eq!(classified.code(), "source_confinement_unsupported");
+        assert_eq!(classified.kind(), QueryErrorKind::UnsafePath);
+    }
+
+    /// The other codes must NOT degrade — a genuine read failure has to keep aborting.
+    #[test]
+    fn an_ordinary_read_failure_is_not_confinement_unsupported() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+
+        let classified = classify_open_error(&error, "src/lib.rs");
+
+        assert_ne!(classified.code(), "source_confinement_unsupported");
     }
 }
