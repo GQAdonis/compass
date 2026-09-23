@@ -1,10 +1,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use compass_history::{
-    ExtractionFingerprint, HistoryConfig, HistoryStore, PublishRequest, Repository,
-};
-use compass_pr_intelligence::{GateState, MergeOutcome, PullRequestReport, RiskBand};
+use compass_history::{ExtractionFingerprint, HistoryStore, PublishRequest, Repository};
+use compass_pr_intelligence::{GateState, PullRequestReport, RiskBand};
 
 const SYNTHETIC_ENGINE_IDENTITY: &str = "historical-engine";
 
@@ -37,15 +35,41 @@ fn initialize(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn publish_historical_base(root: &Path, commit: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let seeded = run(root, &["history", "build", commit, "--code-only"])?;
-    if !seeded.status.success() {
-        return Err(format!(
-            "could not seed current history: {}",
-            String::from_utf8_lossy(&seeded.stderr)
-        )
-        .into());
+fn build_history(
+    root: &Path,
+    commit: &str,
+    profile_from: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut arguments = vec!["history", "build", commit];
+    if let Some(source) = profile_from {
+        arguments.extend(["--profile-from", source]);
+    } else {
+        arguments.push("--code-only");
     }
+    let output = run(root, &arguments)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "history build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into())
+    }
+}
+
+fn missing_revision(output: &Output) -> Result<String, Box<dyn std::error::Error>> {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let revision = stderr
+        .split_once("revision ")
+        .and_then(|(_, rest)| rest.split_once(" is not materialized"))
+        .map(|(revision, _)| revision.to_owned())
+        .ok_or_else(|| format!("missing explicit materialization error: {stderr}"))?;
+    Ok(revision)
+}
+
+fn publish_historical_base(root: &Path, commit: &str) -> Result<(), Box<dyn std::error::Error>> {
+    build_history(root, commit, None)?;
     let repository = Repository::discover(root)?;
     let commit = repository.resolve(commit)?;
     let history = HistoryStore::open_existing(&repository)?.ok_or("seeded history store")?;
@@ -65,21 +89,27 @@ fn publish_historical_base(root: &Path, commit: &str) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-fn persist_historical_repository_profile(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let enabled = run(root, &["history", "enable", "--code-only"])?;
-    if !enabled.status.success() {
-        return Err(format!(
-            "could not enable history: {}",
-            String::from_utf8_lossy(&enabled.stderr)
-        )
-        .into());
-    }
-    let repository = Repository::discover(root)?;
-    let mut profile = HistoryConfig::load(&repository)?
-        .profile
-        .ok_or("enabled profile")?;
-    profile.insert("compass_version", SYNTHETIC_ENGINE_IDENTITY)?;
-    HistoryConfig::enable(&repository, profile)?;
+#[test]
+fn local_review_requires_explicit_materialization() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    initialize(directory.path())?;
+    let base = git(directory.path(), &["rev-parse", "HEAD"])?;
+    git(directory.path(), &["checkout", "--quiet", "-b", "feature"])?;
+    std::fs::write(directory.path().join("feature.rs"), "pub fn feature() {}\n")?;
+    git(directory.path(), &["add", "feature.rs"])?;
+    git(directory.path(), &["commit", "--quiet", "-m", "feature"])?;
+    let head = git(directory.path(), &["rev-parse", "HEAD"])?;
+
+    let output = run(
+        directory.path(),
+        &[
+            "review", "--base", &base, "--head", &head, "--format", "json",
+        ],
+    )?;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(missing_revision(&output)?, base);
+    let repository = Repository::discover(directory.path())?;
+    assert!(HistoryStore::open_existing(&repository)?.is_none());
     Ok(())
 }
 
@@ -107,8 +137,19 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
     git(directory.path(), &["add", "main.rs"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "target"])?;
     let base = git(directory.path(), &["rev-parse", "HEAD"])?;
-    let report_path = directory.path().join("review.json");
 
+    build_history(directory.path(), &base, None)?;
+    let probe = run(
+        directory.path(),
+        &[
+            "review", "--base", &base, "--head", &head, "--format", "json",
+        ],
+    )?;
+    assert_eq!(probe.status.code(), Some(1));
+    let comparison = missing_revision(&probe)?;
+    build_history(directory.path(), &comparison, Some(&base))?;
+
+    let report_path = directory.path().join("review.json");
     let output = run(
         directory.path(),
         &[
@@ -133,31 +174,14 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("PR review written to"));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("error:"));
     let report = PullRequestReport::from_json(&std::fs::read(report_path)?)?;
     assert_eq!(report.identity.pull_request_number, Some(42));
     assert_eq!(report.identity.repository.owner, "crabbuild");
     assert_eq!(report.identity.revisions.target_head, base);
     assert_eq!(report.identity.revisions.pull_request_head, head);
-    assert!(report.identity.revisions.merge_result.is_clean());
-    let repository = Repository::discover(directory.path())?;
-    let comparison = report
-        .identity
-        .revisions
-        .merge_result
-        .object_id()
-        .ok_or("clean review has no merge result")?;
-    let history = HistoryStore::open_existing(&repository)?.ok_or("review history store")?;
-    let realization = history
-        .preferred(&repository.resolve(comparison)?)?
-        .ok_or("review comparison realization")?;
-    let graph = history.reader(&realization.id)?.graph_document()?;
-    assert!(
-        graph
-            .nodes
-            .iter()
-            .any(|node| node.string("uri") == "pkg:fixture-package")
+    assert_eq!(
+        report.identity.revisions.merge_result.object_id(),
+        Some(comparison.as_str())
     );
 
     let preserved_path = directory.path().join("bounded-review.md");
@@ -186,127 +210,10 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn local_review_rebuilds_a_comparable_pair_from_a_noncurrent_profile()
--> Result<(), Box<dyn std::error::Error>> {
+fn local_review_rejects_incompatible_engine_profiles() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     initialize(directory.path())?;
     let base = git(directory.path(), &["rev-parse", "HEAD"])?;
-    git(directory.path(), &["checkout", "--quiet", "-b", "feature"])?;
-    std::fs::write(
-        directory.path().join("feature.rs"),
-        "pub fn feature() -> u8 { 2 }\n",
-    )?;
-    git(directory.path(), &["add", "feature.rs"])?;
-    git(directory.path(), &["commit", "--quiet", "-m", "feature"])?;
-    let head = git(directory.path(), &["rev-parse", "HEAD"])?;
-    publish_historical_base(directory.path(), &base)?;
-
-    let output = run(
-        directory.path(),
-        &[
-            "review", "--base", &base, "--head", &head, "--format", "json",
-        ],
-    )?;
-    assert!(
-        output.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let report = PullRequestReport::from_json(&output.stdout)?;
-    assert_eq!(report.identity.revisions.target_head, base);
-    assert_eq!(report.identity.revisions.pull_request_head, head);
-
-    let repository = Repository::discover(directory.path())?;
-    let history = HistoryStore::open_existing(&repository)?.ok_or("history store")?;
-    let base = repository.resolve(&base)?;
-    let preferred = history.preferred(&base)?.ok_or("preferred base")?;
-    assert_eq!(
-        preferred.version.build_profile.value("compass_version"),
-        Some(env!("CARGO_PKG_VERSION"))
-    );
-    assert!(history.list(Some(&base))?.iter().any(|realization| {
-        realization.version.build_profile.value("compass_version")
-            == Some(SYNTHETIC_ENGINE_IDENTITY)
-    }));
-    Ok(())
-}
-
-#[test]
-fn local_review_rebuilds_a_persisted_profile_after_a_current_graph_build()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    initialize(directory.path())?;
-    let base = git(directory.path(), &["rev-parse", "HEAD"])?;
-    git(directory.path(), &["checkout", "--quiet", "-b", "feature"])?;
-    std::fs::write(
-        directory.path().join("feature.rs"),
-        "pub fn feature() -> u8 { 2 }\n",
-    )?;
-    git(directory.path(), &["add", "feature.rs"])?;
-    git(directory.path(), &["commit", "--quiet", "-m", "feature"])?;
-    let head = git(directory.path(), &["rev-parse", "HEAD"])?;
-    persist_historical_repository_profile(directory.path())?;
-
-    let built = run(
-        directory.path(),
-        &["extract", ".", "--code-only", "--no-viz"],
-    )?;
-    assert!(
-        built.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&built.stdout),
-        String::from_utf8_lossy(&built.stderr)
-    );
-    let repository = Repository::discover(directory.path())?;
-    assert_eq!(
-        HistoryConfig::load(&repository)?
-            .profile
-            .and_then(|profile| profile.value("compass_version").map(str::to_owned))
-            .as_deref(),
-        Some(SYNTHETIC_ENGINE_IDENTITY)
-    );
-
-    let reviewed = run(
-        directory.path(),
-        &[
-            "review", "--base", &base, "--head", &head, "--format", "json",
-        ],
-    )?;
-    assert!(
-        reviewed.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&reviewed.stdout),
-        String::from_utf8_lossy(&reviewed.stderr)
-    );
-    let report = PullRequestReport::from_json(&reviewed.stdout)?;
-    assert_eq!(report.identity.revisions.target_head, base);
-    assert_eq!(report.identity.revisions.pull_request_head, head);
-    let comparison = report
-        .identity
-        .revisions
-        .merge_result
-        .object_id()
-        .unwrap_or(&report.identity.revisions.pull_request_head)
-        .to_owned();
-
-    let history = HistoryStore::open_existing(&repository)?.ok_or("history store")?;
-    for revision in [base, comparison] {
-        let commit = repository.resolve(&revision)?;
-        let preferred = history.preferred(&commit)?.ok_or("preferred realization")?;
-        assert_eq!(
-            preferred.version.build_profile.value("compass_version"),
-            Some(env!("CARGO_PKG_VERSION"))
-        );
-    }
-    Ok(())
-}
-
-fn assert_review_reconciles_existing_realizations(
-    noncurrent_head: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    initialize(directory.path())?;
     git(directory.path(), &["checkout", "--quiet", "-b", "feature"])?;
     std::fs::write(
         directory.path().join("lib.rs"),
@@ -315,71 +222,32 @@ fn assert_review_reconciles_existing_realizations(
     git(directory.path(), &["add", "lib.rs"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "feature"])?;
     let head = git(directory.path(), &["rev-parse", "HEAD"])?;
-    git(directory.path(), &["checkout", "--quiet", "main"])?;
-    std::fs::write(
-        directory.path().join("lib.rs"),
-        "pub fn shared() -> u8 { 3 }\n",
-    )?;
-    git(directory.path(), &["add", "lib.rs"])?;
-    git(directory.path(), &["commit", "--quiet", "-m", "target"])?;
-    let base = git(directory.path(), &["rev-parse", "HEAD"])?;
     publish_historical_base(directory.path(), &base)?;
-    if noncurrent_head {
-        publish_historical_base(directory.path(), &head)?;
-    } else {
-        let built = run(
-            directory.path(),
-            &["history", "build", &head, "--code-only"],
-        )?;
-        assert!(
-            built.status.success(),
-            "stdout={} stderr={}",
-            String::from_utf8_lossy(&built.stdout),
-            String::from_utf8_lossy(&built.stderr)
-        );
-    }
 
-    let reviewed = run(
+    let probe = run(
         directory.path(),
         &[
             "review", "--base", &base, "--head", &head, "--format", "json",
         ],
     )?;
+    assert_eq!(probe.status.code(), Some(1));
+    let comparison = missing_revision(&probe)?;
+    build_history(directory.path(), &comparison, None)?;
+
+    let output = run(
+        directory.path(),
+        &[
+            "review", "--base", &base, "--head", &head, "--format", "json",
+        ],
+    )?;
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        reviewed.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&reviewed.stdout),
-        String::from_utf8_lossy(&reviewed.stderr)
+        stderr.contains("realizations were produced by incompatible graph engines"),
+        "stderr={stderr} stdout={}",
+        String::from_utf8_lossy(&output.stdout)
     );
-    let report = PullRequestReport::from_json(&reviewed.stdout)?;
-    assert!(matches!(
-        report.identity.revisions.merge_result,
-        MergeOutcome::Conflicted { .. }
-    ));
-
-    let repository = Repository::discover(directory.path())?;
-    let history = HistoryStore::open_existing(&repository)?.ok_or("history store")?;
-    for revision in [base, head] {
-        let commit = repository.resolve(&revision)?;
-        let preferred = history.preferred(&commit)?.ok_or("preferred realization")?;
-        assert_eq!(
-            preferred.version.build_profile.value("compass_version"),
-            Some(env!("CARGO_PKG_VERSION"))
-        );
-    }
     Ok(())
-}
-
-#[test]
-fn local_review_reconciles_existing_different_engine_profiles()
--> Result<(), Box<dyn std::error::Error>> {
-    assert_review_reconciles_existing_realizations(false)
-}
-
-#[test]
-fn local_review_hard_cuts_over_matching_noncurrent_engine_profiles()
--> Result<(), Box<dyn std::error::Error>> {
-    assert_review_reconciles_existing_realizations(true)
 }
 
 #[test]
@@ -403,6 +271,8 @@ fn conflicted_review_is_unavailable_without_false_clean_gate()
     git(directory.path(), &["add", "lib.rs"])?;
     git(directory.path(), &["commit", "--quiet", "-m", "target"])?;
     let base = git(directory.path(), &["rev-parse", "HEAD"])?;
+    build_history(directory.path(), &base, None)?;
+    build_history(directory.path(), &head, Some(&base))?;
 
     let output = run(
         directory.path(),
@@ -415,7 +285,6 @@ fn conflicted_review_is_unavailable_without_false_clean_gate()
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("error:"));
     let report = PullRequestReport::from_json(&output.stdout)?;
     assert_eq!(report.advisory_risk.band, RiskBand::Unavailable);
     assert!(

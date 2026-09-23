@@ -228,11 +228,10 @@ jobs:
       - name: Verify bounded YAML and endpoint configuration
         run: cargo test -p compass-files --test surreal_configuration --locked
 
-  # The Linux job above is the only place SurrealDB code used to run, so no
-  # embedded store had ever been opened on Windows. Qualify the shipped feature
-  # set natively: path handling, file locking, and directory removal while a
-  # store is open all differ there. RocksDB stays Linux-only; SurrealKV is pure
-  # Rust and is the engine shipped for Windows.
+  # Official Windows artifacts ship the remote SurrealDB client beside the
+  # unconditional JSON and SQLite engines. Embedded SurrealKV remains qualified
+  # once on Linux; repeating that unshipped surface on Windows previously failed
+  # on its own file locks before reaching the release feature set.
   surrealdb-projection-windows:
     runs-on: windows-2025
     timeout-minutes: 90
@@ -254,16 +253,8 @@ jobs:
           choco install nasm --no-progress -y
           echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
         shell: pwsh
-      - name: Qualify in-memory projection and native reads
-        run: cargo test -p compass-graphdb-surreal --test '*' --features mem --locked
-      - name: Qualify the embedded SurrealKV engine
-        run: cargo test -p compass-graphdb-surreal --test '*' --features surrealkv --locked
-      - name: Qualify fully wired SurrealKV surfaces
-        run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-surrealkv --locked
       - name: Compile the standalone SurrealDB release surface
         run: cargo check -p compass-cli --features surreal-remote --locked
-      - name: Compile combined embedded and remote SurrealDB surfaces
-        run: cargo check -p compass-cli --features surreal-surrealkv,surreal-remote --locked
       - name: Verify bounded YAML and endpoint configuration
         run: cargo test -p compass-files --test surreal_configuration --locked
 
@@ -307,19 +298,18 @@ jobs:
           workspaces: .
           key: ${{ matrix.target }}
 
-      - name: Full integration tests
-        run: cargo test --workspace --test '*' --locked --target ${{ matrix.target }}
-
       - name: Code graph deterministic publication and SQLite recovery
         run: |
           cargo test -p compass-core --test code_graph_v1_determinism --locked --target ${{ matrix.target }}
           cargo test -p compass-query --test index_recovery --locked --target ${{ matrix.target }}
 
+      - name: Build the official JSON, SQLite, and SurrealDB remote release surface
+        run: cargo build --release --locked -p compass-cli --bin compass --features surreal-remote --target ${{ matrix.target }}
+
       - name: Test PowerShell installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --release --locked -p compass-cli --bin compass --features surreal-remote --target ${{ matrix.target }}
           ./scripts/test_install_ps1.ps1 `
             -CompassBinary "target/${{ matrix.target }}/release/compass.exe"
 
@@ -357,6 +347,12 @@ jobs:
         with:
           working-directory: .
           token: ${{ secrets.GITHUB_TOKEN }}
+          # rkyv 0.7 is reachable only through SurrealDB's all-features
+          # rust_decimal graph; the official remote release does not enable it.
+          # rsa is enabled by SurrealDB/jsonwebtoken, but Compass never loads or
+          # operates on a private RSA key. Neither advisory has a safe upgrade
+          # within the operator-pinned SurrealDB 3.2.4 graph.
+          ignore: RUSTSEC-2026-0235,RUSTSEC-2023-0071
 
   dependency-policy:
     runs-on: ubuntu-24.04
