@@ -12,7 +12,7 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 | Source-reviewed answers passed | 47/47 | 22/47 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
-| Median tokens per answered question | 397 | 278 |
+| Median tokens per answered question | 389 | 278 |
 | Median tokens, questions both tools answered | 392 | 278 |
 | Broad natural questions answered | 5/5 | 5/5 |
 | Paged caller questions answered | 2/2 | 0/2 |
@@ -526,7 +526,7 @@ Measured on the same 44 rows both tools answer
 | Answers passed | 50/50 | **50/50** |
 
 The first suite re-ran at 47/47 against Graphify's 22/47 with its own median at
-397 tokens (392 on the rows both tools answer). The paired ratio is now 2.9×,
+389 tokens (392 on the rows both tools answer). The paired ratio is now 2.9×,
 and the remaining gap is answer content: the declaration-source rows (which
 Graphify cannot answer at all), the discovery seed and node ledger, and the
 pick lists that must still separate colliding labels. The whole pass is
