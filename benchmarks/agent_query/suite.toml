@@ -69,6 +69,16 @@ judgment = "command.go and args.go are connected through legacyArgs (args.go:80)
 forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
+id = "cobra-map-context"
+kind = "explain_source"
+subject = "map ExecuteC and Find with source context"
+compass = ["explore", "cobra.Command::ExecuteC", "cobra.Command::Find", "--root", ".", "--format", "text", "--text-budget", "1200"]
+graphify = ["explain", ".ExecuteC()"]
+expect = "answer"
+required = ["SOURCE", "command.go", "func (c *Command) ExecuteC()"]
+judgment = "The explore map must render the digest-verified declaration source for its anchors."
+
+[[repository.question]]
 id = "cobra-ambiguous-execute"
 kind = "ambiguity"
 subject = "Execute"

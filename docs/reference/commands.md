@@ -406,6 +406,13 @@ compass explore "<symbol>" ... [--format text|agent-json|json]
 compass node "<source>" "<target>" [--format text|agent-json|json]
 ```
 
+`explore --format text` closes its bounded page with a `SOURCE` section: the
+recorded line range of each primary anchor, rendered from the digest-verified
+file the command already reads below `--root`. Blocks are bounded per anchor
+and by the page budget; a truncated file read is labeled, and a stale digest
+leaves that anchor out of the source section instead of presenting unverified
+text.
+
 `text` is the answer-first Agent View projection. It starts with `RESULT`,
 `ANSWER`, and any blocking `CAVEATS`, then shows source-located entities,
 paths, relationships, and bounded next actions. `agent-json` emits the strict

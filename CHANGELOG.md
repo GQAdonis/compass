@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Render digest-verified source context in paged maps. `compass explore
+  --format text` now ends with a `SOURCE` section containing the recorded line
+  range of each primary anchor, read from the digest-verified file the command
+  already loads; a stale or truncated file is marked or skipped instead of
+  being presented as verified context. The section is part of the bounded page,
+  so it never exceeds the requested `--text-budget`.
+
 - Make the agent view answer "who calls this" with the real call sites first.
   Relationship ordering now ranks direct usage (calls, instantiates, routes,
   handlers, registrations) ahead of imports/exports and owner-level references,

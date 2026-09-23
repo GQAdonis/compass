@@ -9,7 +9,7 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 40/43 | 19/43 |
+| Source-reviewed answers passed | 41/44 | 19/44 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
 | Median tokens per answered question | 475 | 278 |
@@ -32,9 +32,9 @@ specifically, so it is the weakest of the three judgments.
 `benchmarks/agent_query/suite.toml` pins one checkout per language:
 `spf13/cobra` (Go), `pallets/flask` (Python), `google/gson` (Java),
 `colinhacks/zod` (TypeScript), and `tokio-rs/axum` (Rust). Each repository
-contributes questions in ten kinds: `explain`, `explain_source`, `callers`,
+contributes questions across `explain`, `explain_source`, `callers`,
 `paged_callers`, `brief_callers`, `path`, `file_path`, `ambiguity`, `negative`,
-and `broad`. Every question
+and `broad`, plus a `SOURCE`-bearing `explore` map row. Every question
 records the exact per-tool argument vector, the expected outcome, the anchors
 the reviewer read in the pinned source, and the graph anchors both graphs must
 carry as source-backed nodes.
@@ -61,6 +61,12 @@ both in 764 (Cobra) and 377 (Axum) tokens by following the cursor, against
 6,256 and 6,758 tokens for the same answers through the single-shot agent view
 and no answer at all from Graphify. Paging therefore turns the most expensive
 reviewed question class into one of the cheapest.
+
+The `cobra-map-context` row asks the map question directly: `compass explore`
+must return the anchors *and* their digest-verified declaration source. It
+passes in 963 tokens with a `SOURCE` section built from the file the command
+already reads below `--root`; Graphify's nearest answer is an `explain`
+metadata list with no source text.
 
 The `brief_callers` questions ask for the same caller sets through
 `--format agent-json --brief`, the compact `compass.query.agent-view.brief/1`
@@ -206,7 +212,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final3/runs/20260923T105013Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final4/runs/20260923T110202Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

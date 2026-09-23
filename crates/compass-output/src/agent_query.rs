@@ -1257,6 +1257,7 @@ enum TextPageSection {
     PrimaryResults,
     Paths,
     Relationships,
+    Source,
 }
 
 impl TextPageSection {
@@ -1265,6 +1266,7 @@ impl TextPageSection {
             Self::PrimaryResults => "PRIMARY RESULTS",
             Self::Paths => "PATHS",
             Self::Relationships => "RELATIONSHIPS",
+            Self::Source => "SOURCE",
         }
     }
 }
@@ -1519,7 +1521,125 @@ fn text_page_entries(
             render_relationship(relationship),
         )
     }));
+    entries.extend(source_context_entries(response, &nodes, &ordered_edges));
     entries
+}
+
+/// Bound for one rendered source block in a paged map.
+const MAP_SOURCE_BLOCK_CHARS: usize = 2_000;
+
+/// Render digest-verified source blocks for the map's primary anchors.
+///
+/// `explore` verifies the anchored files into the response; a bounded text map
+/// is only useful when that context is visible, so each primary anchor gets the
+/// recorded line range of its declaring file. Missing or stale source is
+/// skipped here and stays visible through the response's file records.
+fn source_context_entries(
+    response: &CodeQueryResponse,
+    nodes: &BTreeMap<String, &QueryNode>,
+    ordered_edges: &[(usize, &QueryEdge)],
+) -> Vec<(TextPageSection, String)> {
+    if response.files.is_empty() {
+        return Vec::new();
+    }
+    let files = response
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    let operands = response
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.source.as_ref().map(|_| AgentOperand {
+                role: AgentOperandRole::Symbol,
+                value: node.id.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut anchors = primary_node_ids(
+        AgentOperation::Explore,
+        &operands,
+        response,
+        nodes,
+        ordered_edges,
+    );
+    anchors.extend(response.paths.iter().flat_map(|path| {
+        [
+            path.node_ids.first().cloned(),
+            path.node_ids.last().cloned(),
+        ]
+        .into_iter()
+        .flatten()
+    }));
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    for id in anchors {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(node) = nodes.get(&id).copied() else {
+            continue;
+        };
+        let Some(anchor) = node.source.as_ref() else {
+            continue;
+        };
+        let Some(file) = files.get(anchor.file.as_str()).copied() else {
+            continue;
+        };
+        let Some(source) = file.source.as_deref() else {
+            continue;
+        };
+        let block = source_line_range(source, anchor.start_line, anchor.end_line);
+        if block.is_empty() {
+            continue;
+        }
+        entries.push((
+            TextPageSection::Source,
+            format!(
+                "- {} L{}-L{} ({})\n{}",
+                anchor.file,
+                anchor.start_line,
+                anchor.end_line,
+                if file.truncated {
+                    "verified, file read truncated"
+                } else {
+                    "verified"
+                },
+                block
+            ),
+        ));
+    }
+    entries
+}
+
+/// Extract the recorded line range, bounded by `MAP_SOURCE_BLOCK_CHARS`.
+fn source_line_range(source: &str, start_line: u32, end_line: u32) -> String {
+    if start_line == 0 || end_line < start_line {
+        return String::new();
+    }
+    let mut block = String::new();
+    for (offset, line) in source
+        .lines()
+        .skip(usize::try_from(start_line - 1).unwrap_or(usize::MAX))
+        .take(usize::try_from(end_line - start_line).unwrap_or(usize::MAX) + 1)
+        .enumerate()
+    {
+        let number = u64::from(start_line) + u64::try_from(offset).unwrap_or(u64::MAX);
+        let rendered = format!("  {number:>6}: {line}");
+        if block.chars().count() + rendered.chars().count() + 1 > MAP_SOURCE_BLOCK_CHARS {
+            if !block.is_empty() {
+                block.push('\n');
+            }
+            block.push_str("  …[source block truncated]");
+            break;
+        }
+        if !block.is_empty() {
+            block.push('\n');
+        }
+        block.push_str(&rendered);
+    }
+    block
 }
 
 fn prefix_digest(entries: &[(TextPageSection, String)]) -> String {

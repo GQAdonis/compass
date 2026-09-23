@@ -242,6 +242,59 @@ fn paged_text_covers_records_beyond_the_compact_view_and_continues() -> Result<(
 }
 
 #[test]
+fn paged_map_renders_digest_verified_source_context() -> Result<(), Box<dyn Error>> {
+    let first_anchor = anchor("src/first.rs", 1);
+    let second_anchor = anchor("src/second.rs", 1);
+    let mut response = response(CodeQueryOperation::Explore);
+    response.nodes = vec![
+        node("n:first", "First", &first_anchor),
+        node("n:second", "Second", &second_anchor),
+    ];
+    response.paths.push(QueryPath {
+        id: "p:first-second".to_owned(),
+        node_ids: vec!["n:first".to_owned(), "n:second".to_owned()],
+        edge_ids: Vec::new(),
+        weakest_confidence: EvidenceConfidence::Exact,
+        weakest_resolution: ResolutionState::Exact,
+    });
+    response.files = vec![
+        compass_model::query_contract::QueryFile {
+            path: "src/first.rs".to_owned(),
+            content_digest: "sha256:first".to_owned(),
+            source: Some("fn first() {\n    body();\n}\n".to_owned()),
+            truncated: false,
+        },
+        compass_model::query_contract::QueryFile {
+            path: "src/second.rs".to_owned(),
+            content_digest: "sha256:second".to_owned(),
+            source: None,
+            truncated: false,
+        },
+    ];
+    let mut query_context = context(AgentOperation::Explore);
+    query_context = query_context.with_operand(compass_output::AgentOperandRole::Symbol, "First");
+    query_context = query_context.with_operand(compass_output::AgentOperandRole::Symbol, "Second");
+
+    let page = render_code_query_text_page(
+        &response,
+        query_context,
+        AgentTextPageOptions {
+            token_budget: 2_000,
+            cursor: None,
+        },
+    )?;
+    assert!(page.text.contains("SOURCE"), "{}", page.text);
+    assert!(page.text.contains("src/first.rs L1-L1 (verified)"));
+    assert!(page.text.contains("1: fn first() {"), "{}", page.text);
+    assert!(
+        !page.text.contains("src/second.rs L1-L1"),
+        "stale or missing source must not be rendered as verified context: {}",
+        page.text
+    );
+    Ok(())
+}
+
+#[test]
 fn paged_text_reaches_the_end_without_a_continuation() -> Result<(), Box<dyn Error>> {
     let caller_anchor = anchor("src/caller.rs", 10);
     let target_anchor = anchor("src/target.rs", 20);
