@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Lead `compass impact` with the dependents that name the symbol. The reverse
+  walk now visits edges that terminate on the expanded node before edges that
+  only reach its containing owner, and ranks the rest by relation strength, so
+  a bounded trail ledger keeps the direct callers of a heavily referenced
+  symbol instead of spending its budget on owner-level references. The agent
+  view orders impacted nodes by trail length and last-hop strength, so
+  `compass impact "cobra.Command::ParseFlags"` now reports
+  `cobra.Command::execute` (command.go:919) first instead of omitting it from
+  every page. Reported by the second agent-query suite.
+
 - Read operation phrases as identifier compounds. A question that phrases an
   operation with a preposition ("serialize an object to json", "read a payload
   from json") now also ranks the identifier-shaped `tojson`/`fromjson`

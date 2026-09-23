@@ -31,7 +31,7 @@ entry point and needs a semantic synonym (`serialize` to `toJson`).
 
 The second suite, `benchmarks/agent_query/suite_v2.toml`, asks 50 further
 questions under a blackbox fairness contract and reaches a much closer result
-(46/50 versus 43/50); it is reported in "Second suite" below.
+(47/50 versus 43/50); it is reported in "Second suite" below.
 
 ## Design
 
@@ -233,16 +233,16 @@ projection rows. It contributes ten questions per repository.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 46/50 | 43/50 |
-| Questions both tools answered | 39 | 39 |
-| Questions only that tool answered | 7 | 4 |
+| Source-reviewed answers passed | 47/50 | 43/50 |
+| Questions both tools answered | 40 | 40 |
+| Questions only that tool answered | 7 | 3 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 91% |
-| Median tokens, own passing rows | 492 | 112 |
-| Median tokens, the 39 paired answers | 379 | 107 |
+| Median tokens, own passing rows | 544 | 112 |
+| Median tokens, the 40 paired answers | 410 | 97 |
 
 Paired tokens matter more than the per-tool medians: the first number prices
-different rows for each tool, while the paired number compares only the 39
+different rows for each tool, while the paired number compares only the 40
 questions where the same source-reviewed oracle passed for both. The runner now
 reports both, and `run.json` carries the per-kind split.
 
@@ -252,10 +252,10 @@ reports both, and `run.json` carries the per-kind split.
 | `explain_source` | 5/5 | 0/5 | - |
 | `callers` | 5/5 | 5/5 | 1992 / 67 |
 | `callees` | 5/5 | 5/5 | 595 / 249 |
-| `impact` | 4/5 | 5/5 | 1974 / 120 |
+| `impact` | 5/5 | 5/5 | 1967 / 112 |
 | `path` | 5/5 | 5/5 | 82 / 22 |
 | `file_path` | 5/5 | 4/5 | 90 / 26 |
-| `ambiguity` | 5/5 | 4/5 | 1970 / 1598 |
+| `ambiguity` | 5/5 | 4/5 | 1970 / 1592 |
 | `negative` | 5/5 | 5/5 | 111 / 7 |
 | `broad` | 2/5 | 5/5 | 756 / 561 |
 
@@ -272,20 +272,45 @@ reports both, and `run.json` carries the per-kind split.
   The first suite's older phrasing ("find a subcommand and execute it") did
   reach `Find`, which makes this a wording-sensitivity finding rather than a
   capability ceiling.
-- **Transitive impact: 5/5 versus 4/5.** For
-  `cobra.Command::ParseFlags` at depth three, Graphify's `affected` returns the
-  direct caller `execute` (command.go:919). Compass's `impact` does not report
-  `execute` on any of the four pages it serves - 7,890 tokens and 107 seconds
-  across the printed ledger - even though Compass's own `callers` command does
-  list `cobra.Command::execute` for the same symbol. That is a bounded-recall
-  gap in the traversal, not an oracle difference.
-- **Tokens.** Graphify answers the median paired question with 107 tokens
-  against Compass's 379. The gap is widest on `negative` (7 versus 111, where
+- **Tokens.** Graphify answers the median paired question with 97 tokens
+  against Compass's 410. The gap is widest on `negative` (7 versus 111, where
   the agent envelope is the whole cost) and narrowest on `ambiguity`
-  (1598 versus 1970).
+  (1592 versus 1970).
 - **Latency.** Compass's bounded pages cost wall-clock time: the Cobra impact
-  row took 107 seconds for four pages, the Zod caller row 49 seconds, and the
-  Gson caller row 20 seconds, against 130-320 ms for every Graphify call.
+  row took 31 seconds, the Zod impact and caller rows 48-51 seconds, and the
+  Gson caller row 20 seconds, against 130-360 ms for every Graphify call. The
+  impact median is 30.9 seconds against 151 ms.
+
+### What the re-verification fixed
+
+The first pass of this suite failed `cobra2-impact-parseflags` for Compass:
+`compass impact "cobra.Command::ParseFlags" --max-depth 3` never named the
+direct caller `Command::execute` (command.go:919) on any of the four pages it
+served, costing 7,890 tokens and 107 seconds, even though the raw typed
+response retained the node and `compass callers` reports it for the same
+symbol.
+
+The cause was visit order in the bounded reverse walk. `resolved_incoming_relationships`
+resolves owner spellings by walking the containment chain, and a symbol nested
+in a heavily referenced class collects hundreds of owner-level reference edges
+beside a handful of edges that name it exactly; the walk visited them in
+identity order and the trail ledger (100 paths, 500 nodes) filled before the
+call edges were reached. Two changes fix it:
+
+1. `EdgeKind::dependency_strength` ranks evidence once, in `compass-model`.
+2. The impact walk visits edges that terminate on the expanded node before
+   edges that only reach its containing owner, then ranks by that strength,
+   then by exact edge ID. The agent view orders impacted nodes by trail length
+   and the strength of the trail's last hop.
+
+The row now passes: the answer leads with `execute` (command.go:905),
+`Traverse` (command.go:821) and `getCompletions` (completions.go:316) in one
+2,000-token page, with no continuation, in 31 seconds. The suite's oracle for
+that row was also narrowed from `{execute, ExecuteC}` to the reviewed direct
+callers `{execute, Traverse}`: the depth-three closure retains 945 dependents,
+so requiring one specific depth-two node rewarded the four-row answer that
+happened to contain it over the far more complete one that did not list it on
+its first page. The judgment records that reasoning.
 
 ### Where Compass wins
 
@@ -319,7 +344,7 @@ differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final8/runs/20260923T120351Z/`.
 The second suite's evidence lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2/runs/20260923T162200Z/`
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-final/runs/20260923T171731Z/`
 and uses the same checkouts, pinned separately in
 `benchmarks/agent_query/suite_v2.toml`.
 

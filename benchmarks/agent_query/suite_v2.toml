@@ -114,8 +114,8 @@ compass = ["impact", "cobra.Command::ParseFlags", "--max-depth", "3"]
 graphify = ["affected", ".ParseFlags()", "--depth", "3"]
 expect = "answer"
 max_follow_ups = 3
-required = ["execute", "ExecuteC"]
-judgment = "ParseFlags is called by Traverse (command.go:854), execute (command.go:919) and getCompletions (completions.go:372); execute is called by ExecuteC at command.go:1148."
+required = ["execute", "Traverse"]
+judgment = "ParseFlags is called directly by Traverse (command.go:854), execute (command.go:919) and getCompletions (completions.go:372); execute is called by ExecuteC at command.go:1148. The oracle requires the reviewed direct callers because the depth-three closure is 945 retained dependents: requiring one specific depth-two node would reward a four-row answer over a complete one."
 
 [[repository.question]]
 id = "cobra2-path-find-legacyargs"

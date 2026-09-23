@@ -560,6 +560,15 @@ order, and their headline reports the source response's edge count, so
 `omissions.relationships` shows how many of them the bounded projection left
 out.
 
+`compass impact` output follows the same evidence rule in two places. The
+reverse walk visits edges that name the expanded node before edges that only
+reach its containing owner, then ranks by relation strength, because the
+retained trail ledger is capped and a heavily referenced symbol would
+otherwise spend it on owner-level trails. The text and agent views then order
+the impacted nodes by trail length and the strength of the trail's last hop, so
+the direct callers a change breaks are listed before the symbols that only
+touch a containing owner.
+
 The fixed presentation profile retains at most 12 primary results, 24
 relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is
 limited to 256 KiB and text to 64 KiB. `omissions` and

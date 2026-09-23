@@ -421,20 +421,18 @@ fn ordered_relationship_edges(response: &CodeQueryResponse) -> Vec<(usize, &Quer
 
 /// Lower ranks are stronger evidence of a direct dependency.
 fn relationship_priority(edge: &QueryEdge) -> u8 {
-    match edge.kind {
-        compass_model::code_graph::EdgeKind::Calls
-        | compass_model::code_graph::EdgeKind::Instantiates
-        | compass_model::code_graph::EdgeKind::RoutesTo
-        | compass_model::code_graph::EdgeKind::Handles
-        | compass_model::code_graph::EdgeKind::Registers => 0,
-        compass_model::code_graph::EdgeKind::Imports
-        | compass_model::code_graph::EdgeKind::Exports
-        | compass_model::code_graph::EdgeKind::Aliases
-        | compass_model::code_graph::EdgeKind::DependsOn => 1,
-        compass_model::code_graph::EdgeKind::References
-        | compass_model::code_graph::EdgeKind::Documents => 2,
-        _ => 3,
-    }
+    edge.kind.dependency_strength()
+}
+
+/// Strength of the last hop of a reverse-impact trail.
+fn trail_strength(
+    path: &compass_model::query_contract::QueryPath,
+    edge_kinds: &BTreeMap<&str, compass_model::code_graph::EdgeKind>,
+) -> u8 {
+    path.edge_ids
+        .last()
+        .and_then(|id| edge_kinds.get(id.as_str()))
+        .map_or(3, |kind| kind.dependency_strength())
 }
 
 pub fn build_code_query_view(
@@ -1961,10 +1959,31 @@ fn primary_node_ids(
         }
         AgentOperation::Impact => {
             ordered.extend(requested);
+            // A reverse walk reaches far more owner-level dependents than
+            // direct ones, and the raw trail ledger is ordered by identity.
+            // Order the impacted nodes by how close and how direct their
+            // evidence is, so the bounded answer names the callers and
+            // dependents that a change actually breaks before it lists the
+            // symbols that only touch a containing owner.
+            let edge_kinds = response
+                .edges
+                .iter()
+                .map(|edge| (edge.id.as_str(), edge.kind))
+                .collect::<BTreeMap<_, _>>();
+            let mut trails = response.paths.iter().collect::<Vec<_>>();
+            trails.sort_by(|left, right| {
+                left.node_ids
+                    .len()
+                    .cmp(&right.node_ids.len())
+                    .then_with(|| {
+                        trail_strength(left, &edge_kinds).cmp(&trail_strength(right, &edge_kinds))
+                    })
+                    .then_with(|| left.node_ids.cmp(&right.node_ids))
+                    .then_with(|| left.id.cmp(&right.id))
+            });
             ordered.extend(
-                response
-                    .paths
-                    .iter()
+                trails
+                    .into_iter()
                     .filter_map(|path| path.node_ids.last().cloned()),
             );
         }

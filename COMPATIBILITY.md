@@ -224,6 +224,19 @@ count rather than the capped projection count. The fields, schemas, digests,
 and raw `compass.query/1` response are unchanged; consumers that relied on the
 previous ID-sorted presentation must treat the new order as the contract.
 
+### Impact traversal and result ordering
+
+`compass impact` (and the compatibility `affected` command that shares the
+reverse walk) visits edges that name the expanded node before edges that only
+reach its containing owner, then orders by relation strength and the exact
+edge ID. The retained trail ledger is capped, so visit order decides which
+dependents survive a bounded response: a symbol with hundreds of owner-level
+references no longer loses its direct callers. The agent view orders the
+impacted nodes by trail length and the strength of the trail's last hop, so a
+direct caller is reported before a symbol that only touches the containing
+owner. `compass.query/1` keeps its schema, and the raw response now records the
+direct evidence in `paths` where it previously held owner-level trails.
+
 ### Discovery agent-noun expansion
 
 Natural discovery now adds graph-verified agent-noun spellings of behavior

@@ -2814,13 +2814,33 @@ impl CodeQueryEngine {
                 continue;
             }
             let remaining_edges = max_edges.saturating_sub(selected_edges.len());
-            let (incoming, incoming_truncated, observed, observed_truncated) = self
+            let (mut incoming, incoming_truncated, observed, observed_truncated) = self
                 .resolved_incoming_relationships(
                     &node,
                     relationship_kinds,
                     request.include_heuristic,
                     remaining_edges,
                 )?;
+            // Direct evidence must consume the traversal budget first. A
+            // heavily referenced symbol carries hundreds of owner-level edges
+            // beside a handful that name it exactly, and the retained trail
+            // ledger is capped, so visit order decides whether the answer names
+            // the callers that changing the symbol would break. Edges that
+            // terminate on the expanded node come before edges that only reach
+            // its containing owner, then relation strength decides, and the
+            // exact ID keeps the order deterministic.
+            incoming.sort_by(|left, right| {
+                u8::from(left.target != node)
+                    .cmp(&u8::from(right.target != node))
+                    .then_with(|| {
+                        left.kind
+                            .dependency_strength()
+                            .cmp(&right.kind.dependency_strength())
+                    })
+                    .then_with(|| left.id.cmp(&right.id))
+                    .then_with(|| left.source.cmp(&right.source))
+                    .then_with(|| left.target.cmp(&right.target))
+            });
             if node == seed {
                 Self::relationship_consistency_diagnostic(
                     &mut response,
