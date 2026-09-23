@@ -92,6 +92,12 @@ jobs:
         with:
           toolchain: 1.97.1
           target: ${{ matrix.target }}
+      - name: Install SurrealDB TLS build prerequisites
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: .
@@ -102,7 +108,7 @@ jobs:
         shell: bash
         run: sh scripts/test_release_scripts.sh
       - name: Build locked Compass binary
-        run: cargo build --release --locked -p compass-cli --bin compass --target ${{ matrix.target }}
+        run: cargo build --release --locked -p compass-cli --bin compass --features surreal-remote --target ${{ matrix.target }}
       - name: Package release distribution
         shell: bash
         run: >-

@@ -722,6 +722,18 @@ impl CodeAdjacencyIndex {
 }
 
 impl CodeGraphBackend {
+    fn is_surreal(&self) -> bool {
+        #[cfg(any(
+            feature = "surreal-surrealkv",
+            feature = "surreal-rocksdb",
+            feature = "surreal-remote"
+        ))]
+        if matches!(self, Self::Surreal(_)) {
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn pin_discovery(&self) -> Result<PinnedDiscoveryBackend<'_>, QueryError> {
         match self {
             #[cfg(any(
@@ -2465,6 +2477,59 @@ impl CodeQueryEngine {
                 truncated,
                 observed,
                 probe_truncated,
+            ));
+        }
+        if self.backend.is_surreal() {
+            let mut observed_importers = edges
+                .values()
+                .map(|edge| edge.source.clone())
+                .collect::<BTreeSet<_>>();
+            let mut importer_probe_truncated = false;
+            for owner_id in owner_ids
+                .iter()
+                .filter(|owner_id| owner_id.as_str() != target)
+            {
+                let remaining_result_capacity = limit.saturating_sub(edges.len());
+                // The self-check budget is deliberately separate from the public result
+                // cap: it observes enough importers to report inconsistent relationship
+                // projections, while returned edges remain capped by `limit` below.
+                let owner_probe_limit =
+                    remaining_result_capacity.max(RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS);
+                let (owner_edges, owner_truncated) = self.backend.matching_bounded(
+                    owner_id,
+                    true,
+                    canonical_kinds,
+                    false,
+                    owner_probe_limit,
+                )?;
+                truncated |= owner_truncated;
+                importer_probe_truncated |= owner_truncated;
+                for edge in owner_edges {
+                    let Some(source) = self.backend.node_by_id(&edge.source)? else {
+                        continue;
+                    };
+                    if source
+                        .source_file()
+                        .is_none_or(|source_file| source_file.is_empty())
+                    {
+                        continue;
+                    }
+                    observed_importers.insert(edge.source.clone());
+                    if edges.contains_key(&edge.id) {
+                        continue;
+                    }
+                    if edges.len() < limit {
+                        edges.insert(edge.id.clone(), edge);
+                    } else {
+                        truncated = true;
+                    }
+                }
+            }
+            return Ok((
+                edges.into_values().collect(),
+                truncated,
+                observed_importers.len(),
+                importer_probe_truncated,
             ));
         }
         let mut terms = BTreeSet::new();

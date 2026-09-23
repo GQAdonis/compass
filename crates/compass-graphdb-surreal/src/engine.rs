@@ -924,6 +924,7 @@ impl SurrealProjection {
     }
 }
 
+#[cfg(any(feature = "surrealkv", feature = "rocksdb"))]
 fn validate_existing_storage_path(path: &str) -> Result<(), ProjectionError> {
     let metadata = std::fs::metadata(path).map_err(|error| {
         ProjectionError::InvalidReference(format!(

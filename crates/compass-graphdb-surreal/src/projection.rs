@@ -51,7 +51,12 @@ impl ProjectionLimits {
         self.max_projected_bytes
     }
 
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     pub(crate) fn validate_plan(self, plan: &ProjectionPlan) -> Result<u64, ProjectionError> {
         enforce_limit("nodes", plan.nodes.len(), self.max_nodes)?;
         enforce_limit("files", plan.files.len(), self.max_nodes)?;
@@ -471,7 +476,12 @@ impl ProjectionPlan {
         Ok(())
     }
 
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     pub(crate) fn projected_bytes(&self) -> Result<u64, ProjectionError> {
         self.nodes
             .iter()
@@ -530,36 +540,76 @@ pub enum ProjectionError {
     InvalidReference(String),
     #[error("invalid Surreal projection bundle: {0}")]
     InvalidBundle(String),
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     #[error("SurrealDB {stage} failed: {message}")]
     Database {
         stage: &'static str,
         message: String,
     },
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     #[error("projection staging failed ({cause}); transaction cancellation also failed: {message}")]
     Cancellation {
         cause: Box<ProjectionError>,
         message: String,
     },
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     #[error("projection was interrupted after {completed_mutations} mutations")]
     Interrupted { completed_mutations: usize },
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     #[error("repository {repository_id:?} has no complete active Surreal generation")]
     ActiveGenerationUnavailable { repository_id: String },
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     #[error("repository {repository_id:?} changed active generation during the query")]
     ActiveGenerationChanged { repository_id: String },
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     #[error("invalid native-query cursor: {0}")]
     InvalidCursor(String),
-    #[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+    #[cfg(any(
+        feature = "mem",
+        feature = "remote",
+        feature = "surrealkv",
+        feature = "rocksdb"
+    ))]
     #[error("invalid native query: {0}")]
     InvalidQuery(String),
 }
 
-#[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+#[cfg(any(
+    feature = "mem",
+    feature = "remote",
+    feature = "surrealkv",
+    feature = "rocksdb"
+))]
 fn serialized_len<T: Serialize>(value: &T) -> Result<u64, ProjectionError> {
     u64::try_from(serde_json::to_vec(value)?.len()).map_err(|_| ProjectionError::LimitExceeded {
         resource: "projected bytes",
@@ -568,7 +618,12 @@ fn serialized_len<T: Serialize>(value: &T) -> Result<u64, ProjectionError> {
     })
 }
 
-#[cfg(any(feature = "mem", feature = "surrealkv", feature = "rocksdb"))]
+#[cfg(any(
+    feature = "mem",
+    feature = "remote",
+    feature = "surrealkv",
+    feature = "rocksdb"
+))]
 fn enforce_limit(
     resource: &'static str,
     actual: usize,

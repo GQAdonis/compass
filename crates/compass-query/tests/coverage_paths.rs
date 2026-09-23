@@ -74,10 +74,7 @@ fn affected_resolution_covers_ids_labels_sources_members_and_misses() -> Result<
         format_affected(&graph, "Isolated", &["calls".to_owned()], 1)
             .contains("No affected nodes found.")
     );
-    assert!(
-        format_affected(&graph, "absent", &["calls".to_owned()], 1)
-            .contains("No unique node match")
-    );
+    assert!(format_affected(&graph, "absent", &["calls".to_owned()], 1).contains("NO EXACT MATCH"));
     Ok(())
 }
 

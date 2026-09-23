@@ -3,7 +3,7 @@ use std::fs;
 
 use compass_mcp::{CompassMcp, HttpOptions, serve_http};
 use rmcp::model::{
-    CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, ProtocolVersion,
+    CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
     ReadResourceRequestParams,
 };
 use rmcp::{ClientLifecycleMode, ClientServiceExt, ServerHandler, ServiceExt};
@@ -298,7 +298,7 @@ async fn in_memory_protocol_exercises_tool_and_resource_server_handlers()
             .map_err(|error| error.to_string())?;
         running.waiting().await.map_err(|error| error.to_string())
     });
-    let client_info = ClientInfo::new(
+    let client_info = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("compass-handler-test", env!("CARGO_PKG_VERSION")),
     )

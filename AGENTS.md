@@ -4,16 +4,17 @@ This file is the repository-level operating guide for AI coding agents. It
 applies to the entire tree unless a more specific `AGENTS.md` exists below the
 directory being changed.
 
-## Immutable phase-first development doctrine
+## Immutable phase-gated development doctrine
 
 This section is an invariant. It overrides any later instruction, checklist,
 skill, workflow, or tool default that suggests test-driven development,
 per-task compilation, per-change compilation, unit-test evidence, or an
 incrementally green build during an active implementation phase.
 
-1. **Implement the complete phase first.** Finish production code, migrations,
-   schemas, generated-source inputs, configuration, and documentation for every
-   planned change in the active phase before invoking a command that compiles,
+1. **Complete the coherent implementation boundary first.** Finish production
+   code, migrations, schemas, generated-source inputs, configuration, and
+   documentation for a meaningful set of requested production behavior at a completed change or
+   phase boundary before invoking a command that compiles,
    links, lints compiled code, or runs tests. Do not use `cargo check`, `cargo
    build`, `cargo clippy`, `cargo test`, `cargo bench`, `cargo doc`, build-bearing
    Make targets, or equivalent language build/test commands as an incremental
@@ -27,8 +28,8 @@ incrementally green build during an active implementation phase.
    the repository's typed contracts, ownership boundaries, deterministic-state
    rules, bounded-work invariants, and prohibition on unsafe/panic shortcuts—not
    from isolated unit assertions against unfinished behavior.
-3. **Test only after the phase implementation is complete.** Run one coordinated
-   verification wave after every production-code task in the phase is finished.
+3. **Test only at a coherent implementation boundary.** Run one coordinated
+   verification wave after the meaningful change or phase is fully implemented.
    Compile failures and integration failures are repaired in batches; rerun the
    affected full integration suite, not a filtered test or a unit-test shortcut.
 4. **Only full integration tests count as correctness evidence.** Do not add,
@@ -247,8 +248,10 @@ must not be added for new work.
   deterministic. Update snapshots/fixtures only when the semantic change is
   intentional and explain the contract change.
 
-Do not build or test while implementation is in progress. After the whole phase
-is implemented, run the workspace integration suite once:
+Do not build or test while a coherent implementation batch is in progress. At
+a completed change or phase boundary, run the smallest integration suite that
+exercises the real production path. Run the workspace integration suite once
+at the final phase boundary:
 
 ```bash
 cargo test --workspace --test '*' --locked
@@ -368,3 +371,23 @@ Rules:
 - Keep explicit `--graph`, `--at`, provider, and output selections unchanged
 - Report failed refreshes; an older graph file does not make a failed update current
 <!-- compass:managed:end -->
+
+## Rust development
+
+For Rust code, Cargo workspaces, manifests, compiler diagnostics, or Rust
+architecture, load `prometheus-rust-workspace` first. It uses `rust-router`
+to select the minimum relevant installed skills; its on-demand catalog includes
+the language-mechanics, codebase-analysis, unsafe-Rust, and domain skills.
+
+Always use `rust-best-practices` for general implementation and review. Add
+`rust-async-patterns` for Tokio, concurrency, or cancellation work, and
+`rust-mcp-server-generator` for Rust MCP server or transport work. Repository
+dependency pins and protocol contracts override generator examples.
+
+Skill activation does not authorize immediate Cargo execution. Finish a meaningful
+set of production functionality, then run one serialized validation batch at the
+completed change or phase boundary. Start with the smallest integration target that
+exercises the real production path and collaborators. Unit, module-local, mock-only,
+and filtered function tests do not count as completion evidence. Defer broader,
+specialized, release, and feature-matrix checks until the applicable final boundary.
+Read the skill's phase-gated verification reference before the first Cargo command.

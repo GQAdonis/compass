@@ -11,6 +11,7 @@ use compass_model::query_contract::{
 };
 
 use crate::code_query::CodeGraphBackend;
+use crate::intent::{NaturalQueryIntent, plan_natural_query};
 use crate::surreal_backend::SurrealCodeBackend;
 use crate::{CodeQueryEngine, NaturalQueryRequest, QueryEngineKind, QueryError, QueryErrorKind};
 
@@ -135,8 +136,63 @@ impl SurrealQueryEngine {
         &self,
         request: NaturalQueryRequest,
     ) -> Result<CodeQueryResponse, QueryError> {
-        self.typed_query(move |engine| engine.query_natural(request))
-            .await
+        let plan = plan_natural_query(&request.question)?;
+        let primary = plan.operands().first().cloned().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorKind::Internal,
+                "invalid_natural_query_plan",
+                "natural query intent is missing its primary operand",
+            )
+        })?;
+        match plan.intent() {
+            NaturalQueryIntent::Search | NaturalQueryIntent::Fallback => {
+                self.search(SearchRequest {
+                    query: primary,
+                    limits: request.limits,
+                })
+                .await
+            }
+            NaturalQueryIntent::Callers => {
+                self.callers(CallRequest {
+                    symbol: primary,
+                    include_heuristic: request.include_heuristic,
+                    limits: request.limits,
+                })
+                .await
+            }
+            NaturalQueryIntent::Callees => {
+                self.callees(CallRequest {
+                    symbol: primary,
+                    include_heuristic: request.include_heuristic,
+                    limits: request.limits,
+                })
+                .await
+            }
+            NaturalQueryIntent::Impact => {
+                self.impact(ImpactRequest {
+                    symbol: primary,
+                    include_heuristic: request.include_heuristic,
+                    limits: request.limits,
+                })
+                .await
+            }
+            NaturalQueryIntent::NodeTrail => {
+                let target = plan.operands().get(1).cloned().ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorKind::Internal,
+                        "invalid_natural_query_plan",
+                        "node-trail intent is missing its target operand",
+                    )
+                })?;
+                self.node_trail(NodeTrailRequest {
+                    source: primary,
+                    target,
+                    include_heuristic: request.include_heuristic,
+                    limits: request.limits,
+                })
+                .await
+            }
+        }
     }
 
     pub async fn search(&self, request: SearchRequest) -> Result<CodeQueryResponse, QueryError> {

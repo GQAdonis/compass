@@ -9,42 +9,42 @@
     {
       "name": "search_symbols",
       "description": "Search Compass code symbols with the trusted FTS5 index.",
-      "inputSchemaSha256": "523a1c967403f4820b39c5360bfe549b97bda2619cf60710bcd603c981b0c325",
+      "inputSchemaSha256": "d1f3238324fd8428a3c4e14a1926bc57c32517409523ad88dca4e1a542694ec2",
       "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "get_callers",
       "description": "Return one-hop callers and route bindings for a symbol.",
-      "inputSchemaSha256": "5d82222c8c5ef1ec1309bc5bfbcfce1ae45d56575093a45f3c3b2e329d21a66e",
+      "inputSchemaSha256": "2a679457987aeec5fb670727893d6549ccf68e77445fc19aae59b91f313f6072",
       "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "get_callees",
       "description": "Return one-hop callees for a symbol.",
-      "inputSchemaSha256": "5d82222c8c5ef1ec1309bc5bfbcfce1ae45d56575093a45f3c3b2e329d21a66e",
+      "inputSchemaSha256": "2a679457987aeec5fb670727893d6549ccf68e77445fc19aae59b91f313f6072",
       "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "get_impact",
       "description": "Return the bounded transitive impact radius for a symbol.",
-      "inputSchemaSha256": "5d82222c8c5ef1ec1309bc5bfbcfce1ae45d56575093a45f3c3b2e329d21a66e",
+      "inputSchemaSha256": "2a679457987aeec5fb670727893d6549ccf68e77445fc19aae59b91f313f6072",
       "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "explore_code",
       "description": "Return related symbols, connecting paths, and verified source grouped by file.",
-      "inputSchemaSha256": "2429c12690aaa0d8857f78081bfe3e50881597206896f963c52b1c34f61b4a09",
+      "inputSchemaSha256": "bdba5b0f3443afd24242e6700cb5e55170f58a2180ee4a131ac52dabe4e8a043",
       "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "get_node",
       "description": "Return the trusted evidence trail between two code-graph nodes.",
-      "inputSchemaSha256": "d3320d38f2ae6c783c10f3edffb9b16bc34837726938d021e20446f8e9a18e99",
+      "inputSchemaSha256": "4bd9879da5ab2b6a9c6f841d2969f2d8a0f8c95f9861f41b25708fbe26a1048d",
       "outputSchemaSha256": null,
       "meta": null
     },

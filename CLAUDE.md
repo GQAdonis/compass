@@ -12,14 +12,14 @@ does not spell out.
 
 ## Immutable implementation order
 
-Complete the entire active phase's production implementation before compiling,
-linting compiled code, or testing. Do not use incremental `cargo check`,
-per-crate builds, filtered tests, or per-change green gates. Tests run only after
-the phase fully covers its specification, and only full integration tests count;
+Complete a meaningful set of requested production behavior at a change or phase
+boundary before compiling, linting compiled code, or testing. Do not use per-edit
+`cargo check`, builds, tests, or green gates. Tests run only after
+the coherent boundary fully covers its requested behavior, and only full integration tests count;
 never add, run, or cite unit tests as correctness evidence. This rule overrides
 workflow/skill defaults that request per-task or per-change compilation and QA.
 
-After implementation, one process owns the verification wave. Run the complete
+At a coherent boundary, one process owns the verification wave. Run the complete
 workspace integration target set with
 `cargo test --workspace --test '*' --locked`; Cargo's `--tests`, `--lib`,
 `--bins`, and default selections include unit-test harnesses and are prohibited
@@ -52,7 +52,7 @@ running it so it does not silently trigger a second build.
 Rust (Edition 2024, pinned toolchain 1.97.1, always `--locked`):
 
 ```bash
-# Run only after every production-code task in the active phase is complete.
+# Run at the final phase boundary after all production-code tasks are complete.
 cargo test --workspace --test '*' --locked                  # integration targets only
 cargo test -p <affected-package> --test '*' --all-features --locked
 cargo fmt --all -- --check
@@ -80,7 +80,7 @@ node scripts/check_viewer_assets.mjs   # generated viewer assets match source
 ```
 
 `make help` lists wrappers. `make test`, `make test-all`, `make test-release`,
-and `make ci-fast` select integration targets only and remain phase-end commands;
+and `make ci-fast` select integration targets only and remain phase-boundary commands;
 they are never an incremental implementation loop. `make watch` is deliberately
 disabled. `make lint`, `make test-js`, and `make qualify-code-graph-v1` remain
 post-implementation surface gates.
@@ -257,3 +257,23 @@ Rules:
 - Keep explicit `--graph`, `--at`, provider, and output selections unchanged
 - Report failed refreshes; an older graph file does not make a failed update current
 <!-- compass:managed:end -->
+
+## Rust development
+
+For Rust code, Cargo workspaces, manifests, compiler diagnostics, or Rust
+architecture, load `prometheus-rust-workspace` first. It uses `rust-router`
+to select the minimum relevant installed skills; its on-demand catalog includes
+the language-mechanics, codebase-analysis, unsafe-Rust, and domain skills.
+
+Always use `rust-best-practices` for general implementation and review. Add
+`rust-async-patterns` for Tokio, concurrency, or cancellation work, and
+`rust-mcp-server-generator` for Rust MCP server or transport work. Repository
+dependency pins and protocol contracts override generator examples.
+
+Skill activation does not authorize immediate Cargo execution. Finish a meaningful
+set of production functionality, then run one serialized validation batch at the
+completed change or phase boundary. Start with the smallest integration target that
+exercises the real production path and collaborators. Unit, module-local, mock-only,
+and filtered function tests do not count as completion evidence. Defer broader,
+specialized, release, and feature-matrix checks until the applicable final boundary.
+Read the skill's phase-gated verification reference before the first Cargo command.
