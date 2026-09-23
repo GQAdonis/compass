@@ -559,7 +559,13 @@ node. The excerpt is read below `--root` (default: the current directory),
 limited to `--max-source-bytes` (default: 4096), and verified against the
 symbol digest recorded in the graph before it is printed. A rewritten file
 fails closed with `SOURCE unavailable: ... does not match ...`; an ambiguous or
-unsourced target keeps the candidate list instead of guessing.
+unsourced target keeps the candidate list instead of guessing. The declaration
+is what a `--source` request is for, so the connection list beside it is
+bounded to its strongest entries by default: the `Pagination:` footer still
+reports the list's true total and `--page 2` continues it, while an explicit
+`--budget` lists as much of the list as that budget reaches. On the reviewed
+corpora this removes about a third of a source answer without putting any
+connection out of reach.
 
 ### `affected`
 

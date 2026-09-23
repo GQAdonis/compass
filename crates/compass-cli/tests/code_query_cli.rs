@@ -1217,6 +1217,135 @@ fn ambiguous_typed_lookup_returns_a_pick_list_instead_of_an_empty_result()
 }
 
 #[test]
+fn explain_source_bounds_the_neighbourhood_and_an_explicit_budget_overrides_it()
+-> Result<(), Box<dyn Error>> {
+    use sha2::{Digest, Sha256};
+
+    let directory = tempfile::tempdir()?;
+    let source_dir = directory.path().join("src");
+    std::fs::create_dir_all(&source_dir)?;
+    let source = "fn run() {\n    body();\n}\n";
+    std::fs::write(source_dir.join("lib.rs"), source)?;
+    let digest = format!("{:x}", Sha256::digest(source.as_bytes()));
+    let mut links = Vec::new();
+    let mut nodes = vec![serde_json::json!({
+        "id": "n:run",
+        "kind": "function",
+        "name": "run",
+        "qualifiedName": "sample::run",
+        "source": {
+            "file": "src/lib.rs",
+            "startByte": 0,
+            "endByte": source.len(),
+            "startLine": 1,
+            "startColumn": 0,
+            "endLine": 3,
+            "endColumn": 1
+        },
+        "details": {"type": "symbol", "data": {"sourceDigest": digest}}
+    })];
+    for index in 0..12 {
+        let id = format!("n:caller-{index:02}");
+        nodes.push(serde_json::json!({
+            "id": id,
+            "kind": "function",
+            "name": format!("caller{index:02}"),
+            "source": {
+                "file": format!("src/caller_{index:02}.rs"),
+                "startLine": index + 1,
+                "startColumn": 0,
+                "endLine": index + 1,
+                "endColumn": 4
+            }
+        }));
+        links.push(serde_json::json!({
+            "source": id,
+            "target": "n:run",
+            "relation": "calls",
+            "confidence": "EXTRACTED",
+            "source_file": format!("src/caller_{index:02}.rs"),
+            "source_location": format!("L{}:0-L{}:4", index + 1, index + 1)
+        }));
+    }
+    let graph = directory.path().join("graph.json");
+    std::fs::write(
+        &graph,
+        serde_json::json!({
+            "directed": true,
+            "multigraph": true,
+            "graph": {},
+            "nodes": nodes,
+            "links": links
+        })
+        .to_string(),
+    )?;
+    let run_command = |extra: Vec<OsString>| {
+        let mut arguments = vec![
+            OsString::from("explain"),
+            OsString::from("sample::run"),
+            OsString::from("--source"),
+            OsString::from("--root"),
+            directory.path().as_os_str().to_owned(),
+        ];
+        arguments.extend(extra);
+        arguments.push(OsString::from("--graph"));
+        arguments.push(graph.as_os_str().to_owned());
+        run(Frontend::Compass, arguments)
+    };
+
+    let bounded = run_command(Vec::new());
+    assert_eq!(bounded.code, 0, "{}", bounded.stderr);
+    let rows = bounded
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("  <-- ") || line.starts_with("  --> "))
+        .count();
+    assert!(
+        rows > 0 && rows < 12,
+        "a source request leads with the declaration, not the whole neighbourhood: {}",
+        bounded.stdout
+    );
+    assert!(
+        bounded.stdout.contains("Pagination: page=1/2 connections="),
+        "the slice names the list's true total and its continuation: {}",
+        bounded.stdout
+    );
+    assert!(
+        bounded
+            .stdout
+            .contains("SOURCE src/lib.rs L1-L3 (digest-verified)"),
+        "{}",
+        bounded.stdout
+    );
+    assert!(
+        bounded.stdout.contains("next=2"),
+        "the remainder is reachable: {}",
+        bounded.stdout
+    );
+
+    let explicit = run_command(vec![OsString::from("--budget"), OsString::from("2000")]);
+    assert_eq!(explicit.code, 0, "{}", explicit.stderr);
+    assert_eq!(
+        explicit
+            .stdout
+            .lines()
+            .filter(|line| line.starts_with("  <-- ") || line.starts_with("  --> "))
+            .count(),
+        12,
+        "an explicit budget lists every connection: {}",
+        explicit.stdout
+    );
+    assert!(
+        explicit
+            .stdout
+            .contains("Pagination: page=1/1 connections=1-12/12 next=none"),
+        "{}",
+        explicit.stdout
+    );
+    Ok(())
+}
+
+#[test]
 fn explain_source_returns_digest_verified_declaration_text() -> Result<(), Box<dyn Error>> {
     use sha2::{Digest, Sha256};
 

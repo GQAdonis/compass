@@ -498,6 +498,15 @@ something else and the header states the default once
 (`Connections (31, extracted unless marked):`), which removes 13 characters
 from each of a thirty-row connection list.
 
+The last change in this pass spends a `--source` request on the source. The
+declaration is what the caller asked for, but `explain <symbol> --source`
+printed the whole neighborhood list first - on the Zod `convertSchema` row
+thirty-one connection lines, more than half of that answer's tokens. The
+connection list beside a source request is now bounded to its strongest
+entries. Nothing is hidden or unreachable: the `Pagination:` footer still
+reports the list's true total (`page=1/2 connections=1-7/13 next=2`), `--page 2`
+continues it, and an explicit `--budget` lists as much as that budget reaches.
+
 Measured on the same 44 rows both tools answer
 (`agent-query-v2-token3/runs/20260923T223256Z` against
 `agent-query-v2-fast3/runs/20260923T215256Z`):
@@ -505,7 +514,9 @@ Measured on the same 44 rows both tools answer
 | Metric | Before | After |
 | --- | ---: | ---: |
 | Paired median answer tokens (Compass) | 304 | **280** |
-| Total Compass output over the suite | 21,123 | **19,061** |
+| Total Compass output over the suite | 21,123 | **18,135** |
+| Five declaration-source answers | 4,400 | **3,301** |
+| Largest declaration-source answer (Zod `convertSchema`) | 2,169 | **1,465** |
 | `ambiguity` median | 628 | **362** |
 | `explain` median | 280 | **256** |
 | `callers` median | 222 | **209** |
@@ -518,7 +529,12 @@ The first suite re-ran at 47/47 against Graphify's 22/47 with its own median at
 397 tokens (392 on the rows both tools answer). The paired ratio is now 2.9×,
 and the remaining gap is answer content: the declaration-source rows (which
 Graphify cannot answer at all), the discovery seed and node ledger, and the
-pick lists that must still separate colliding labels.
+pick lists that must still separate colliding labels. The whole pass is
+measured against the pre-session build at
+`agent-query-v2-fast3/runs/20260923T215256Z` and re-verified at
+`agent-query-v2-token4/runs/20260923T230539Z`: 21,123 to 18,135 tokens over the
+suite (14% less), a paired median of 280 against Graphify's unchanged 98, and
+the same 50/50 result.
 
 ## Latency
 

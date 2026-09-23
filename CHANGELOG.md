@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Spend a `--source` request on the declaration. `compass explain <symbol>
+  --source` printed the whole neighborhood list before the code the caller
+  asked for, and for a symbol with thirty-one connections that list was half of
+  the answer. The connection slice beside a source request is now bounded to
+  its strongest entries: the `Pagination:` footer still reports the list's true
+  total and `--page 2` continues it, and an explicit `--budget` restores the
+  full list. The reviewed Zod declaration falls from 8,326 to 5,858 bytes and
+  Cobra's `Command::Find` from 2,004 to 1,657, with the explained source and the
+  strongest connections unchanged.
+
 - Repair a partially removed installation instead of refusing to touch it.
   `compass ensure` already reported a missing or edited managed skill, but the
   repair command it named failed when the skill file had disappeared: `install`

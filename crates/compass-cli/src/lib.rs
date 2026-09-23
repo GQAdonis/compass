@@ -6242,6 +6242,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         return Outcome::failure(explain_help(frontend));
     };
     let mut budget = DEFAULT_TEXT_TOKEN_BUDGET;
+    let mut budget_given = false;
     let mut page = 1_usize;
     let mut with_source = false;
     let mut source_root = std::path::PathBuf::from(".");
@@ -6287,6 +6288,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
                 };
                 budget = value;
+                budget_given = true;
                 index += 2;
             }
             "--page" => {
@@ -6304,6 +6306,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
                 };
                 budget = value;
+                budget_given = true;
                 index += 1;
             }
             value if value.starts_with("--page=") => {
@@ -6339,6 +6342,14 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
     if let Err(error) = validate_text_pagination(budget, page) {
         return Outcome::failure(format!("error: {error}"));
     }
+    // `--source` answers "show me the declaration": the excerpt is the answer,
+    // so the neighborhood list is bounded to its strongest entries instead of
+    // spending the request on rows the caller did not ask for. The page footer
+    // still reports the list's true total and continues it (`--page 2`), and an
+    // explicit `--budget` always wins.
+    if with_source && !budget_given {
+        budget = budget.min(EXPLAIN_SOURCE_CONNECTION_BUDGET);
+    }
     let selection_result = if with_source {
         load_selection_full(frontend, &selection)
     } else {
@@ -6364,6 +6375,14 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
 
 /// Default bound for the `explain --source` excerpt.
 const DEFAULT_EXPLAIN_SOURCE_BYTES: u64 = 4 * 1024;
+
+/// Default slice of the connection list a `--source` request spends.
+///
+/// The declaration text is what the caller asked for; the neighborhood list is
+/// context. On the reviewed corpora this keeps the strongest handful of
+/// connections beside the source and leaves the rest behind the page footer's
+/// `next=`, instead of spending half a source answer on rows nobody requested.
+const EXPLAIN_SOURCE_CONNECTION_BUDGET: usize = 240;
 
 fn append_explanation_source(
     mut output: String,
