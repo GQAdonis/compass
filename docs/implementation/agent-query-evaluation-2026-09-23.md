@@ -353,8 +353,13 @@ its first page. The judgment records that reasoning.
 
 - **Declaration source: 5/5 versus 0/5.** Graphify's graph stores a file and a
   line per node and no declaration text, so its `explain` cannot return the
-  body it points at. Compass renders the digest-verified declaration; a stale
-  digest drops the anchor instead of printing unverified text.
+  body it points at: every code node in the five graphs carries only `id`,
+  `label`, `norm_label`, `source_file`, `source_location`, `community`,
+  `file_type` and `_origin`, and neither its CLI help, its installed skill, nor
+  its MCP surface (`query_graph`, `get_node`, `get_neighbors`,
+  `get_community`, `god_nodes`, `graph_stats`, `shortest_path`) exposes a
+  source-reading query. Compass renders the digest-verified declaration; a
+  stale digest drops the anchor instead of printing unverified text.
 - **Ambiguity pick lists are answered by both (5/5 each).** Compass lists
   bounded candidates from `search`; Graphify's `explain` reports its own
   ambiguity list, and this suite counts it (`_candidate_count` reads its
