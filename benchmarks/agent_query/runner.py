@@ -47,6 +47,7 @@ KINDS = {
     "explain",
     "explain_source",
     "callers",
+    "brief_callers",
     "paged_callers",
     "path",
     "file_path",
@@ -518,7 +519,7 @@ def run_question(
                 break
             cursor = match.group(1)
         else:
-            if question.kind == "paged_callers":
+            if question.kind in {"paged_callers", "brief_callers"}:
                 # Graphify has no continuation for this shape; one response is
                 # its complete answer.
                 break

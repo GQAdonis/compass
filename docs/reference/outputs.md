@@ -544,6 +544,13 @@ number, and a digest of the reviewed entry prefix. A cursor from another graph,
 another operation, or a changed result fails closed rather than restarting the
 page.
 
+`--format agent-json --brief` emits `compass.query.agent-view.brief/1`: the same
+status, headline, caveats, source-located entities, relationships, paths, and
+next-action argv as `compass.query.agent-view/1`, without `identity`,
+`omissions`, per-relationship IDs, per-entity roles, or per-edge evidence
+layers. The brief projection is presentation-only; exact record identity and
+digests remain in the raw `compass.query/1` response.
+
 The fixed presentation profile retains at most 12 primary results, 24
 relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is
 limited to 256 KiB and text to 64 KiB. `omissions` and

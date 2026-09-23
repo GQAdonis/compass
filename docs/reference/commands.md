@@ -439,6 +439,16 @@ relationship, impact, and path-expansion steps. An expired deadline fails with
 `code_query_timeout` and a hint to raise the deadline or lower the record
 bounds; no partial response is published.
 
+`--format agent-json --brief` emits the compact
+`compass.query.agent-view.brief/1` projection: the same status, answer,
+caveats, source-located entities, relationships, paths, and next actions, with
+audit-only identities, digests, omission counters, per-relationship IDs, and
+per-edge evidence layers removed. Use it when an agent needs the reviewed
+answer cheaply; use `--format json` or the plain `agent-json` projection when it
+needs exact identity, digests, or full evidence. `--brief` is rejected for any
+other format. On the evaluation corpus the same caller answers cost 1.7k-2.0k
+tokens in brief form instead of 6.3k-6.8k.
+
 `callers` returns incoming relationship evidence: calls, routes, references,
 imports, exports, and aliases. `callees` remains the direct outgoing call view.
 When an import or reference ends at a containing module rather than the

@@ -9,9 +9,9 @@ use compass_model::query_contract::{
     QueryEdge, QueryEvidence, QueryEvidenceLayer, QueryNode, QueryPath, SearchHit,
 };
 use compass_output::{
-    AgentEvidence, AgentExecution, AgentMatch, AgentOperation, AgentQueryContext, AgentResultState,
-    AgentTextPageOptions, build_code_query_view, render_agent_query_text,
-    render_code_query_text_page,
+    AGENT_BRIEF_VIEW_SCHEMA, AgentEvidence, AgentExecution, AgentMatch, AgentOperation,
+    AgentQueryContext, AgentResultState, AgentTextPageOptions, build_code_query_brief,
+    build_code_query_view, render_agent_query_text, render_code_query_text_page,
 };
 
 fn anchor(file: &str, line: u32) -> SourceAnchor {
@@ -61,6 +61,61 @@ fn response(operation: CodeQueryOperation) -> CodeQueryResponse {
 
 fn context(operation: AgentOperation) -> AgentQueryContext {
     AgentQueryContext::new(operation, "graph-identity", "generation-identity")
+}
+
+#[test]
+fn brief_projection_keeps_answer_semantics_and_drops_audit_detail() -> Result<(), Box<dyn Error>> {
+    let caller_anchor = anchor("src/caller.rs", 10);
+    let target_anchor = anchor("src/target.rs", 20);
+    let mut response = response(CodeQueryOperation::Callers);
+    response.nodes = vec![
+        node("n:caller", "Caller", &caller_anchor),
+        node("n:target", "Target", &target_anchor),
+    ];
+    response.edges.push(QueryEdge {
+        id: "e:caller-target".to_owned(),
+        source: "n:caller".to_owned(),
+        target: "n:target".to_owned(),
+        kind: EdgeKind::Calls,
+        relationship_site: Some(caller_anchor.clone()),
+        details: None,
+        evidence: vec![evidence(&caller_anchor)],
+    });
+    let mut query_context = context(AgentOperation::Callers);
+    query_context = query_context.with_operand(compass_output::AgentOperandRole::Symbol, "Target");
+
+    let brief = build_code_query_brief(&response, query_context.clone())?;
+    assert_eq!(brief.schema, AGENT_BRIEF_VIEW_SCHEMA);
+    assert_eq!(brief.status.result_state, "answered");
+    assert_eq!(brief.relationships.len(), 1);
+    assert!(brief.relationships[0].source.contains("Caller"));
+    assert_eq!(brief.relationships[0].relation, "calls");
+    assert!(brief.relationships[0].target.contains("Target"));
+    assert!(
+        brief.relationships[0]
+            .site
+            .as_deref()
+            .is_some_and(|site| site.starts_with("src/caller.rs"))
+    );
+
+    let full = build_code_query_view(&response, query_context)?;
+    assert_eq!(
+        brief.relationships[0].source,
+        full.relationships[0].source.label
+    );
+    let brief_bytes = serde_json::to_vec(&brief)?.len();
+    let full_bytes = serde_json::to_vec(&full)?.len();
+    assert!(
+        brief_bytes < full_bytes,
+        "brief {brief_bytes} bytes must be smaller than {full_bytes}"
+    );
+    let brief_json = serde_json::to_string(&brief)?;
+    assert!(!brief_json.contains("\"identity\""));
+    assert!(!brief_json.contains("viewDigest"));
+    // The status, headline, and caveats stay readable.
+    assert!(brief_json.contains("\"caveats\""));
+    assert_eq!(brief.answer, full.answer.headline);
+    Ok(())
 }
 
 #[test]

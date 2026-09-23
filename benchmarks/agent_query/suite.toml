@@ -102,6 +102,16 @@ max_follow_ups = 8
 judgment = "The reviewed caller set spans command.go, command_test.go and completions_test.go; a bounded page must be continuable."
 
 [[repository.question]]
+id = "cobra-brief-callers"
+kind = "brief_callers"
+subject = "cobra.Command::ExecuteC"
+compass = ["callers", "cobra.Command::ExecuteC", "--format", "agent-json", "--brief"]
+graphify = ["affected", ".ExecuteC()", "--depth", "1"]
+expect = "answer"
+required = ["command.go", "command_test.go"]
+judgment = "The compact projection must still name the reviewed caller files without audit-only detail."
+
+[[repository.question]]
 id = "cobra-negative"
 kind = "negative"
 subject = "ZebraQuantumMissingSymbol"
@@ -559,6 +569,16 @@ required = ["routing/mod.rs", "routing/tests"]
 budget_tokens = 400
 max_follow_ups = 8
 judgment = "Router::route callers span src/routing/mod.rs and the routing test modules."
+
+[[repository.question]]
+id = "axum-brief-callers"
+kind = "brief_callers"
+subject = "axum::routing::Router::route"
+compass = ["callers", "axum::routing::Router::route", "--format", "agent-json", "--brief"]
+graphify = ["affected", ".route()", "--depth", "1"]
+expect = "answer"
+required = ["routing/mod.rs", "routing/tests"]
+judgment = "The compact projection must still name the reviewed caller files without audit-only detail."
 
 [[repository.anchor]]
 file = "src/routing/mod.rs"

@@ -7,7 +7,8 @@ use compass_model::query_contract::{
 };
 use compass_output::{
     AgentOperandRole, AgentQueryContext, AgentTextPageOptions, DEFAULT_AGENT_TEXT_PAGE_TOKENS,
-    build_code_query_view, decode_agent_text_page_cursor, render_code_query_text_page,
+    build_code_query_brief, build_code_query_view, decode_agent_text_page_cursor,
+    render_code_query_text_page,
 };
 use compass_query::{
     EngineSelection, NaturalQueryRequest, QueryError, QueryErrorKind, open_with_engine,
@@ -57,6 +58,10 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
     let deadline = Instant::now() + timeout;
+    let brief = query_args.iter().any(|argument| argument == "--brief");
+    if brief && format != SharedOutputFormat::AgentJson {
+        return Outcome::failure("error: --brief requires --format agent-json".to_owned());
+    }
     let result = if format == SharedOutputFormat::Text {
         execute_paged(operation, &query_args, deadline)
     } else {
@@ -70,9 +75,14 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
             } else if format == SharedOutputFormat::AgentJson {
-                match build_code_query_view(&execution.response, execution.context)
-                    .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
-                {
+                let projected = if brief {
+                    build_code_query_brief(&execution.response, execution.context)
+                        .and_then(|view| serde_json::to_string(&view).map_err(Into::into))
+                } else {
+                    build_code_query_view(&execution.response, execution.context)
+                        .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
+                };
+                match projected {
                     Ok(json) => Outcome::success(json),
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }

@@ -190,6 +190,21 @@ byte-identical to the previous rendering. `--max-findings` and
 omissions; `--section` and `--list-sections` are rejected with `--readiness` and
 with non-Markdown formats.
 
+### Compact Agent View
+
+Typed commands accept the additive `--brief` flag with `--format agent-json`,
+which emits `compass.query.agent-view.brief/1` instead of
+`compass.query.agent-view/1`. The brief projection keeps the answer semantics
+(`status.resultState`, `matchState`, `coverage`, headline, caveats,
+source-located entities, relationships with relation/site/confidence, paths,
+and next-action argv) and drops audit-only detail: graph and build identities,
+result and view digests, omission counters, per-relationship IDs, per-entity
+roles, and per-edge evidence layers. Consumers that need exact identity,
+digests, or evidence read `--format json` (the unchanged raw
+`compass.query/1` response) or omit `--brief`. `--brief` is rejected with any
+other format, and the existing `agent-json` output is byte-identical to the
+previous release.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

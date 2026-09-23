@@ -1002,6 +1002,50 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
 }
 
 #[test]
+fn brief_agent_json_is_compact_and_format_bound() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let brief = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("agent-json"),
+            OsString::from("--brief"),
+        ],
+    );
+    assert_eq!(brief.code, 0, "{}", brief.stderr);
+    let view: Value = serde_json::from_str(&brief.stdout)?;
+    assert_eq!(view["schema"], "compass.query.agent-view.brief/1");
+    assert_eq!(view["status"]["resultState"], "answered");
+    assert!(!brief.stdout.contains("viewDigest"));
+    assert!(!brief.stdout.contains("\"identity\""));
+
+    let rejected = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from("--brief"),
+        ],
+    );
+    assert_ne!(rejected.code, 0);
+    assert!(
+        rejected
+            .stderr
+            .contains("--brief requires --format agent-json")
+    );
+    Ok(())
+}
+
+#[test]
 fn typed_queries_report_an_expired_deadline_and_still_answer_within_one()
 -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;

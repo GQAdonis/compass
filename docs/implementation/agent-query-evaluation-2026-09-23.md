@@ -9,12 +9,13 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 38/41 | 19/41 |
+| Source-reviewed answers passed | 40/43 | 19/43 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
-| Median tokens per answered question | 432 | 278 |
+| Median tokens per answered question | 475 | 278 |
 | Broad natural questions answered | 2/5 | 5/5 |
 | Paged caller questions answered | 2/2 | 0/2 |
+| Compact caller questions answered | 2/2 | 0/2 |
 
 Compass passed every `callers`, `explain_source`, `file_path`, and `negative`
 row, plus every `path` and both `paged_callers` rows; Graphify passed none of
@@ -31,9 +32,9 @@ specifically, so it is the weakest of the three judgments.
 `benchmarks/agent_query/suite.toml` pins one checkout per language:
 `spf13/cobra` (Go), `pallets/flask` (Python), `google/gson` (Java),
 `colinhacks/zod` (TypeScript), and `tokio-rs/axum` (Rust). Each repository
-contributes questions in nine kinds: `explain`, `explain_source`, `callers`,
-`paged_callers`, `path`, `file_path`, `ambiguity`, `negative`, and `broad`.
-Every question
+contributes questions in ten kinds: `explain`, `explain_source`, `callers`,
+`paged_callers`, `brief_callers`, `path`, `file_path`, `ambiguity`, `negative`,
+and `broad`. Every question
 records the exact per-tool argument vector, the expected outcome, the anchors
 the reviewer read in the pinned source, and the graph anchors both graphs must
 carry as source-backed nodes.
@@ -60,6 +61,15 @@ both in 764 (Cobra) and 377 (Axum) tokens by following the cursor, against
 6,256 and 6,758 tokens for the same answers through the single-shot agent view
 and no answer at all from Graphify. Paging therefore turns the most expensive
 reviewed question class into one of the cheapest.
+
+The `brief_callers` questions ask for the same caller sets through
+`--format agent-json --brief`, the compact `compass.query.agent-view.brief/1`
+projection that keeps status, caveats, source-located entities,
+relationships, and next actions while dropping audit-only digests, record IDs,
+and per-edge evidence layers. Compass answered both in 1,651 (Cobra) and 2,046
+(Axum) tokens, 3.8x and 3.3x cheaper than the full projection. Median tokens
+per caller answer therefore move from 6,256 (full) to 1,848 (brief) to 570
+(paged) with the same reviewed anchors.
 
 ## What the evaluation changed
 
@@ -159,7 +169,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-final/runs/20260923T100359Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final2/runs/20260923T102255Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

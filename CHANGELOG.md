@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add the compact `compass.query.agent-view.brief/1` projection. Typed
+  commands accept `--brief` with `--format agent-json` and receive the same
+  status, answer, caveats, source-located entities, relationships, paths, and
+  next actions without audit-only graph identities, response digests,
+  per-relationship IDs, or per-edge evidence layers. On the evaluation corpus
+  the same caller answers cost 1,651 (Cobra) and 2,046 (Axum) tokens instead of
+  6,256 and 6,758, and the raw `compass.query/1` response remains unchanged for
+  audit consumers.
+
 - Let `compass review --format markdown` extract one section at a time.
   `--list-sections` prints the canonical section names (`summary`,
   `risk-factors`, `merge-checks`, `findings`, `not-included`) without needing a

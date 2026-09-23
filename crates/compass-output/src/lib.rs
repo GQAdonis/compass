@@ -23,18 +23,20 @@ mod wiki;
 mod workbench;
 
 pub use agent_query::{
-    AGENT_QUERY_VIEW_SCHEMA, AGENT_TEXT_PAGE_VERSION, AGENT_VIEW_MAX_BYTES, AGENT_VIEW_MAX_CAVEATS,
-    AGENT_VIEW_MAX_NEXT_ACTIONS, AGENT_VIEW_MAX_PATHS, AGENT_VIEW_MAX_PRIMARY_RESULTS,
-    AGENT_VIEW_MAX_RELATIONSHIPS, AGENT_VIEW_MAX_SCALAR_CHARS, AGENT_VIEW_TEXT_MAX_BYTES,
-    AgentActionCli, AgentActionMcp, AgentAnswer, AgentBasis, AgentCaveat, AgentCoverage,
+    AGENT_BRIEF_VIEW_SCHEMA, AGENT_QUERY_VIEW_SCHEMA, AGENT_TEXT_PAGE_VERSION,
+    AGENT_VIEW_MAX_BYTES, AGENT_VIEW_MAX_CAVEATS, AGENT_VIEW_MAX_NEXT_ACTIONS,
+    AGENT_VIEW_MAX_PATHS, AGENT_VIEW_MAX_PRIMARY_RESULTS, AGENT_VIEW_MAX_RELATIONSHIPS,
+    AGENT_VIEW_MAX_SCALAR_CHARS, AGENT_VIEW_TEXT_MAX_BYTES, AgentActionCli, AgentActionMcp,
+    AgentAnswer, AgentBasis, AgentBriefAction, AgentBriefEntity, AgentBriefPath,
+    AgentBriefRelationship, AgentBriefStatus, AgentBriefView, AgentCaveat, AgentCoverage,
     AgentEndpoint, AgentEntity, AgentEvidence, AgentExecution, AgentIdentity, AgentMatch,
     AgentNextAction, AgentOmissions, AgentOperand, AgentOperandRole, AgentOperation, AgentPath,
     AgentPathDirection, AgentPathStep, AgentProjection, AgentQueryContext, AgentQueryView,
     AgentRelationship, AgentRelationshipEvidence, AgentRequest, AgentResultState, AgentSeverity,
     AgentSource, AgentStatus, AgentTextPage, AgentTextPageCursor, AgentTextPageOptions,
-    DEFAULT_AGENT_TEXT_PAGE_TOKENS, build_code_query_view, build_discovery_query_view,
-    decode_agent_text_page_cursor, render_agent_query_header_lines, render_agent_query_text,
-    render_code_query_text_page,
+    DEFAULT_AGENT_TEXT_PAGE_TOKENS, build_code_query_brief, build_code_query_view,
+    build_discovery_query_view, decode_agent_text_page_cursor, render_agent_query_header_lines,
+    render_agent_query_text, render_code_query_text_page,
 };
 pub use architecture_projection::{
     ARCHITECTURE_OVERLAY_SCHEMA, ARCHITECTURE_VIEWER_SCHEMA, ArchitectureClassCounts,

@@ -19,6 +19,8 @@ use sha2::{Digest, Sha256};
 use crate::OutputError;
 
 pub const AGENT_QUERY_VIEW_SCHEMA: &str = "compass.query.agent-view/1";
+/// Version of the compact agent projection that omits audit-only detail.
+pub const AGENT_BRIEF_VIEW_SCHEMA: &str = "compass.query.agent-view.brief/1";
 pub const AGENT_VIEW_MAX_PRIMARY_RESULTS: usize = 12;
 pub const AGENT_VIEW_MAX_RELATIONSHIPS: usize = 24;
 pub const AGENT_VIEW_MAX_PATHS: usize = 5;
@@ -1022,6 +1024,151 @@ pub fn render_agent_query_text(view: &AgentQueryView) -> Result<String, OutputEr
     Ok(text)
 }
 
+/// The compact agent projection.
+///
+/// The brief view keeps the reviewed answer semantics of
+/// `compass.query.agent-view/1` - status, caveats, source-located entities,
+/// relationships, paths, and next actions - while dropping audit-only detail
+/// such as graph identities, response digests, per-record IDs for
+/// relationships, and per-edge evidence layers. Consumers that need exact
+/// provenance read the raw `compass.query/1` response instead.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefView {
+    pub schema: String,
+    pub operation: AgentOperation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    pub operands: Vec<AgentOperand>,
+    pub status: AgentBriefStatus,
+    pub answer: String,
+    pub caveats: Vec<String>,
+    pub primary_results: Vec<AgentBriefEntity>,
+    pub relationships: Vec<AgentBriefRelationship>,
+    pub paths: Vec<AgentBriefPath>,
+    pub next_actions: Vec<AgentBriefAction>,
+}
+
+/// Answer-level state of a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefStatus {
+    pub result_state: String,
+    pub match_state: String,
+    pub coverage: String,
+}
+
+/// One source-located entity in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefEntity {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// One usage or structural relationship in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefRelationship {
+    pub source: String,
+    pub relation: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    pub confidence: String,
+}
+
+/// One connecting path in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefPath {
+    pub id: String,
+    pub hops: usize,
+    pub summary: String,
+}
+
+/// One bounded follow-up action in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefAction {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli: Option<Vec<String>>,
+}
+
+/// Build the compact projection from the same bounded agent view.
+pub fn build_code_query_brief(
+    response: &CodeQueryResponse,
+    context: AgentQueryContext,
+) -> Result<AgentBriefView, OutputError> {
+    let view = build_code_query_view(response, context)?;
+    Ok(AgentBriefView {
+        schema: AGENT_BRIEF_VIEW_SCHEMA.to_owned(),
+        operation: view.request.operation,
+        question: view.request.question.clone(),
+        operands: view.request.operands.clone(),
+        status: AgentBriefStatus {
+            result_state: result_state_name(view.status.result_state).to_owned(),
+            match_state: match_state_name(view.status.match_state).to_owned(),
+            coverage: coverage_state_name(view.status.coverage).to_owned(),
+        },
+        answer: view.answer.headline.clone(),
+        caveats: view
+            .caveats
+            .iter()
+            .map(|caveat| {
+                format!(
+                    "[{}] {}: {}",
+                    severity_name(caveat.severity),
+                    caveat.code,
+                    caveat.statement
+                )
+            })
+            .collect(),
+        primary_results: view
+            .primary_results
+            .iter()
+            .map(|entity| AgentBriefEntity {
+                id: entity.id.clone(),
+                label: entity.label.clone(),
+                kind: entity.kind.clone(),
+                source: entity.source.as_ref().map(render_source),
+            })
+            .collect(),
+        relationships: view
+            .relationships
+            .iter()
+            .map(|relationship| AgentBriefRelationship {
+                source: relationship.source.label.clone(),
+                relation: relationship.relation.clone(),
+                target: relationship.target.label.clone(),
+                site: relationship.site.as_ref().map(render_source),
+                confidence: relationship.evidence.confidence.clone(),
+            })
+            .collect(),
+        paths: view
+            .paths
+            .iter()
+            .map(|path| AgentBriefPath {
+                id: path.id.clone(),
+                hops: path.steps.len(),
+                summary: render_path_summary(path),
+            })
+            .collect(),
+        next_actions: view
+            .next_actions
+            .iter()
+            .map(|action| AgentBriefAction {
+                kind: action.kind.clone(),
+                cli: action.cli.as_ref().map(|cli| cli.argv.clone()),
+            })
+            .collect(),
+    })
+}
+
 /// Version of the paged agent text projection.
 pub const AGENT_TEXT_PAGE_VERSION: &str = "compass.query.agent-text-page/1";
 /// Default page budget, in approximate tokens, for paged agent text output.
@@ -1416,6 +1563,30 @@ fn coverage_state_name(value: AgentCoverage) -> &'static str {
     }
 }
 
+fn severity_name(value: AgentSeverity) -> &'static str {
+    match value {
+        AgentSeverity::Blocker => "blocker",
+        AgentSeverity::Warning => "warning",
+        AgentSeverity::Info => "info",
+    }
+}
+
+fn render_path_summary(path: &AgentPath) -> String {
+    let mut segments = Vec::new();
+    if let Some(first) = path.steps.first() {
+        segments.push(escape_scalar(&first.from.label));
+    }
+    for step in &path.steps {
+        let arrow = match step.direction {
+            AgentPathDirection::Forward => format!("--{}-->", escape_scalar(&step.relation)),
+            AgentPathDirection::Reverse => format!("<--{}--", escape_scalar(&step.relation)),
+        };
+        segments.push(arrow);
+        segments.push(escape_scalar(&step.to.label));
+    }
+    segments.join(" ")
+}
+
 fn render_entity(entity: &AgentEntity) -> String {
     let source = entity
         .source
@@ -1449,23 +1620,11 @@ fn render_relationship(relationship: &AgentRelationship) -> String {
 }
 
 fn render_path(path: &AgentPath) -> String {
-    let mut segments = Vec::new();
-    if let Some(first) = path.steps.first() {
-        segments.push(escape_scalar(&first.from.label));
-    }
-    for step in &path.steps {
-        let arrow = match step.direction {
-            AgentPathDirection::Forward => format!("--{}-->", escape_scalar(&step.relation)),
-            AgentPathDirection::Reverse => format!("<--{}--", escape_scalar(&step.relation)),
-        };
-        segments.push(arrow);
-        segments.push(escape_scalar(&step.to.label));
-    }
     format!(
         "- {} ({} hop(s)): {}",
         escape_scalar(&path.id),
         path.steps.len(),
-        segments.join(" ")
+        render_path_summary(path)
     )
 }
 
@@ -1476,14 +1635,6 @@ fn render_caveat(caveat: &AgentCaveat) -> String {
         escape_scalar(&caveat.code),
         escape_scalar(&caveat.statement)
     )
-}
-
-fn severity_name(value: AgentSeverity) -> &'static str {
-    match value {
-        AgentSeverity::Blocker => "blocker",
-        AgentSeverity::Warning => "warning",
-        AgentSeverity::Info => "info",
-    }
 }
 
 fn render_action(action: &AgentNextAction) -> String {
