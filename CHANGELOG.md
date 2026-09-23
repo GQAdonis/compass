@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Print only what a caller has to weigh in the text projection. A relationship
+  row now keeps its endpoints, relation and site on one line and spells out the
+  confidence and resolution only when they are not the strongest `exact`, and
+  an exact-name pick list no longer repeats a stable identifier beside every
+  candidate (the qualified name and source anchor address each row, and
+  `--format json` keeps every identifier). On the 50-question suite the paired
+  median answer falls from 337 to 327 tokens, the exact-name pick list drops
+  from 583 to 349 tokens, and the same 50/50 result holds.
+
 - Never answer an unresolved symbol query with another symbol's evidence. A
   `callers`, `callees` or `impact` query whose symbol has no exact match used to
   print "Found 27 incoming usage relationship(s) for axum::routing::Router::route_layer."

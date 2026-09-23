@@ -637,8 +637,17 @@ fn text_page_prints_identifiers_only_where_it_resolves_a_name() -> Result<(), Bo
         "a resolved caller row is addressed by name and anchor: {}",
         resolved.text
     );
-    let pick_list = render_code_query_text_page(
-        &response,
+    // A candidate page whose name is not exact keeps the identifiers an agent
+    // disambiguates with; an exact-name pick list does not need them.
+    let mut candidates = response.clone();
+    candidates.operation = CodeQueryOperation::Search;
+    candidates.results.push(SearchHit {
+        node_id: "n:target".to_owned(),
+        score: 1.0,
+        matched_fields: vec!["name".to_owned()],
+    });
+    let exact_pick_list = render_code_query_text_page(
+        &candidates,
         context(AgentOperation::Search)
             .with_operand(compass_output::AgentOperandRole::Query, "Target"),
         AgentTextPageOptions {
@@ -647,9 +656,23 @@ fn text_page_prints_identifiers_only_where_it_resolves_a_name() -> Result<(), Bo
         },
     )?;
     assert!(
-        pick_list.text.contains("  id: "),
-        "a pick list keeps the identifiers an agent disambiguates with: {}",
-        pick_list.text
+        !exact_pick_list.text.contains("  id: "),
+        "an exact-name pick list is addressed by name and anchor: {}",
+        exact_pick_list.text
+    );
+    let fuzzy_pick_list = render_code_query_text_page(
+        &candidates,
+        context(AgentOperation::Search)
+            .with_operand(compass_output::AgentOperandRole::Query, "Targat"),
+        AgentTextPageOptions {
+            token_budget: 2_000,
+            cursor: None,
+        },
+    )?;
+    assert!(
+        fuzzy_pick_list.text.contains("  id: "),
+        "a candidate page that cannot address a row by name keeps its identifiers: {}",
+        fuzzy_pick_list.text
     );
     // The JSON projection carries identifiers for both.
     let view = build_code_query_view(

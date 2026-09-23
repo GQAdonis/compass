@@ -284,8 +284,10 @@ a concatenation of every node identifier on the trail - stays in
 `agent-json`/`json`. The same footer rule applies to every other paged text
 answer (`path`, `node`, `explore`): `Pagination: page=A/B <item>=X-Y/T next=…`
 without a budget echo or a previous-page field. Stable entity identifiers are
-printed only where the page resolves a name (a `search` pick list, or a
-non-exact match); the raw `compass.query/1` response and the
+printed only for a non-exact match; resolved answers and exact-name pick lists
+print the qualified name and source anchor, and a relationship row states its
+confidence and resolution only when they are not the strongest `exact`. The raw
+`compass.query/1` response and the
 `agent-json` view still carry every identifier, anchor, and omission counter.
 Continuation cursors use a compact wire encoding that stores 64-bit digest
 prefixes and a version byte; cursors issued by an earlier release are rejected

@@ -546,12 +546,14 @@ error. A cursor from another graph, another operation, or a changed result
 fails closed rather than restarting the page. One page renders at most 12
 primary results, 24 relationships, and 5 paths while reporting the ledger's
 true total, so a page carries the strongest evidence and `next=` continues the
-rest. Stable identifiers are printed where the answer resolves a name - a
-`search` pick list or a non-exact match - and omitted where the qualified name
-and source anchor already address the row; the raw `compass.query/1` response
-still carries every identifier. A `PATHS` row prints its hop count and the
-labelled trail rather than the path identity, which is built from every node
-identifier on the trail.
+rest. Stable identifiers are printed only for a non-exact match, where the
+printed name may not address the row; a resolved answer and an exact-name pick
+list print the qualified name and source anchor instead, and the raw
+`compass.query/1` response still carries every identifier. A `PATHS` row prints
+its hop count and the labelled trail rather than the path identity, which is
+built from every node identifier on the trail, and a relationship row keeps its
+relation, endpoints and site on one line, spelling out the confidence and
+resolution only when they are not the strongest (`exact`).
 
 `--format agent-json --brief` emits `compass.query.agent-view.brief/1`: the same
 status, headline, caveats, source-located entities, relationships, paths, and

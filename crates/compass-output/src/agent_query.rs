@@ -1914,13 +1914,13 @@ fn render_entity(entity: &AgentEntity, include_id: bool) -> String {
 
 /// Whether a page must print stable entity identifiers.
 ///
-/// `search` exists to offer the candidates for a name, and a pick list that
-/// cannot be addressed exactly is not actionable. The same is true of any
-/// answer whose match state is not exact. Answers that list already-resolved
-/// nodes print the qualified name and source anchor instead, which keeps their
-/// evidence per token high.
-fn page_keeps_entity_ids(operation: AgentOperation, match_state: AgentMatch) -> bool {
-    matches!(operation, AgentOperation::Search) || !matches!(match_state, AgentMatch::Exact)
+/// A page needs the identifier only when the name it printed is not unique
+/// enough to address the row, so identifiers appear when the answer's match
+/// state is not exact and stay out of the resolved answers and exact-name pick
+/// lists, where the qualified name and source anchor address every row. The
+/// candidate list, its order, and every identifier stay in `--format json`.
+fn page_keeps_entity_ids(_operation: AgentOperation, match_state: AgentMatch) -> bool {
+    !matches!(match_state, AgentMatch::Exact)
 }
 
 fn render_relationship(relationship: &AgentRelationship) -> String {
@@ -1929,15 +1929,23 @@ fn render_relationship(relationship: &AgentRelationship) -> String {
         .as_ref()
         .map(render_source)
         .unwrap_or_else(|| "site unavailable".to_owned());
-    format!(
-        "- {} --{}--> {}\n  {} · {} · {}",
+    let mut line = format!(
+        "- {} --{}--> {} · {}",
         escape_scalar(&relationship.source.label),
         escape_scalar(&relationship.relation),
         escape_scalar(&relationship.target.label),
         escape_scalar(&site),
-        escape_scalar(&relationship.evidence.confidence),
-        escape_scalar(&relationship.evidence.resolution)
-    )
+    );
+    // The strongest confidence and resolution are the default; what a caller
+    // has to weigh is the exception, so only that is spelled out.
+    if relationship.evidence.confidence != "exact" || relationship.evidence.resolution != "exact" {
+        line.push_str(&format!(
+            " · {} · {}",
+            escape_scalar(&relationship.evidence.confidence),
+            escape_scalar(&relationship.evidence.resolution)
+        ));
+    }
+    line
 }
 
 fn render_path(path: &AgentPath) -> String {
