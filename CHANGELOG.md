@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Never answer an unresolved symbol query with another symbol's evidence. A
+  `callers`, `callees` or `impact` query whose symbol has no exact match used to
+  print "Found 27 incoming usage relationship(s) for axum::routing::Router::route_layer."
+  for the question "who calls PathRouter::route?" - the state said `no_match`,
+  but the headline attributed a fallback candidate's relationships to the
+  request. The headline now names the missing subject and says whose evidence
+  the rows are ("the 27 incoming usage relationship(s) below belong to the
+  fallback candidate ..."), leaving the candidate list to the caveats, so no
+  candidate is ever selected silently. Exactly resolved queries keep their
+  previous wording.
+
 - Bound the owner-level importer probe. `callers`, `callees` and `impact`
   recover evidence that targets a containing owner through a term-posting
   probe, and every candidate it verified cost one snapshot read: on the Axum

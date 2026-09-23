@@ -237,6 +237,18 @@ direct caller is reported before a symbol that only touches the containing
 owner. `compass.query/1` keeps its schema, and the raw response now records the
 direct evidence in `paths` where it previously held owner-level trails.
 
+### Unresolved relationship headlines
+
+`compass callers`, `compass callees` and `compass impact` answer about the
+symbol the query resolved. When the query has no exact match, the Agent View
+state is `no_match` and the headline now says so and names whose evidence the
+rows are - "No exact match for \"PathRouter::route\"; the 27 incoming usage
+relationship(s) below belong to the fallback candidate
+axum::routing::Router::route_layer." - instead of reporting a count "for" a
+fallback candidate as if it answered the request. The candidate list stays in
+the caveats, exactly resolved queries keep their previous wording, and no
+schema, count, or omission field changes.
+
 ### Owner-level importer probe bound
 
 `compass callers`, `compass callees` and `compass impact` recover evidence that

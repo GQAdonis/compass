@@ -732,3 +732,71 @@ fn legacy_page_cursor_encoding_is_rejected_with_a_version_error() -> Result<(), 
     );
     Ok(())
 }
+
+#[test]
+fn unresolved_relationship_answers_never_speak_for_another_symbol() -> Result<(), Box<dyn Error>> {
+    let caller_anchor = anchor("src/caller.rs", 10);
+    let target_anchor = anchor("src/target.rs", 20);
+    let mut response = response(CodeQueryOperation::Callers);
+    response.nodes = vec![
+        node("n:caller", "Caller", &caller_anchor),
+        node("n:target", "Target", &target_anchor),
+    ];
+    response.edges.push(QueryEdge {
+        id: "e:caller-target".to_owned(),
+        source: "n:caller".to_owned(),
+        target: "n:target".to_owned(),
+        kind: EdgeKind::Calls,
+        relationship_site: Some(caller_anchor.clone()),
+        details: None,
+        evidence: vec![evidence(&caller_anchor)],
+    });
+
+    // An exact match states the count for the resolved subject.
+    let resolved = build_code_query_view(
+        &response,
+        context(AgentOperation::Callers)
+            .with_operand(compass_output::AgentOperandRole::Symbol, "Target"),
+    )?;
+    assert_eq!(resolved.status.result_state, AgentResultState::Answered);
+    assert!(
+        resolved
+            .answer
+            .headline
+            .starts_with("Found 1 incoming usage relationship(s) for "),
+        "{}",
+        resolved.answer.headline
+    );
+
+    // A query with no exact match reports the missing subject; it never
+    // presents another symbol's relationships as the answer to it.
+    response.diagnostics.push(QueryDiagnostic {
+        code: QueryDiagnosticCode::NoMatch,
+        message: "NO EXACT MATCH for Missing".to_owned(),
+        node_id: None,
+        path: None,
+    });
+    let unresolved = build_code_query_view(
+        &response,
+        context(AgentOperation::Callers)
+            .with_operand(compass_output::AgentOperandRole::Symbol, "Missing"),
+    )?;
+    assert_eq!(unresolved.status.result_state, AgentResultState::NoMatch);
+    assert!(
+        unresolved
+            .answer
+            .headline
+            .starts_with("No exact match for \"Missing\""),
+        "{}",
+        unresolved.answer.headline
+    );
+    assert!(
+        !unresolved
+            .answer
+            .headline
+            .starts_with("Found 1 incoming usage relationship(s) for "),
+        "a fallback's evidence must not be attributed to the request: {}",
+        unresolved.answer.headline
+    );
+    Ok(())
+}

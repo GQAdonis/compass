@@ -2576,6 +2576,31 @@ fn code_result_state(
     }
 }
 
+/// Headline for a relationship answer whose evidence belongs to one subject.
+///
+/// When the query resolved exactly, the count describes that subject. When it
+/// did not, the evidence belongs to a fallback candidate, and the headline says
+/// so instead of attributing another symbol's relationships to the requested
+/// one: the Agent View never selects a candidate silently, and `no_match`
+/// answers keep their candidates in the caveats.
+fn relationship_headline(
+    result_state: AgentResultState,
+    requested: &str,
+    subject: &str,
+    count: usize,
+    noun: &str,
+) -> String {
+    if result_state == AgentResultState::Answered {
+        return format!("Found {count} {noun} for {subject}.");
+    }
+    if subject == requested {
+        return format!("No exact match for \"{requested}\"; no {noun} are attributed to it.");
+    }
+    format!(
+        "No exact match for \"{requested}\"; the {count} {noun} below belong to the fallback candidate {subject}."
+    )
+}
+
 fn answer_for_code(
     context: &AgentQueryContext,
     result_state: AgentResultState,
@@ -2608,19 +2633,38 @@ fn answer_for_code(
             }
             _ => format!("No exact answer was proven for \"{requested}\"."),
         },
-        AgentOperation::Callers => format!(
-            "Found {} incoming usage relationship(s) for {subject}.",
-            response.edges.len()
+        AgentOperation::Callers => relationship_headline(
+            result_state,
+            &requested,
+            &subject,
+            response.edges.len(),
+            "incoming usage relationship(s)",
         ),
-        AgentOperation::Callees => format!(
-            "Found {} direct callee relationship(s) for {subject}.",
-            response.edges.len()
+        AgentOperation::Callees => relationship_headline(
+            result_state,
+            &requested,
+            &subject,
+            response.edges.len(),
+            "direct callee relationship(s)",
         ),
-        AgentOperation::Impact => format!(
-            "Found {} potentially affected node(s) within depth {}.",
-            primary_results.len(),
-            response.limits.max_depth
-        ),
+        AgentOperation::Impact => {
+            if result_state == AgentResultState::Answered {
+                format!(
+                    "Found {} potentially affected node(s) within depth {}.",
+                    primary_results.len(),
+                    response.limits.max_depth
+                )
+            } else if subject == requested {
+                format!(
+                    "No exact match for \"{requested}\"; no potentially affected nodes are attributed to it."
+                )
+            } else {
+                format!(
+                    "No exact match for \"{requested}\"; the {} potentially affected node(s) below belong to the fallback candidate {subject}.",
+                    primary_results.len()
+                )
+            }
+        }
         AgentOperation::Explore => format!(
             "Found {} candidate anchor(s) and {} relationship(s) for the question.",
             primary_results.len(),
