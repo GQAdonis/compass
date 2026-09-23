@@ -1002,6 +1002,35 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
 }
 
 #[test]
+fn path_accepts_file_shaped_input_when_modules_carry_the_file_content() -> Result<(), Box<dyn Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_module_graph(directory.path())?;
+    let outcome = run(
+        Frontend::Compass,
+        [
+            OsString::from("path"),
+            OsString::from("src/a.ts"),
+            OsString::from("src/b.ts"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+        ],
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(
+        outcome.stdout.contains("Best path"),
+        "file-shaped input must traverse the file's module: {}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome.stdout.contains("NO PATH FOUND"),
+        "{}",
+        outcome.stdout
+    );
+    Ok(())
+}
+
+#[test]
 fn typed_text_paging_continues_the_same_result_with_a_cursor() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let graph = support::write_typed_graph(directory.path())?;

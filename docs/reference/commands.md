@@ -475,6 +475,14 @@ visited-node count. Relationship arrows always preserve their stored direction.
 Traversal may follow a relationship in either direction; the arrows make that
 choice visible rather than rewriting the graph.
 
+Both endpoints accept a file path as well as a symbol. When a language
+publishes an isolated metadata `file` node beside the `module` node that
+carries the file's contents, an isolated file endpoint resolves to the single
+module that owns the same source file and the answer names both
+(`schemas (packages/zod/src/v4/classic/schemas.ts)`). A file with several
+candidate modules, or a name that matches several declarations, still fails
+closed with the candidate list instead of guessing.
+
 ### `explain`
 
 ```text

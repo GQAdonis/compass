@@ -293,6 +293,81 @@ export const value = second;
 }
 
 #[test]
+fn typescript_paths_resolve_for_a_config_other_projects_extend()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path();
+    let root_config = root.join("tsconfig.json");
+    let child_config = root.join("apps/child/tsconfig.json");
+    let errors = root.join("src/lib/errors.ts");
+    let consumer = root.join("src/app.ts");
+    for path in [&root_config, &child_config, &errors, &consumer] {
+        fs::create_dir_all(path.parent().ok_or("fixture path has no parent")?)?;
+    }
+    // The root project includes `src` and is also the `extends` base of the
+    // child project, which is the shape that used to disable its own aliases.
+    let root_config_source = br#"{
+        "compilerOptions": {
+            "baseUrl": ".",
+            "paths": { "@/*": ["./src/*"] }
+        },
+        "include": ["src"]
+    }"#;
+    let child_config_source = br#"{
+        "extends": "../../tsconfig.json",
+        "include": ["src"]
+    }"#;
+    let errors_source = br#"export function isAuthError(value: unknown): boolean {
+    return value === "auth";
+}"#;
+    let consumer_source = br#"import { isAuthError } from "@/lib/errors";
+export const guarded = isAuthError("auth");
+"#;
+    for (path, source) in [
+        (&root_config, root_config_source.as_slice()),
+        (&child_config, child_config_source.as_slice()),
+        (&errors, errors_source.as_slice()),
+        (&consumer, consumer_source.as_slice()),
+    ] {
+        fs::write(path, source)?;
+    }
+    let extractions = [
+        extract(errors.to_str().ok_or("non-UTF-8 fixture path")?, errors_source),
+        extract(
+            consumer.to_str().ok_or("non-UTF-8 fixture path")?,
+            consumer_source,
+        ),
+    ];
+    let sources = [
+        (&root_config, root_config_source.as_slice()),
+        (&child_config, child_config_source.as_slice()),
+        (&errors, errors_source.as_slice()),
+        (&consumer, consumer_source.as_slice()),
+    ]
+    .into_iter()
+    .map(|(path, source)| {
+        Ok((
+            path.to_str().ok_or("non-UTF-8 fixture path")?.to_owned(),
+            String::from_utf8(source.to_vec())?,
+        ))
+    })
+    .collect::<Result<HashMap<_, _>, Box<dyn std::error::Error>>>()?;
+
+    let resolved = compass_resolve::resolve_with_root(&extractions, &sources, root);
+    assert_eq!(resolved.error, None);
+    assert!(
+        resolved.edges.iter().any(|edge| {
+            edge.string("relation") == "imports_from"
+                && edge.string("module") == "@/lib/errors"
+                && target_source_matches(&resolved, &edge.target, &errors)
+                && edge.string("resolution_config") == "tsconfig.json"
+        }),
+        "the root project must resolve its own alias even when another project extends it"
+    );
+    Ok(())
+}
+
+#[test]
 fn typescript_paths_leave_same_depth_config_ambiguity_unresolved()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

@@ -174,3 +174,109 @@ pub fn write_typed_ambiguous_graph(root: &Path) -> Result<PathBuf, Box<dyn std::
     fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
     Ok(graph_path)
 }
+
+/// Write a typed graph whose files are represented by isolated metadata nodes
+/// plus connected module nodes, as the TypeScript universal pipeline publishes.
+pub fn write_typed_module_graph(root: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let graph_path = root.join("graph.json");
+    let mut graph = GraphDocument::empty_v1(BuildMetadata {
+        builder_version: "test".to_owned(),
+        schema_fingerprint: "sha256:test".to_owned(),
+        source_tree_digest: "sha256:test".to_owned(),
+        configuration_digest: "sha256:test".to_owned(),
+        generation_id: "sha256:test".to_owned(),
+        source_commit: None,
+    });
+    let anchor = |file: &str| SourceAnchor {
+        file: file.to_owned(),
+        start_byte: 0,
+        end_byte: 4,
+        start_line: 1,
+        start_column: 0,
+        end_line: 1,
+        end_column: 4,
+    };
+    for (file, module_id, module_name) in [("src/a.ts", "n:a", "a"), ("src/b.ts", "n:b", "b")] {
+        let source_path = root.join(file);
+        fs::create_dir_all(source_path.parent().unwrap_or(root))?;
+        fs::write(&source_path, b"code")?;
+        graph.graph.files.push(FileRecord {
+            id: file_id(file),
+            path: file.to_owned(),
+            language: Some("typescript".to_owned()),
+            content_digest: format!("sha256:{:x}", Sha256::digest(b"code")),
+            byte_size: 4,
+            generated: false,
+            extraction_status: ExtractionStatus::Extracted,
+            extractor_versions: vec!["cli-test".to_owned()],
+            coverage: Vec::new(),
+            diagnostics: Vec::new(),
+        });
+        let evidence = Provenance {
+            origin: EvidenceOrigin::Ast,
+            extractor: "cli-test".to_owned(),
+            confidence: EvidenceConfidence::Exact,
+            rule: None,
+            anchors: vec![anchor(file)],
+            wiring_site: None,
+            score: None,
+            candidates: Vec::new(),
+        };
+        for (id, kind, name) in [
+            (
+                file_id(file),
+                NodeKind::File,
+                file.rsplit('/').next().unwrap_or(file),
+            ),
+            (module_id.to_owned(), NodeKind::Module, module_name),
+        ] {
+            graph.nodes.push(NodeRecord {
+                id,
+                kind,
+                roles: Vec::new(),
+                name: name.to_owned(),
+                qualified_name: if kind == NodeKind::File {
+                    file.to_owned()
+                } else {
+                    module_name.to_owned()
+                },
+                language: Some("typescript".to_owned()),
+                framework: None,
+                source: Some(anchor(file)),
+                details: None,
+                evidence: vec![evidence.clone()],
+                coverage: Vec::new(),
+                diagnostics: Vec::new(),
+                community: None,
+            });
+        }
+    }
+    let site = anchor("src/a.ts");
+    let id = edge_id("n:a", EdgeKind::Imports, "n:b", Some(&site), None);
+    graph.links.push(EdgeRecord {
+        id: id.clone(),
+        key: id,
+        source: "n:a".to_owned(),
+        target: "n:b".to_owned(),
+        kind: EdgeKind::Imports,
+        occurrence_rule: None,
+        relationship_site: Some(site),
+        details: None,
+        evidence: vec![Provenance {
+            origin: EvidenceOrigin::Ast,
+            extractor: "cli-test".to_owned(),
+            confidence: EvidenceConfidence::Exact,
+            rule: None,
+            anchors: vec![anchor("src/a.ts")],
+            wiring_site: None,
+            score: None,
+            candidates: Vec::new(),
+        }],
+        weight: None,
+        context: None,
+        deferred: false,
+        diagnostics: Vec::new(),
+    });
+    fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
+    Ok(graph_path)
+}

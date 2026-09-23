@@ -146,6 +146,24 @@ validated backup) instead of querying it. `compass store status` intentionally
 keeps the cheaper digest-and-integrity check and does not claim semantic
 validation.
 
+### TypeScript path aliases and file-shaped path input
+
+A TypeScript or JavaScript project that is the `extends` base of another
+project keeps its own `compilerOptions.paths` when it declares `files` or
+`include`. Only a base config without its own file set stays excluded, and a
+same-directory project that extends another config still takes precedence over
+the config it extends. Graphs for such repositories therefore gain import,
+export, reference, and call edges that were previously missing; rebuild the
+graph to publish them. Unchanged behavior is preserved for same-depth configs
+that both own an importer: resolution still fails closed rather than guessing.
+
+`compass path` resolves a file-shaped endpoint to the file's content node when
+the file node itself carries no relationships and exactly one module node owns
+the same source file. The answer names the module and its source file, so the
+endpoint remains identifiable. Languages that already connect their file nodes
+(for example Go, Python, and Rust) keep the existing behavior, and an ambiguous
+or multi-module file still fails closed.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

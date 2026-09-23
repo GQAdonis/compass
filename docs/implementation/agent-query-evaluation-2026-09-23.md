@@ -9,16 +9,17 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 38/41 | 24/41 |
+| Source-reviewed answers passed | 38/41 | 19/41 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
-| Median tokens per answered question | 432 | 121 |
+| Median tokens per answered question | 432 | 278 |
 | Broad natural questions answered | 2/5 | 5/5 |
 | Paged caller questions answered | 2/2 | 0/2 |
 
 Compass passed every `callers`, `explain_source`, `file_path`, and `negative`
-row, plus both `paged_callers` rows; Graphify passed none of the `callers`,
-`paged_callers`, or `explain_source` rows. The
+row, plus every `path` and both `paged_callers` rows; Graphify passed none of
+the `callers`, `paged_callers`, `explain_source`, or `file_path` rows and only
+two of four `path` rows. The
 remaining Compass failures are natural-language `broad` questions on Gson,
 Zod, and Axum, where discovery seeded surface terms such as `json`, `object`,
 `input`, and `request` instead of the domain symbols `toJson`, `JsonWriter`,
@@ -44,6 +45,13 @@ approximation both CLIs document for their text budgets. A `broad` question
 that misses first uses the tool's documented continuation: Compass follows the
 `--cursor` ledger, Graphify re-runs with a four-times larger budget. Both the
 first-page cost and the total cost of the reviewed workflow are recorded.
+
+Path-shaped oracles also reject a tool's own failure text. That check was added
+after the first replay showed Graphify "passing" file-path rows by printing
+`No directed path found between A and B`: both endpoint names appeared in the
+answer, so an anchor-only judge scored a failure as a pass. The corrected
+oracle fails any `path` or `file_path` row whose output contains
+`NO PATH FOUND` or `No directed path found`.
 
 The `paged_callers` questions ask for the same caller sets as `callers` but
 consume the paged text output: a 400-token `--text-budget` and the
@@ -81,6 +89,21 @@ Four defects surfaced by the suite were fixed in this change:
   snapshot and applies the strict `compass.graph/1` validation, so the
   historical artifact fails with the offending edge IDs while
   `compass store status` keeps the cheaper digest-and-integrity check.
+- A TypeScript project whose configuration other projects `extends` lost all of
+  its own `paths` aliases: the shared config was excluded from alias selection
+  even though it declared its own `include`. On `rivet-dev/actors/frontend`
+  (802 aliased imports) `<root>/tsconfig.json` is extended by
+  `apps/inspector/tsconfig.json`, and before the fix the graph had zero
+  incoming edges to `src/lib/errors.ts` from `@/lib/errors` importers. The
+  config is now selectable when it declares its own `files`/`include`, a
+  same-directory extending project still wins over its base, and the corpus
+  gained 3 module imports plus 11 symbol-level usages.
+- File-shaped path input could still fail after that fix because TypeScript
+  publishes an isolated metadata `file` node next to the `module` node that
+  carries the file's contents. `compass path <file> <file>` now resolves an
+  isolated file node to the single module that owns the same source file and
+  shows both names, so `compass path src/app.tsx src/lib/errors.ts` reports the
+  one-hop `app --imports--> errors` path on that corpus.
 
 `compass explain --source` was added so the explain path can return the
 declaration text itself. The excerpt is read below `--root`, bounded by
@@ -124,7 +147,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-fresh/runs/20260923T090016Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-final/runs/20260923T093754Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

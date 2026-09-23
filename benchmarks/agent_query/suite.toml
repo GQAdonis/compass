@@ -55,6 +55,7 @@ graphify = ["path", ".ExecuteC()", ".Find()"]
 expect = "answer"
 required = ["ExecuteC", "Find"]
 judgment = "ExecuteC calls c.Find(args) at command.go:1123."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "cobra-file-path"
@@ -65,6 +66,7 @@ graphify = ["path", "command.go", "args.go"]
 expect = "answer"
 required = ["command.go", "args.go"]
 judgment = "command.go and args.go are connected through legacyArgs (args.go:80) called from ExecuteC."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "cobra-ambiguous-execute"
@@ -173,6 +175,7 @@ graphify = ["path", ".wsgi_app()", ".dispatch_request()"]
 expect = "answer"
 required = ["wsgi_app", "dispatch_request"]
 judgment = "wsgi_app calls full_dispatch_request (src/flask/app.py:1600) which calls dispatch_request (line 1019)."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "flask-file-path"
@@ -183,6 +186,7 @@ graphify = ["path", "src/flask/app.py", "src/flask/ctx.py"]
 expect = "answer"
 required = ["app.py", "ctx.py"]
 judgment = "app.py imports AppContext from ctx.py (src/flask/app.py:34)."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "flask-ambiguous-dispatch-request"
@@ -281,6 +285,7 @@ graphify = ["path", "gson/src/main/java/com/google/gson/Gson.java", "gson/src/ma
 expect = "answer"
 required = ["Gson.java", "JsonWriter.java"]
 judgment = "Gson.java constructs JsonWriter and TypeAdapter write paths reach it."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "gson-ambiguous-fromjson"
@@ -380,6 +385,7 @@ graphify = ["path", ".parse()", ".safeParse()"]
 expect = "answer"
 required = ["parse", "safeParse"]
 judgment = "packages/zod/src/v4/classic/schemas.ts:71 declares ZodType.parse and line 72 declares ZodType.safeParse."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "zod-file-path"
@@ -390,6 +396,7 @@ graphify = ["path", "packages/zod/src/v4/classic/schemas.ts", "packages/zod/src/
 expect = "answer"
 required = ["schemas.ts", "parse.ts"]
 judgment = "classic/schemas.ts imports ./parse.js at line 11."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "zod-ambiguous-parse"
@@ -486,6 +493,7 @@ graphify = ["path", ".route()", ".call_with_state()"]
 expect = "answer"
 required = ["route", "call_with_state"]
 judgment = "Router::route builds PathRouter state that Service::call and call_with_state consume."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "axum-file-path"
@@ -496,6 +504,7 @@ graphify = ["path", "src/routing/mod.rs", "src/routing/method_routing.rs"]
 expect = "answer"
 required = ["mod.rs", "method_routing.rs"]
 judgment = "Router (src/routing/mod.rs) stores MethodRouter values from src/routing/method_routing.rs."
+forbidden = ["NO PATH FOUND", "No directed path found"]
 
 [[repository.question]]
 id = "axum-ambiguous-route"

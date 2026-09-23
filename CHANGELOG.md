@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Resolve TypeScript `paths` aliases for a project that other projects
+  `extends`. A shared root `tsconfig.json` that declares its own `files` or
+  `include` is a project for those files again, while a same-directory
+  extending project still takes precedence over its base. On a real
+  `rivet-dev/actors` frontend checkout this restores import and usage edges for
+  its `<root>/tsconfig.json` mappings.
+
+- Let `compass path` accept file-shaped input for languages that publish an
+  isolated file node beside the module that carries the file's contents. An
+  isolated file node resolves to the single module that owns the same source
+  file, and the answer names both the module and the file path.
+
 - Add bounded text pagination to the typed lookups. `ask`, `search`,
   `callers`, `callees`, `impact`, `explore`, and `node` accept
   `--text-budget` and `--cursor`; each text page ends with a

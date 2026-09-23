@@ -312,32 +312,50 @@ pub fn render_shortest_path_with_limit(
     }
     let source = resolve_exact_path_endpoint(graph, source_query)?;
     let target = resolve_exact_path_endpoint(graph, target_query)?;
-    if source == target {
+    if source.index == target.index {
         return Err(format!(
             "'{source_query}' and '{target_query}' both resolved to the same node '{}'. Use a more specific label or the exact node ID.",
-            graph.node(source).id
+            graph.node(source.index).id
         ));
     }
-    let weighted = ranked_path_undirected(graph, source, target, max_depth, PathRanking::Weighted);
+    let weighted = ranked_path_undirected(
+        graph,
+        source.index,
+        target.index,
+        max_depth,
+        PathRanking::Weighted,
+    );
     let Some(path) = weighted.path else {
         return Ok(format!(
             "Source resolved: {}\nTarget resolved: {}\nNO PATH FOUND to resolved target (depth limit {max_depth}, {} nodes visited)",
-            rendered_path_endpoint(graph, source),
-            rendered_path_endpoint(graph, target),
+            rendered_path_endpoint(graph, source.index, source.note.as_deref()),
+            rendered_path_endpoint(graph, target.index, target.note.as_deref()),
             weighted.visited_nodes,
         ));
     };
     let hops = path.nodes.len().saturating_sub(1);
     let mut lines = vec![
-        format!("Source resolved: {}", rendered_path_endpoint(graph, source)),
-        format!("Target resolved: {}", rendered_path_endpoint(graph, target)),
+        format!(
+            "Source resolved: {}",
+            rendered_path_endpoint(graph, source.index, source.note.as_deref())
+        ),
+        format!(
+            "Target resolved: {}",
+            rendered_path_endpoint(graph, target.index, target.note.as_deref())
+        ),
         format!(
             "Best path (weighted, {hops} hops, weight {}):\n  {}",
             path.weight,
             render_graph_path(graph, &path)
         ),
     ];
-    let shorter = ranked_path_undirected(graph, source, target, max_depth, PathRanking::Hops);
+    let shorter = ranked_path_undirected(
+        graph,
+        source.index,
+        target.index,
+        max_depth,
+        PathRanking::Hops,
+    );
     if let Some(alternative) = shorter.path
         && alternative.edges != path.edges
         && alternative.nodes.len() < path.nodes.len()
@@ -354,15 +372,28 @@ pub fn render_shortest_path_with_limit(
     Ok(lines.join("\n"))
 }
 
-fn rendered_path_endpoint(graph: &Graph, index: NodeIndex) -> String {
+fn rendered_path_endpoint(graph: &Graph, index: NodeIndex, note: Option<&str>) -> String {
     let node = graph.node(index);
-    format!("{} [id={}]", node.label(), node.id)
+    match note {
+        Some(note) if !note.is_empty() => {
+            format!("{} ({note}) [id={}]", node.label(), node.id)
+        }
+        _ => format!("{} [id={}]", node.label(), node.id),
+    }
 }
 
-fn resolve_exact_path_endpoint(graph: &Graph, query: &str) -> Result<NodeIndex, String> {
+fn resolve_exact_path_endpoint(graph: &Graph, query: &str) -> Result<PathEndpoint, String> {
     let matches = find_exact_nodes(graph, query);
     match matches.as_slice() {
-        [node] => Ok(*node),
+        [node] => Ok(file_content_endpoint(graph, *node)
+            .map(|(index, note)| PathEndpoint {
+                index,
+                note: Some(note),
+            })
+            .unwrap_or(PathEndpoint {
+                index: *node,
+                note: None,
+            })),
         [] => Err(format!("NO EXACT MATCH for {query:?}")),
         _ => {
             let mut candidates = matches
@@ -394,6 +425,50 @@ fn resolve_exact_path_endpoint(graph: &Graph, query: &str) -> Result<NodeIndex, 
             Err(lines.join("\n"))
         }
     }
+}
+
+/// Resolve one file-path endpoint to the node that carries the file's content.
+///
+/// Languages whose extractor publishes a module node for a file leave the
+/// metadata file node without relationships. A path-shaped question then names
+/// the file but has nothing to traverse, so the module that owns the same
+/// source file becomes the endpoint. The fallback only applies to an isolated
+/// file node and only when exactly one content node can stand for the file.
+fn file_content_endpoint(graph: &Graph, index: NodeIndex) -> Option<(NodeIndex, String)> {
+    let node = graph.node(index);
+    if node.kind_name() != "file" {
+        return None;
+    }
+    if graph.outgoing_edges(index).next().is_some() || graph.incoming_edges(index).next().is_some()
+    {
+        return None;
+    }
+    let source = node.string("source_file");
+    if source.is_empty() {
+        return None;
+    }
+    let mut modules = graph
+        .nodes()
+        .filter(|(candidate, node)| {
+            *candidate != index
+                && node.kind_name() == "module"
+                && node.string("source_file") == source
+        })
+        .map(|(candidate, _)| candidate)
+        .collect::<Vec<_>>();
+    modules.sort_by(|left, right| graph.node(*left).id.cmp(&graph.node(*right).id));
+    modules.dedup();
+    match modules.as_slice() {
+        [module] => Some((*module, source)),
+        _ => None,
+    }
+}
+
+/// One resolved path endpoint and an optional display note.
+#[derive(Clone, Debug)]
+struct PathEndpoint {
+    index: NodeIndex,
+    note: Option<String>,
 }
 
 /// Bound for listing ambiguous path endpoints in one error message.
