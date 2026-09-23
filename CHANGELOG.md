@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Read the operation verb's direction when a question names no preposition.
+  "how does gson read json into an object" spells the entry point `fromJson`
+  even though the question never writes "from json", and "convert a json schema
+  into a zod schema" names `fromJSONSchema`. Discovery now derives each
+  `from`/`to` compound from the operation verb's conventional direction -
+  reading and loading name their source `from<Object>`, writing and serializing
+  name their destination `to<Object>`, conversions and transformations name both
+  - and only admits a compound the bounded name index declares. A preposition
+  the question already spells is never re-derived, so "serialize an object to
+  json" stays `toJson` alone, and an infinitive "how to parse json" keeps the
+  verb's own direction. Gson now answers the read-JSON evaluation question from
+  `Gson.fromJson` and Zod the JSON-Schema question from `fromJSONSchema`.
+
 - Lead `compass impact` with the dependents that name the symbol. The reverse
   walk now visits edges that terminate on the expanded node before edges that
   only reach its containing owner, and ranks the rest by relation strength, so

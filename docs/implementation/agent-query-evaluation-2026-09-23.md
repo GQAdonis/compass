@@ -31,7 +31,7 @@ entry point and needs a semantic synonym (`serialize` to `toJson`).
 
 The second suite, `benchmarks/agent_query/suite_v2.toml`, asks 50 further
 questions under a blackbox fairness contract and reaches a much closer result
-(48/50 versus 44/50); it is reported in "Second suite" below.
+(50/50 versus 44/50); it is reported in "Second suite" below.
 
 ## Design
 
@@ -244,16 +244,16 @@ projection rows. It contributes ten questions per repository.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 48/50 | 44/50 |
-| Questions both tools answered | 42 | 42 |
-| Questions only that tool answered | 6 | 2 |
+| Source-reviewed answers passed | 50/50 | 44/50 |
+| Questions both tools answered | 44 | 44 |
+| Questions only that tool answered | 6 | 0 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 91% |
-| Median tokens, own passing rows | 544 | 98 |
-| Median tokens, the 42 paired answers | 498 | 88 |
+| Median tokens, own passing rows | 550 | 98 |
+| Median tokens, the 44 paired answers | 560 | 98 |
 
 Paired tokens matter more than the per-tool medians: the first number prices
-different rows for each tool, while the paired number compares only the 42
+different rows for each tool, while the paired number compares only the 44
 questions where the same source-reviewed oracle passed for both. The runner now
 reports both, and `run.json` carries the per-kind split.
 
@@ -268,7 +268,32 @@ reports both, and `run.json` carries the per-kind split.
 | `file_path` | 5/5 | 4/5 | 92 / 32 |
 | `ambiguity` | 5/5 | 5/5 | 1967 / 165 |
 | `negative` | 5/5 | 5/5 | 112 / 13 |
-| `broad` | 3/5 | 5/5 | 588 / 595 |
+| `broad` | 5/5 | 5/5 | 597 / 566 |
+
+### Closing the broad-question gap
+
+Two passes were needed after the suite was audited. The first run of the
+corrected suite left two `broad` rows failing for Compass, both of them
+questions that name the operation and its object without the preposition:
+`how does gson read json into an object` seeded `LazilyParsedNumber::readObject`
+and `JsonObject::get` and never reached `Gson.fromJson`, and `how does zod
+convert a json schema into a zod schema` seeded `toJSONSchema` - the *inverse*
+operation - and never reached `fromJSONSchema` or `convertSchema`.
+
+`phrase_compound_variants` previously derived compounds only from a
+preposition and its object ("serialize an object to json" -> `tojson`, "read a
+payload from json" -> `fromjson`). It now also reads the operation verb's
+conventional direction, keeps only compounds the bounded name index declares,
+and treats the object before `into`/`to` as the source and the object after it
+as the destination, so a conversion cannot be inverted. A preposition the
+question already spells is never re-derived, and an infinitive `to` is not a
+direction marker, so the earlier phrasings keep their previous answers; the
+first suite still passes 47/47 for Compass and 22/47 for Graphify.
+
+Both rows now pass: Gson answers from `Gson.fromJson` in 1,169 tokens across one
+continuation, and Zod answers from `fromJSONSchema` and `convertSchema` in 597
+tokens with no continuation. The suite is 50/50 for Compass against 44/50 for
+Graphify, and `broad` is a tie (5/5 each, 597 versus 566 median tokens).
 
 ### Suite audit
 
@@ -297,28 +322,20 @@ verification:
 
 ### Where Graphify wins
 
-- **Broad natural questions: 5/5 versus 3/5.** Graphify's query is keyword BFS
-  over node labels, so a question that names the domain terms ("serialize",
-  "json schema", "dispatch") reaches both ends of the reviewed chain. Compass's
-  discovery router seeds the operation it recognizes and misses the other half:
-  for "how does gson read json into an object" it seeded
-  `LazilyParsedNumber::readObject` and `JsonObject::get` and never reached the
-  reviewed `Gson.fromJson` entry points, and for "how does zod convert a json
-  schema into a zod schema" it never reached `fromJSONSchema` or
-  `convertSchema`. Compass does reach the Cobra resolver question at the
-  reviewed 600-token floor, but it needs three cursor pages and 2,356 tokens to
-  do it, against one 1,755-token Graphify answer - at the first pass's
-  400-token budget that row failed outright.
-- **Tokens.** Graphify answers the median paired question with 88 tokens
-  against Compass's 498. The gap is widest on `negative` (13 versus 112, where
+- **Nothing on correctness.** After the two routing fixes below, Compass passes
+  every kind this suite asks (50/50); Graphify's six failures are the five
+  source-text rows it cannot answer by construction and one Axum file-path row.
+  Graphify's remaining edge is cost, not coverage.
+- **Tokens.** Graphify answers the median paired question with 98 tokens
+  against Compass's 560. The gap is widest on `negative` (13 versus 112, where
   the agent envelope is the whole cost) and narrowest on `ambiguity`
-  (165 versus 1967).
+  (165 versus 1967); on `broad` it is 566 versus 597.
 - **Latency.** Compass's bounded pages cost wall-clock time: the Cobra impact
   row took 31 seconds, the Zod impact and caller rows 48-51 seconds, and the
   Gson caller row 20 seconds, against 130-360 ms for every Graphify call. The
   impact median is 30.9 seconds against 151 ms.
 
-### What the re-verification fixed
+### The impact gap the suite found
 
 The first pass of this suite failed `cobra2-impact-parseflags` for Compass:
 `compass impact "cobra.Command::ParseFlags" --max-depth 3` never named the
@@ -351,6 +368,13 @@ its first page. The judgment records that reasoning.
 
 ### Where Compass wins
 
+- **Every kind this suite asks (50/50).** Compass answers all fifty
+  source-reviewed questions, including the five declaration-source rows
+  Graphify cannot answer by construction, the five ambiguous-name rows, the two
+  broad questions the first pass of this suite lost (read JSON into an object,
+  convert a JSON Schema into a Zod schema), and the Axum file pair where
+  Graphify's `path` loses its own labels. Graphify's remaining advantage is the
+  price of an answer, not whether it is reachable.
 - **Declaration source: 5/5 versus 0/5.** Graphify's graph stores a file and a
   line per node and no declaration text, so its `explain` cannot return the
   body it points at: every code node in the five graphs carries only `id`,
@@ -387,7 +411,7 @@ differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final8/runs/20260923T120351Z/`.
 The second suite's evidence lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-final2/runs/20260923T173454Z/`
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-actors/runs/20260923T180127Z/`
 and uses the same checkouts, pinned separately in
 `benchmarks/agent_query/suite_v2.toml`.
 

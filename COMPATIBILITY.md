@@ -257,6 +257,18 @@ their spelling. Each concept is also guaranteed one candidate slot before
 another concept's postings can fill the pool. The response schema, limits, and
 candidate budgets are unchanged.
 
+Discovery also reads the operation verb's direction when the question spells no
+preposition: a reading or loading verb names its source `from<Object>`, a
+writing or serializing verb names its destination `to<Object>`, and a
+conversion or transformation names both, with the object before `into`/`to`
+treated as the source and the object after it as the destination. Only
+compounds the bounded name index declares are admitted, a preposition the
+question already spells is never re-derived, and an infinitive `to` is not a
+direction marker, so previously answered phrasings keep their seeds. The
+response schema, limits, and candidate budgets are unchanged; the ranking terms
+of a question that names an operation and its object can now include the
+compound the graph declares (`read json into an object` → `fromjson`).
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

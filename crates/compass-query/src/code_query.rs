@@ -3904,6 +3904,15 @@ pub(crate) fn agent_noun_variants(term: &str) -> Vec<String> {
 /// languages; "read a payload from json" spells it `fromJson`. Only the two
 /// conventional prepositions are tried, and the caller verifies each compound
 /// against the graph before ranking it.
+///
+/// A question may also name the operation and its object without the
+/// preposition ("read json into an object", "convert a json schema into a zod
+/// schema"). The operation verb then states which preposition the identifier
+/// conventionally carries: reading names its source `from<Object>`, writing
+/// names its destination `to<Object>`, and a conversion names both ends. A
+/// preposition the question already spelled is never re-derived, so an explicit
+/// "serialize an object to json" stays `toJson` alone. Every derived compound
+/// is still admitted only when the graph declares it.
 pub(crate) fn phrase_compound_variants(question: &str) -> Vec<String> {
     let words = question
         .split_whitespace()
@@ -3916,14 +3925,201 @@ pub(crate) fn phrase_compound_variants(question: &str) -> Vec<String> {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
     let mut variants = Vec::new();
+    let mut spelled = Vec::new();
     for pair in words.windows(2) {
         if matches!(pair[0].as_str(), "to" | "from") {
             variants.push(format!("{}{}", pair[0], pair[1]));
+            if !spelled.contains(&pair[0].as_str()) {
+                spelled.push(pair[0].as_str());
+            }
+        }
+    }
+    let families = compound_families(&words);
+    if !families.is_empty() {
+        match direction_marker(&words) {
+            // "convert a json schema into a zod schema": the objects before the
+            // marker are the source and the objects after it are the
+            // destination, so the derivation cannot invert the operation.
+            Some(marker) => {
+                if families.contains(&"from") && !spelled.contains(&"from") {
+                    for object in question_object_phrases(&words[..marker]) {
+                        variants.push(format!("from{object}"));
+                    }
+                }
+                if families.contains(&"to") && !spelled.contains(&"to") {
+                    for object in question_object_phrases(&words[marker.saturating_add(1)..]) {
+                        variants.push(format!("to{object}"));
+                    }
+                }
+            }
+            None => {
+                for object in question_object_phrases(&words) {
+                    for family in &families {
+                        if spelled.contains(family) {
+                            continue;
+                        }
+                        variants.push(format!("{family}{object}"));
+                    }
+                }
+            }
         }
     }
     variants.sort();
     variants.dedup();
     variants
+}
+
+/// Index of the word that introduces a conversion's destination.
+///
+/// "into" always introduces one. "to" only does when an object precedes it -
+/// "serialize an object to json" - rather than an infinitive - "how to parse
+/// json" - which must keep the verb's own direction.
+fn direction_marker(words: &[String]) -> Option<usize> {
+    for (index, word) in words.iter().enumerate() {
+        if word == "into" {
+            return Some(index);
+        }
+        if word == "to" {
+            let Some(previous) = index.checked_sub(1).and_then(|i| words.get(i)) else {
+                continue;
+            };
+            if previous.chars().count() >= 3 && !compound_word_excluded(previous) {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+/// The identifier prefixes the question's operation verbs conventionally carry.
+fn compound_families(words: &[String]) -> Vec<&'static str> {
+    let mut families = Vec::new();
+    for verb in words {
+        let verb = verb.as_str();
+        if COMPOUND_FROM_VERBS.contains(&verb) && !families.contains(&"from") {
+            families.push("from");
+        }
+        if COMPOUND_TO_VERBS.contains(&verb) && !families.contains(&"to") {
+            families.push("to");
+        }
+    }
+    families
+}
+
+/// Operation verbs whose identifiers name their source with a `from` prefix.
+const COMPOUND_FROM_VERBS: &[&str] = &[
+    "read",
+    "reads",
+    "reading",
+    "load",
+    "loads",
+    "loading",
+    "parse",
+    "parses",
+    "parsing",
+    "decode",
+    "decodes",
+    "decoding",
+    "deserialize",
+    "deserializes",
+    "deserializing",
+    "ingest",
+    "ingests",
+    "ingesting",
+    "import",
+    "imports",
+    "importing",
+    "convert",
+    "converts",
+    "converting",
+    "migrate",
+    "migrates",
+    "migrating",
+    "translate",
+    "translates",
+    "translating",
+    "transform",
+    "transforms",
+    "transforming",
+    "turn",
+    "turns",
+    "turning",
+];
+
+/// Operation verbs whose identifiers name their destination with a `to` prefix.
+const COMPOUND_TO_VERBS: &[&str] = &[
+    "write",
+    "writes",
+    "writing",
+    "save",
+    "saves",
+    "saving",
+    "serialize",
+    "serializes",
+    "serializing",
+    "encode",
+    "encodes",
+    "encoding",
+    "export",
+    "exports",
+    "exporting",
+    "emit",
+    "emits",
+    "emitting",
+    "dump",
+    "dumps",
+    "dumping",
+    "convert",
+    "converts",
+    "converting",
+    "migrate",
+    "migrates",
+    "migrating",
+    "translate",
+    "translates",
+    "translating",
+    "transform",
+    "transforms",
+    "transforming",
+    "turn",
+    "turns",
+    "turning",
+];
+
+/// Words that never spell an `<operation><object>` identifier.
+const COMPOUND_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "does", "for", "from", "how", "in", "into",
+    "is", "it", "its", "of", "on", "or", "that", "the", "their", "them", "then", "these", "this",
+    "to", "use", "uses", "using", "what", "when", "where", "which", "who", "why", "with",
+];
+
+/// Single nouns and adjacent noun pairs a compound identifier can be built from.
+fn question_object_phrases(words: &[String]) -> Vec<String> {
+    let mut phrases = Vec::new();
+    for word in words {
+        if word.chars().count() >= 3 && !compound_word_excluded(word) {
+            phrases.push(word.clone());
+        }
+    }
+    for pair in words.windows(2) {
+        if pair
+            .iter()
+            .any(|word| word.chars().count() < 3 || compound_word_excluded(word))
+        {
+            continue;
+        }
+        phrases.push(format!("{}{}", pair[0], pair[1]));
+    }
+    phrases.sort();
+    phrases.dedup();
+    phrases
+}
+
+/// Stop words and operation verbs never spell an object inside a compound.
+fn compound_word_excluded(word: &str) -> bool {
+    COMPOUND_STOP_WORDS.contains(&word)
+        || COMPOUND_FROM_VERBS.contains(&word)
+        || COMPOUND_TO_VERBS.contains(&word)
 }
 
 fn validate_search_term_count(terms: &[String]) -> Result<(), QueryError> {
@@ -4360,7 +4556,8 @@ mod adjacency_tests {
 mod fuzzy_term_variant_tests {
     use super::{
         FuzzyLookupCache, MAX_RECALL_FUZZY_VARIANTS_PER_TERM, MAX_RECALL_FUZZY_VARIANTS_TOTAL,
-        PreparedSearchQuery, SearchQueryCache, recall_fuzzy_term_variants,
+        PreparedSearchQuery, SearchQueryCache, phrase_compound_variants,
+        recall_fuzzy_term_variants,
     };
 
     #[test]
@@ -4416,6 +4613,71 @@ mod fuzzy_term_variant_tests {
             assert!(variants.iter().any(|variant| variant == expected));
             assert!(variants.len() <= MAX_RECALL_FUZZY_VARIANTS_TOTAL);
         }
+    }
+
+    #[test]
+    fn compound_variants_keep_the_verbatim_preposition_pairs() {
+        let variants = phrase_compound_variants("serialize an object to json");
+        assert!(
+            variants.iter().any(|variant| variant == "tojson"),
+            "{variants:?}"
+        );
+        let variants = phrase_compound_variants("read a payload from json");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+    }
+
+    #[test]
+    fn compound_variants_follow_the_operation_verb_without_a_preposition() {
+        // "read json into an object" asks for the reading direction, which the
+        // graph spells `fromJson`.
+        let variants = phrase_compound_variants("how does gson read json into an object");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+        // A conversion names both ends: the JSON Schema side is the source and
+        // `toJSONSchema` the destination of the inverse operation.
+        let variants =
+            phrase_compound_variants("how does zod convert a json schema into a zod schema");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjsonschema"),
+            "{variants:?}"
+        );
+        assert!(
+            !variants.iter().any(|variant| variant == "tojsonschema"),
+            "the object before `into` is the source, not the destination: {variants:?}"
+        );
+        // The inverse question keeps the other direction.
+        let variants =
+            phrase_compound_variants("how does zod turn a zod schema into a json schema");
+        assert!(
+            variants.iter().any(|variant| variant == "tojsonschema"),
+            "{variants:?}"
+        );
+        // An infinitive `to` is not a direction marker.
+        let variants = phrase_compound_variants("how to parse json");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+        // A question without an operation verb adds no compound family.
+        assert!(phrase_compound_variants("how does axum route a request").is_empty());
+    }
+
+    #[test]
+    fn compound_variants_never_use_an_operation_verb_as_its_own_object() {
+        let variants = phrase_compound_variants("how does gson read json");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+        assert!(
+            !variants.iter().any(|variant| variant == "fromread"),
+            "{variants:?}"
+        );
     }
 
     fn prepared(term: &str) -> PreparedSearchQuery {
