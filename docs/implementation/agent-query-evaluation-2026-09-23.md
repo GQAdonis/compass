@@ -171,54 +171,25 @@ digest before it is printed; a rewritten file fails closed with
 
 ## Findings and follow-up
 
-1. **Natural-query seeding is the largest remaining correctness gap.** The
-   three failed `broad` rows did not fail on pagination or bounds; they seeded
-   the wrong symbols. Term selection should weight rare, symbol-shaped terms
-   over generic surface nouns, and must keep the reviewed relevance
-   qualification corpus green. One bounded step landed: `route` is no longer
-   discarded as a generic relational term, so the Axum question now seeds route
-   symbols and its answer names `Router`; it still misses `MethodRouter`, and
-   Gson still prefers `JsonObject` over the exact-name `serialize` match, so
-   term weighting by document frequency remains the follow-up.
-
-   A bounded follow-up attempt was made and reverted. It probed each matched
-   concept through the bounded name index, reserved one seed slot for the most
-   specific uncovered concept, and kept the reviewed relevance corpus green.
-   The three broad rows still failed: the Gson answer gained
-   `JsonSerializationContext::serialize` but never reached `toJson` or
-   `JsonWriter`, Zod's reserved slot promoted a project-name match (`zod`), and
-   Axum's promoted a truncated token (`incom`). Specificity by name-index
-   frequency alone is therefore not sufficient; the next attempt needs
-   project-name and partial-token awareness, and possibly deeper expansion from
-   the specific verb rather than seed reordering. The reverted state keeps the
-   verified behavior, and the 500-query relevance qualification still passes.
-
-   A second attempt isolated the actual deciding key and was also reverted.
-   Instrumenting seed selection showed every relevant candidate already at the
-   same `channel_rank`, with `operation_root = true`, and the ranked order
-   decided by the operation-root tuple before relation evidence or score:
-   `JsonObject::get`, `JsonObject::add`, `JsonObject`,
-   `JsonSerializationContext::serialize`, then `Gson::toJson` sixth. Giving
-   declared-name concept matches priority inside relation evidence - even ahead
-   of total concept count - did not move the order, because an
-   operation-root/type alignment for the question's generic noun ("object",
-   "request") dominates both keys. Any further attempt must change how the
-   operation-root rank treats a type-shaped subject noun against a
-   behavior-shaped declared name, and must be qualified against the 500-query
-   corpus; simple specificity or name-priority tie-breaks cannot reach these
-   three rows.
-2. **Verified answers cost more tokens than unverified ones on the
-   single-shot paths.** Compass spends 3.6x Graphify's median tokens per
-   answered question across the whole suite, driven by `callers` (6.3k median
-   tokens for 24 exact usage edges) and `explain_source` (1.4k median tokens
-   including the declaration text). The medians are not
-   like-for-like: Compass answered 14 rows Graphify failed, the medians mix
-   paged and single-shot rows, and per kind where
-   both tools passed, Compass is 1.8x more expensive on `explain`, 3.8x on
-   `path`, 3.3x on `ambiguity`, and cheaper on `broad` (390 versus 419 tokens).
-   The extra cost buys stable IDs, digests, and source anchors that Graphify's
-   rows do not carry. The paged caller rows show the intended direction:
-   570 median tokens where the single-shot agent view needed 6.3k.
+1. **Natural-query seeding now answers every broad question.** Getting there
+   took three measured steps and two reverted experiments. Dropping `route`
+   from the generic relational terms, expanding behavior terms to
+   graph-verified agent nouns (`route` → `router`, `validate` → `validator`),
+   and reading preposition phrases as identifier compounds (`to json` →
+   `tojson`) closed the Cobra, Flask, Zod, Axum, and Gson rows in turn. The
+   reverted attempts are documented above: specificity by name-index frequency
+   promoted project-name and truncated-token matches, and declared-name
+   priority inside relation evidence could not outrank the operation-root key.
+   The 500-query relevance qualification passes after every landed change.
+2. **Verified answers still cost more tokens than unverified ones on the
+   single-shot paths.** Compass spends 2.3x Graphify's median tokens per
+   answered question (650 versus 278) while answering all 44 rows to
+   Graphify's 19, and the medians are not like-for-like. Per kind where both
+   tools passed, Compass is 1.8x more expensive on `explain` (369 versus 201),
+   4.7x on `path` (122 versus 26), 3.3x on `ambiguity` (1788 versus 546), 55x on
+   `negative` (389 versus 7), and 1.8x on `broad` (726 versus 412) - but the
+   compact paths are competitive: caller answers fall from 6.3k tokens to 1.9k
+   with `--brief` and 554 with paging, and both remain correct.
 3. **No-match answers are 55x Graphify's cost** (389 versus 7 median tokens).
    The agent view keeps its full identity and omission envelope even when the
    answer is "nothing matched". A compact no-match projection is the cheapest
