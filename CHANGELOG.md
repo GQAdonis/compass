@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Bound every typed query with a deadline. `ask`, `search`, `callers`,
+  `callees`, `impact`, `explore`, and `node` accept `--timeout-ms <N>`
+  (default 60000, maximum 600000), checked between resolution, candidate,
+  relationship, impact, and path-expansion steps. An expired deadline fails
+  with a typed `code_query_timeout` error and an actionable hint instead of
+  running until it finishes, and one deadline covers a paged or widened
+  command rather than each retry.
+
 - Stop discarding `route`/`routes`/`routing` from natural discovery terms.
   Those words name the subject in routing questions, so a question such as
   "how does axum route an incoming request" now seeds route symbols instead of

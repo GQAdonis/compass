@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use compass_model::query_contract::{
     CallRequest, CodeQueryLimits, CodeQueryResponse, ExploreRequest, ImpactRequest,
@@ -9,10 +10,16 @@ use compass_output::{
     build_code_query_view, decode_agent_text_page_cursor, render_code_query_text_page,
 };
 use compass_query::{
-    EngineSelection, NaturalQueryRequest, open_with_engine, open_with_verified_document,
+    EngineSelection, NaturalQueryRequest, QueryError, QueryErrorKind, open_with_engine,
+    open_with_verified_document,
 };
 
 use crate::{Outcome, SharedOutputFormat, parse_shared_output_format};
+
+/// Default typed-query deadline.
+const DEFAULT_CODE_QUERY_TIMEOUT_MS: u64 = 60_000;
+/// Hard upper bound for `--timeout-ms` on typed queries.
+const MAX_CODE_QUERY_TIMEOUT_MS: u64 = 600_000;
 
 pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
     let (format, query_args) = match parse_shared_output_format(args, operation) {
@@ -45,10 +52,15 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
     {
         return Outcome::failure(format!("error: {error}"));
     }
+    let timeout = match timeout(&query_args) {
+        Ok(timeout) => timeout,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let deadline = Instant::now() + timeout;
     let result = if format == SharedOutputFormat::Text {
-        execute_paged(operation, &query_args)
+        execute_paged(operation, &query_args, deadline)
     } else {
-        execute(operation, &query_args, 1)
+        execute(operation, &query_args, 1, deadline)
     };
     match result {
         Ok(execution) => {
@@ -103,10 +115,14 @@ const MAX_PAGE_WIDENING_SCALE: u32 = 4;
 /// Every page re-runs the same widening sequence so the entry ledger does not
 /// change between pages: widen the record bounds until the response is
 /// complete or the widening ceiling is reached.
-fn execute_paged(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
+fn execute_paged(
+    operation: &str,
+    args: &[String],
+    deadline: Instant,
+) -> Result<QueryExecution, String> {
     let mut scale = 1_u32;
     loop {
-        let execution = execute(operation, args, scale)?;
+        let execution = execute(operation, args, scale, deadline)?;
         if !execution.response.truncated || scale >= MAX_PAGE_WIDENING_SCALE {
             return Ok(execution);
         }
@@ -114,7 +130,12 @@ fn execute_paged(operation: &str, args: &[String]) -> Result<QueryExecution, Str
     }
 }
 
-fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExecution, String> {
+fn execute(
+    operation: &str,
+    args: &[String],
+    page_scale: u32,
+    deadline: Instant,
+) -> Result<QueryExecution, String> {
     let positional = positional(args);
     let graph_option = option(args, "--graph");
     let revision = option(args, "--at");
@@ -184,7 +205,8 @@ fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExe
         };
         open_with_engine(&graph, program.as_deref(), &cache, engine)
             .map_err(|error| error.to_string())?
-    };
+    }
+    .with_deadline(deadline);
     let limits = limits(args, page_scale)?;
     let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
     let (response, question, operands) = match operation {
@@ -196,7 +218,7 @@ fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExe
                     include_heuristic,
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             (
                 response,
                 Some(question.clone()),
@@ -210,7 +232,7 @@ fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExe
                     query: query.clone(),
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             (response, None, vec![(AgentOperandRole::Query, query)])
         }
         "callers" | "callees" | "impact" => {
@@ -233,7 +255,7 @@ fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExe
                 }),
                 _ => unreachable!(),
             }
-            .map_err(|error| error.to_string())?;
+            .map_err(query_error)?;
             (response, None, vec![(AgentOperandRole::Symbol, symbol)])
         }
         "explore" => {
@@ -245,7 +267,7 @@ fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExe
                     include_heuristic,
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             let mut operands = symbols
                 .into_iter()
                 .map(|symbol| (AgentOperandRole::Symbol, symbol))
@@ -265,7 +287,7 @@ fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExe
                     include_heuristic,
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             (
                 response,
                 None,
@@ -315,6 +337,26 @@ fn limits(args: &[String], page_scale: u32) -> Result<CodeQueryLimits, String> {
     })
 }
 
+/// Parse the bounded typed-query deadline.
+fn timeout(args: &[String]) -> Result<Duration, String> {
+    let value = number(args, "--timeout-ms", DEFAULT_CODE_QUERY_TIMEOUT_MS)?;
+    if value == 0 || value > MAX_CODE_QUERY_TIMEOUT_MS {
+        return Err(format!(
+            "--timeout-ms must be between 1 and {MAX_CODE_QUERY_TIMEOUT_MS}"
+        ));
+    }
+    Ok(Duration::from_millis(value))
+}
+
+/// Render a typed-query failure with an actionable timeout hint.
+fn query_error(error: QueryError) -> String {
+    if error.kind() == QueryErrorKind::Timeout {
+        format!("{error}; raise --timeout-ms or lower --max-nodes/--max-edges")
+    } else {
+        error.to_string()
+    }
+}
+
 fn number<T: std::str::FromStr + Copy>(
     args: &[String],
     name: &str,
@@ -357,6 +399,7 @@ fn positional(args: &[String]) -> Vec<String> {
         "--max-response-bytes",
         "--text-budget",
         "--cursor",
+        "--timeout-ms",
     ];
     let mut values = Vec::new();
     let mut skip = false;

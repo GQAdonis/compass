@@ -104,6 +104,14 @@ Four defects surfaced by the suite were fixed in this change:
   isolated file node to the single module that owns the same source file and
   shows both names, so `compass path src/app.tsx src/lib/errors.ts` reports the
   one-hop `app --imports--> errors` path on that corpus.
+- Typed queries had no wall-clock bound: the slowest reviewed row (Axum
+  `callers`) took 8.3 seconds in release and the debug build took about a
+  minute with no feedback. Every typed command now accepts `--timeout-ms`
+  (default 60000, maximum 600000), armed once per command and checked between
+  resolution, candidate, relationship, impact, and path-expansion steps. An
+  expired deadline fails with `code_query_timeout` and an actionable hint; the
+  focused replay shows no row hitting the default, and the engine-level test
+  proves an expired deadline fails closed.
 
 `compass explain --source` was added so the explain path can return the
 declaration text itself. The excerpt is read below `--root`, bounded by
@@ -151,7 +159,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-final/runs/20260923T093754Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-final/runs/20260923T100359Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

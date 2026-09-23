@@ -2,14 +2,16 @@ mod support;
 
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use compass_graph::GraphSnapshotBuilder;
 use compass_model::query_contract::{
     CodeQueryLimits, CodeQueryOperation, MAX_INDEXED_CANDIDATE_NODES_READ, QueryDiagnosticCode,
+    SearchRequest,
 };
 use compass_query::{
     EngineSelection, NaturalQueryIntent, NaturalQueryRequest, ProfiledCodeQueryResponse,
-    QUERY_EXECUTION_PROFILE_V1, QUERY_PLANNER_PROFILE_V1, QUERY_RANKER_PROFILE_V1,
+    QUERY_EXECUTION_PROFILE_V1, QUERY_PLANNER_PROFILE_V1, QUERY_RANKER_PROFILE_V1, QueryErrorKind,
     open_with_engine, plan_natural_query,
 };
 use compass_store::{STORE_FILE_NAME, STORE_REF_FILE_NAME, SqliteStore};
@@ -98,6 +100,30 @@ fn natural_intents_route_to_typed_operations_with_backend_parity()
             "{question:?} did not return {required_id}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn expired_typed_query_deadline_fails_closed_with_a_typed_timeout()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let engine = open_with_engine(
+        &graph_path,
+        None,
+        &directory.path().join("cache"),
+        EngineSelection::Json,
+    )?
+    .with_deadline(Instant::now());
+    let error = engine
+        .search(SearchRequest {
+            query: "UserService".to_owned(),
+            limits: CodeQueryLimits::default(),
+        })
+        .expect_err("an expired deadline must fail closed");
+    assert_eq!(error.code(), "code_query_timeout");
+    assert_eq!(error.kind(), QueryErrorKind::Timeout);
     Ok(())
 }
 

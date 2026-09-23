@@ -2491,6 +2491,7 @@ mod tests {
             build_generation_identity: "generation".to_owned(),
             search_query_cache: std::sync::Mutex::new(SearchQueryCache::default()),
             fuzzy_lookup_cache: std::sync::Mutex::new(FuzzyLookupCache::default()),
+            deadline: None,
         }
     }
 

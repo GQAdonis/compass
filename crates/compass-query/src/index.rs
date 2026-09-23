@@ -396,6 +396,7 @@ fn open_from_graph_engine(
         build_generation_identity,
         search_query_cache: std::sync::Mutex::new(Default::default()),
         fuzzy_lookup_cache: std::sync::Mutex::new(Default::default()),
+        deadline: None,
     })
 }
 
@@ -421,6 +422,7 @@ fn open_from_local_store(
         build_generation_identity,
         search_query_cache: std::sync::Mutex::new(Default::default()),
         fuzzy_lookup_cache: std::sync::Mutex::new(Default::default()),
+        deadline: None,
     })
 }
 

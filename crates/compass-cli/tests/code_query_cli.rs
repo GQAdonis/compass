@@ -1002,6 +1002,46 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
 }
 
 #[test]
+fn typed_queries_report_an_expired_deadline_and_still_answer_within_one()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let graph_arg = graph.as_os_str().to_owned();
+    let expired = run(
+        Frontend::Compass,
+        [
+            OsString::from("search"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg.clone(),
+            OsString::from("--timeout-ms"),
+            OsString::from("1"),
+        ],
+    );
+    assert_ne!(expired.code, 0);
+    assert!(
+        expired.stderr.contains("exceeded its timeout") && expired.stderr.contains("--timeout-ms"),
+        "{}",
+        expired.stderr
+    );
+
+    let answered = run(
+        Frontend::Compass,
+        [
+            OsString::from("search"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg,
+            OsString::from("--timeout-ms"),
+            OsString::from("60000"),
+        ],
+    );
+    assert_eq!(answered.code, 0, "{}", answered.stderr);
+    assert!(answered.stdout.contains("Target"), "{}", answered.stdout);
+    Ok(())
+}
+
+#[test]
 fn path_accepts_file_shaped_input_when_modules_carry_the_file_content() -> Result<(), Box<dyn Error>>
 {
     let directory = tempfile::tempdir()?;

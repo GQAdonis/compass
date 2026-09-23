@@ -303,6 +303,7 @@ pub struct CodeQueryEngine {
     pub(crate) build_generation_identity: String,
     pub(crate) search_query_cache: Mutex<SearchQueryCache>,
     pub(crate) fuzzy_lookup_cache: Mutex<FuzzyLookupCache>,
+    pub(crate) deadline: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1522,7 +1523,32 @@ fn sort_edge_indices(edges: &mut [usize], graph: &GraphDocument) {
 }
 
 impl CodeQueryEngine {
+    /// Bound every following typed query with an absolute deadline.
+    ///
+    /// The CLI arms one deadline per command and reuses it across retries so a
+    /// paged or widened run stays inside the caller's budget.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Fail with a typed timeout once the armed deadline has passed.
+    pub(crate) fn check_deadline(&self) -> Result<(), QueryError> {
+        if let Some(deadline) = self.deadline
+            && Instant::now() >= deadline
+        {
+            return Err(QueryError::new(
+                QueryErrorKind::Timeout,
+                "code_query_timeout",
+                "code query exceeded its timeout",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn search(&self, request: SearchRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.search_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -1531,6 +1557,7 @@ impl CodeQueryEngine {
         request: SearchRequest,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let recall_started = Instant::now();
         let prepared = self.prepare_search_query(&request.query)?;
@@ -1685,6 +1712,7 @@ impl CodeQueryEngine {
         let mut postings_decoded = 0_u64;
         let mut relation_edges_examined = 0_u64;
 
+        self.check_deadline()?;
         (policy.check)()?;
         if candidate_work.remaining > 0
             && candidate_work.begin_probe()
@@ -1717,6 +1745,7 @@ impl CodeQueryEngine {
         }
 
         for term in terms {
+            self.check_deadline()?;
             (policy.check)()?;
             if term.chars().count() < 3 {
                 continue;
@@ -2325,6 +2354,7 @@ impl CodeQueryEngine {
         let mut owner_ids = BTreeSet::from([target.to_owned()]);
         let mut owner_queue = VecDeque::from([target.to_owned()]);
         while let Some(child) = owner_queue.pop_front() {
+            self.check_deadline()?;
             let remaining = RELATIONSHIP_OWNER_SCOPE_LIMIT.saturating_sub(owner_ids.len());
             if remaining == 0 {
                 truncated = true;
@@ -2565,10 +2595,12 @@ impl CodeQueryEngine {
     }
 
     pub fn callers(&self, request: CallRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.call_neighbors_instrumented(request, true, &mut QueryInstrumentation::default())
     }
 
     pub fn callees(&self, request: CallRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.call_neighbors_instrumented(request, false, &mut QueryInstrumentation::default())
     }
 
@@ -2578,6 +2610,7 @@ impl CodeQueryEngine {
         inbound: bool,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let operation = if inbound {
             CodeQueryOperation::Callers
@@ -2665,6 +2698,7 @@ impl CodeQueryEngine {
     }
 
     pub fn impact(&self, request: ImpactRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.impact_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -2677,6 +2711,7 @@ impl CodeQueryEngine {
         request: ImpactRequest,
         relation_kinds: &[EdgeKind],
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.impact_instrumented_with_kinds(
             request,
             relation_kinds,
@@ -2698,6 +2733,7 @@ impl CodeQueryEngine {
         relationship_kinds: &[EdgeKind],
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let mut response =
             CodeQueryResponse::empty(CodeQueryOperation::Impact, request.limits.clone());
@@ -2727,6 +2763,7 @@ impl CodeQueryEngine {
         let max_edges = usize::try_from(request.limits.max_edges).unwrap_or(usize::MAX);
         let mut selected_edges = BTreeMap::<String, EdgeRecord>::new();
         while let Some((node, path_nodes, path_edges)) = queue.pop_front() {
+            self.check_deadline()?;
             instrumentation.work.nodes_expanded =
                 instrumentation.work.nodes_expanded.saturating_add(1);
             if path_edges.len() >= max_depth {
@@ -2836,6 +2873,7 @@ impl CodeQueryEngine {
     }
 
     pub fn explore(&self, request: ExploreRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.explore_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -2844,6 +2882,7 @@ impl CodeQueryEngine {
         request: ExploreRequest,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         if request.symbols.len()
             > usize::try_from(request.limits.max_candidates).unwrap_or(usize::MAX)
@@ -2912,6 +2951,7 @@ impl CodeQueryEngine {
     }
 
     pub fn node_trail(&self, request: NodeTrailRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.node_trail_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -2920,6 +2960,7 @@ impl CodeQueryEngine {
         request: NodeTrailRequest,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let mut response =
             CodeQueryResponse::empty(CodeQueryOperation::NodeTrail, request.limits.clone());
@@ -3249,6 +3290,7 @@ impl CodeQueryEngine {
         let max = usize::try_from(response.limits.max_nodes).unwrap_or(usize::MAX);
         let mut nodes = Vec::with_capacity(ids.len().min(max));
         for id in ids {
+            self.check_deadline()?;
             if let Some(node) = self.backend.node_by_id(id)? {
                 nodes.push(node);
             }
@@ -3329,6 +3371,7 @@ impl CodeQueryEngine {
         let mut predecessor = HashMap::<String, (String, String)>::new();
         let mut truncated = false;
         while let Some(Reverse((cost, depth, path_key, node))) = queue.pop() {
+            self.check_deadline()?;
             if best.get(&node).is_none_or(|current| {
                 current.0 != cost || current.1 != depth || current.2 != path_key
             }) {

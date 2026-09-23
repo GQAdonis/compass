@@ -164,6 +164,18 @@ endpoint remains identifiable. Languages that already connect their file nodes
 (for example Go, Python, and Rust) keep the existing behavior, and an ambiguous
 or multi-module file still fails closed.
 
+### Typed query deadlines
+
+`ask`, `search`, `callers`, `callees`, `impact`, `explore`, and `node` accept
+`--timeout-ms <N>` with a default of 60000 and a hard maximum of 600000. The
+deadline is armed once per command - a page continuation or bound widening
+shares it - and is checked between resolution, candidate, relationship, impact,
+and path-expansion steps. An expired deadline returns the typed
+`code_query_timeout` failure with a hint to raise `--timeout-ms` or lower the
+record bounds; partial results are not published. Library and MCP callers keep
+the previous unbounded behavior unless they arm a deadline with
+`CodeQueryEngine::with_deadline`, so no existing response shape changes.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

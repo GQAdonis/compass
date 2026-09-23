@@ -432,6 +432,13 @@ reports it and asks for wider `--max-nodes`/`--max-edges` limits.
 bounded `nextActions` as argv arrays or JSON argument objects; clients should
 use those values instead of reconstructing shell commands from result text.
 
+Every typed query accepts `--timeout-ms <N>` (default 60000, maximum 600000).
+The deadline is armed once per command, so continuation pages and the internal
+bound widening share it, and it is checked between resolution, candidate,
+relationship, impact, and path-expansion steps. An expired deadline fails with
+`code_query_timeout` and a hint to raise the deadline or lower the record
+bounds; no partial response is published.
+
 `callers` returns incoming relationship evidence: calls, routes, references,
 imports, exports, and aliases. `callees` remains the direct outgoing call view.
 When an import or reference ends at a containing module rather than the
