@@ -235,6 +235,15 @@ unchanged, and the expansion cannot introduce a term the graph does not
 declare. Questions that previously matched only `route`-shaped names can now
 seed `Router`, `PathRouter`, and `MethodRouter`.
 
+Discovery also reads preposition phrases as identifier compounds: "to json" and
+"from json" add the `tojson`/`fromjson` terms, verified against the bounded
+name index like the agent-noun variants. A compound term that equals a declared
+name is classified as an exact-name match even in a multi-concept question;
+ordinary question words keep their previous alias rank even when a node shares
+their spelling. Each concept is also guaranteed one candidate slot before
+another concept's postings can fill the pool. The response schema, limits, and
+candidate budgets are unchanged.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

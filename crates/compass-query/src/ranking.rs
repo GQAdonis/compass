@@ -739,7 +739,7 @@ impl SearchCandidateTiebreak {
     }
 }
 
-fn normalize_symbol_name(value: &str) -> String {
+pub(crate) fn normalize_symbol_name(value: &str) -> String {
     strip_diacritics(value)
         .to_lowercase()
         .trim_start_matches('.')

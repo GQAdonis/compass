@@ -1972,7 +1972,7 @@ impl CodeQueryEngine {
             .collect::<Vec<_>>();
         validate_search_term_count(&recall_terms)?;
         let mut ranking_terms = discovery_terms.ranking_terms;
-        self.expand_agent_noun_terms(&mut ranking_terms)?;
+        self.expand_discovery_terms(&mut ranking_terms, query)?;
         let mut terms = recall_terms.clone();
         for term in &ranking_terms {
             if terms.len() >= compass_model::query_contract::MAX_INDEXED_QUERY_TERMS {
@@ -1995,30 +1995,41 @@ impl CodeQueryEngine {
         Ok(prepared)
     }
 
-    /// Add graph-verified agent-noun spellings of the question's behavior terms.
+    /// Add graph-verified spellings of the question's behavior terms.
     ///
     /// A question names behavior in plain English ("how does axum route a
-    /// request") while the graph names the implementing type (`Router`). The
-    /// variant is added only when the graph's name index actually contains it,
-    /// so the expansion can never invent vocabulary, and it stays inside the
-    /// bounded query-term budget.
-    fn expand_agent_noun_terms(&self, terms: &mut Vec<String>) -> Result<(), QueryError> {
+    /// request") while the graph names the implementing type (`Router`), or
+    /// phrases an operation as a preposition ("serialize an object to json")
+    /// while the graph names it `toJson`. Two expansions are tried, and each
+    /// variant is kept only when the graph's bounded name index contains it, so
+    /// the expansion can never invent vocabulary. The bounded query-term budget
+    /// still applies.
+    fn expand_discovery_terms(
+        &self,
+        terms: &mut Vec<String>,
+        question: &str,
+    ) -> Result<(), QueryError> {
         let mut additions = Vec::new();
         for term in terms.iter() {
             for candidate in agent_noun_variants(term) {
-                if terms.contains(&candidate) || additions.contains(&candidate) {
-                    continue;
-                }
-                let (nodes, _) = self.backend.nodes_by_normalized_name(&candidate, 1)?;
-                if !nodes.is_empty() {
-                    additions.push(candidate);
-                }
+                additions.push(candidate);
             }
         }
-        additions.sort();
-        additions.dedup();
-        let cap = compass_model::query_contract::MAX_INDEXED_QUERY_TERMS;
+        additions.extend(phrase_compound_variants(question));
+        let mut kept = Vec::new();
         for candidate in additions {
+            if terms.contains(&candidate) || kept.contains(&candidate) {
+                continue;
+            }
+            let (nodes, _) = self.backend.nodes_by_normalized_name(&candidate, 1)?;
+            if !nodes.is_empty() {
+                kept.push(candidate);
+            }
+        }
+        kept.sort();
+        kept.dedup();
+        let cap = compass_model::query_contract::MAX_INDEXED_QUERY_TERMS;
+        for candidate in kept {
             if terms.len() >= cap {
                 break;
             }
@@ -3864,6 +3875,34 @@ pub(crate) fn agent_noun_variants(term: &str) -> Vec<String> {
         variants.push(format!("{stem}er"));
         variants.push(format!("{stem}or"));
     }
+    variants
+}
+
+/// Identifier-shaped compounds from a preposition and its object.
+///
+/// "serialize an object to json" spells the operation `toJson` in most
+/// languages; "read a payload from json" spells it `fromJson`. Only the two
+/// conventional prepositions are tried, and the caller verifies each compound
+/// against the graph before ranking it.
+pub(crate) fn phrase_compound_variants(question: &str) -> Vec<String> {
+    let words = question
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let mut variants = Vec::new();
+    for pair in words.windows(2) {
+        if matches!(pair[0].as_str(), "to" | "from") {
+            variants.push(format!("{}{}", pair[0], pair[1]));
+        }
+    }
+    variants.sort();
+    variants.dedup();
     variants
 }
 

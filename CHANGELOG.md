@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Read operation phrases as identifier compounds. A question that phrases an
+  operation with a preposition ("serialize an object to json", "read a payload
+  from json") now also ranks the identifier-shaped `tojson`/`fromjson`
+  compound. The compound is verified against the graph's bounded name index,
+  and when it equals a declared name it is admitted as an exact-name match even
+  in a multi-concept question. The Gson evaluation question now leads with the
+  reviewed entry points (`Gson.toJson` at Gson.java:565/590/612).
+
 - Expand behavior questions to graph-verified agent nouns. A question that asks
   how code routes a request now also ranks the `router` spelling that the graph
   actually declares (`Router`, `MethodRouter`, `PathRouter`) instead of

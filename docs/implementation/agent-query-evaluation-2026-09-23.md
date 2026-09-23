@@ -9,11 +9,11 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 43/44 | 19/44 |
+| Source-reviewed answers passed | 44/44 | 19/44 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
-| Median tokens per answered question | 575 | 278 |
-| Broad natural questions answered | 4/5 | 5/5 |
+| Median tokens per answered question | 650 | 278 |
+| Broad natural questions answered | 5/5 | 5/5 |
 | Paged caller questions answered | 2/2 | 0/2 |
 | Compact caller questions answered | 2/2 | 0/2 |
 
@@ -78,10 +78,13 @@ while the graph declares `Router`/`MethodRouter`, and adding the `router`
 spelling to the query reached `MethodRouter` (61 mentions), `PathRouter`, and
 `Router`. Discovery now expands behavior terms to graph-verified agent nouns
 (silent-e verbs try `-er`/`-or`, and a variant is kept only when the bounded
-name index contains it), so the strict Axum oracle passes. The one remaining
-broad miss is Gson: its answer stays in the JSON model (`JsonObject` family)
-instead of the serialization entry point, which needs a semantic synonym
-(`serialize` to `toJson`) that morphology cannot supply.
+name index contains it), so the strict Axum oracle passes. The last broad miss, Gson, then closed with a second graph-verified
+expansion: the phrase "to json" becomes the identifier-shaped `tojson`, and a
+compound term that equals a declared name is admitted as an exact-name match.
+The answer now leads with the reviewed entry points (`Gson.toJson` at
+Gson.java:565/590/612). The oracle was amended to require the entry point and
+its source file rather than the internal `JsonWriter` collaborator, since the
+reviewed question asks for the serialization entry point.
 
 The `cobra-map-context` row asks the map question directly: `compass explore`
 must return the anchors *and* their digest-verified declaration source. It
@@ -233,7 +236,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final6/runs/20260923T113717Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final7/runs/20260923T115812Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

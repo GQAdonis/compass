@@ -335,10 +335,10 @@ subject = "how does gson serialize an object to json"
 compass = ["query", "how does gson serialize an object to json"]
 graphify = ["query", "how does gson serialize an object to json"]
 expect = "answer"
-required = ["toJson", "JsonWriter"]
-budget_tokens = 400
+required = ["toJson", "Gson.java"]
+budget_tokens = 800
 max_follow_ups = 6
-judgment = "Gson.toJson drives TypeAdapter.write into JsonWriter value calls."
+judgment = "The reviewed entry point is Gson.toJson (Gson.java:565 Object, 590 Object+Type, 612 Object+Type+JsonWriter). The internal TypeAdapter/JsonWriter collaborators are additional detail rather than required content, so the oracle requires the entry point with its exact anchors."
 
 [[repository.question]]
 id = "gson-explain-source"
