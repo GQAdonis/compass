@@ -549,7 +549,9 @@ true total, so a page carries the strongest evidence and `next=` continues the
 rest. Stable identifiers are printed where the answer resolves a name - a
 `search` pick list or a non-exact match - and omitted where the qualified name
 and source anchor already address the row; the raw `compass.query/1` response
-still carries every identifier.
+still carries every identifier. A `PATHS` row prints its hop count and the
+labelled trail rather than the path identity, which is built from every node
+identifier on the trail.
 
 `--format agent-json --brief` emits `compass.query.agent-view.brief/1`: the same
 status, headline, caveats, source-located entities, relationships, paths, and

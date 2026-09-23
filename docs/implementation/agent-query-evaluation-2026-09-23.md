@@ -263,7 +263,7 @@ reports both, and `run.json` carries the per-kind split.
 | `explain_source` | 5/5 | 0/5 | - |
 | `callers` | 5/5 | 5/5 | 382 / 67 |
 | `callees` | 5/5 | 5/5 | 322 / 249 |
-| `impact` | 5/5 | 5/5 | 632 / 112 |
+| `impact` | 5/5 | 5/5 | 537 / 112 |
 | `path` | 5/5 | 5/5 | 44 / 22 |
 | `file_path` | 5/5 | 4/5 | 51 / 32 |
 | `ambiguity` | 5/5 | 5/5 | 628 / 165 |
@@ -433,17 +433,18 @@ The changes, in `crates/compass-output` and `crates/compass-query`:
 | One-line `RESULT`, pagination line without the version/budget echo, `Bound:`/`Completeness:` lines that print only the bounds which withheld records | fixed envelope on every page, including pages whose whole answer is one sentence |
 | Warning caveats print their actionable sentence; blocking caveats keep the full statement | the explanatory remainder is audit prose, not answer |
 | Continuation cursors use a compact wire encoding with 64-bit digest prefixes | the cursor is re-printed on every page; older cursors fail with an explicit version error |
+| A `PATHS` row prints its hop count and labelled trail instead of the path identity | the identity concatenates every node identifier on the trail, which cost more of the page than the trail |
 | `path` endpoints print labels; the identifiers stay in the JSON view | two `sha256:` strings cost more text than the path |
 
-Measured on the same 44 rows both tools answer (`agent-query-v2-lean4/runs/20260923T191411Z`
+Measured on the same 44 rows both tools answer (`agent-query-v2-lean5/runs/20260923T193731Z`
 against `agent-query-v2-actors/runs/20260923T180127Z`):
 
 | Metric | Before | After |
 | --- | ---: | ---: |
 | Paired median answer tokens (Compass) | 560 | 366 |
-| Total Compass output over the suite | 40,082 | 21,650 |
+| Total Compass output over the suite | 40,082 | 21,366 |
 | `callers` median | 1,992 | 382 |
-| `impact` median | 1,967 | 632 |
+| `impact` median | 1,967 | 537 |
 | `ambiguity` median | 1,967 | 628 |
 | `callees` median | 595 | 322 |
 | `path` / `file_path` median | 82 / 90 | 44 / 51 |
@@ -466,7 +467,7 @@ differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final8/runs/20260923T120351Z/`.
 The second suite's evidence lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-lean4/runs/20260923T191411Z/`
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-lean5/runs/20260923T193731Z/`
 and uses the same checkouts, pinned separately in
 `benchmarks/agent_query/suite_v2.toml`.
 

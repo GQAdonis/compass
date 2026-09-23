@@ -1939,9 +1939,12 @@ fn render_relationship(relationship: &AgentRelationship) -> String {
 }
 
 fn render_path(path: &AgentPath) -> String {
+    // The path identity is a concatenation of its node identifiers, so a
+    // three-hop trail spends more of the page on `sha256:` text than on the
+    // trail itself. The hop count and the labelled chain are the answer; the
+    // identity stays in `--format json`.
     format!(
-        "- {} ({} hop(s)): {}",
-        escape_scalar(&path.id),
+        "- {} hop(s): {}",
         path.steps.len(),
         render_path_summary(path)
     )

@@ -250,7 +250,10 @@ pagination line drops the version and budget echo; the `Bound:` and
 `Completeness:` lines print only the bounds that withheld records; blocking
 caveats keep their full statement while warnings print their actionable
 sentence, with the remainder in `agent-json`/`json`; and a `path` answer prints
-its endpoints as labels without repeating their identifiers. Stable entity
+its endpoints as labels without repeating their identifiers. A `PATHS` row in
+the text view prints the hop count and the labelled chain; its path identity -
+a concatenation of every node identifier on the trail - stays in
+`agent-json`/`json`. Stable entity
 identifiers are printed only where the page resolves a name (a `search` pick
 list, or a non-exact match); the raw `compass.query/1` response and the
 `agent-json` view still carry every identifier, anchor, and omission counter.
