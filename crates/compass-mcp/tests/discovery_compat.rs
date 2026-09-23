@@ -1,7 +1,7 @@
 use compass_mcp::CompassMcp;
 use rmcp::model::{
-    ClientCapabilities, ClientInfo, Implementation, ProtocolVersion, Resource, ServerCapabilities,
-    Tool,
+    ClientCapabilities, ClientConfig, Implementation, ProtocolVersion, Resource,
+    ServerCapabilities, Tool,
 };
 use rmcp::{ClientLifecycleMode, ClientServiceExt, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
@@ -70,7 +70,7 @@ async fn server_discover_matches_rmcp_2_2_golden() -> Result<(), Box<dyn std::er
             .map_err(|error| error.to_string())?;
         running.waiting().await.map_err(|error| error.to_string())
     });
-    let client_info = ClientInfo::new(
+    let client_info = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("compass-test", env!("CARGO_PKG_VERSION")),
     )

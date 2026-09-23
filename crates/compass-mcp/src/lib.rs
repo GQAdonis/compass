@@ -4,16 +4,35 @@ mod code_query;
 mod transport;
 
 pub use transport::{
-    HttpOptions, serve_http, serve_stdio, serve_stdio_configured,
+    DEFAULT_MAX_LEGACY_HTTP_SESSIONS, HttpOptions, serve_http, serve_stdio, serve_stdio_configured,
     serve_stdio_configured_with_engine,
 };
 
-/// MCP protocol version accepted by the native Compass transports.
+/// Newest MCP protocol version the native Compass transports speak.
+///
+/// `2026-07-28` replaces `initialize` with `server/discover` (SEP-2575) and carries the method
+/// on an `Mcp-Method` header (SEP-2243). It remains the preferred revision, reported first.
 pub const SUPPORTED_PROTOCOL_VERSION: &str = "2026-07-28";
 
-/// Return whether the native transports accept the supplied MCP protocol.
+/// Every MCP protocol revision the native transports accept, newest first.
+///
+/// The Boss's SDK requests `2025-11-25` through `initialize`. Supporting these older
+/// revisions restores its handshake while retaining the newer discovery lifecycle.
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
+    &["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
+
+/// Whether `version` names a protocol revision these transports implement.
 #[must_use]
 pub fn supports_protocol(version: &str) -> bool {
+    SUPPORTED_PROTOCOL_VERSIONS.contains(&version)
+}
+
+/// Whether `version` is a revision that replaced `initialize` with `server/discover`.
+///
+/// The `2026-07-28` revision adds routing headers (SEP-2243) and discovery (SEP-2575).
+/// Older clients retain their initialize lifecycle without those headers.
+#[must_use]
+pub fn protocol_uses_discovery(version: &str) -> bool {
     version == SUPPORTED_PROTOCOL_VERSION
 }
 
@@ -63,7 +82,7 @@ use rmcp::model::{
     ErrorData, Implementation, InitializeRequestParams, InitializeResult, ListPromptsResult,
     ListResourcesResult, ListToolsResult, MetaObject, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ServerCapabilities, ServerInfo, Tool,
+    ResourceContents, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -524,23 +543,37 @@ impl CompassMcp {
 }
 
 impl ServerHandler for CompassMcp {
+    /// `initialize` for every revision that still defines it.
+    ///
+    /// `2026-07-28` replaced `initialize` with `server/discover` (SEP-2575), so a client naming it
+    /// is refused here exactly as the HTTP gate refuses it. That keeps stdio and HTTP consistent.
+    /// Older revisions use rmcp's negotiation helper, which keeps initialize on legacy versions.
     fn initialize(
         &self,
-        _request: InitializeRequestParams,
-        _context: RequestContext<RoleServer>,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<InitializeResult, ErrorData>> + Send + '_ {
-        std::future::ready(Err(ErrorData::new(
-            ErrorCode::METHOD_NOT_FOUND,
-            "initialize is not available in MCP 2026-07-28; use server/discover",
-            None,
-        )))
+        if protocol_uses_discovery(request.protocol_version.as_str()) {
+            return std::future::ready(Err(ErrorData::new(
+                ErrorCode::METHOD_NOT_FOUND,
+                "initialize is not available in MCP 2026-07-28; use server/discover",
+                None,
+            )));
+        }
+        context.peer.set_peer_info(request.clone());
+        std::future::ready(self.negotiate_initialize(&request))
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
+        Cow::Borrowed(&[
+            ProtocolVersion::V_2026_07_28,
+            ProtocolVersion::V_2025_11_25,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_03_26,
+        ])
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut capabilities = ServerCapabilities::builder()
             .enable_experimental()
             .enable_tools()
@@ -559,7 +592,7 @@ impl ServerHandler for CompassMcp {
                 prompts.list_changed = Some(false);
             }
         }
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
             .with_server_info(Implementation::new(SERVER_NAME, env!("CARGO_PKG_VERSION")))
     }
 

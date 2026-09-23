@@ -18,7 +18,7 @@ use compass_output::{
 };
 use compass_store::{STORE_FILE_NAME, STORE_REF_FILE_NAME, SqliteStore};
 use rmcp::model::{
-    CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, ProtocolVersion,
+    CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
     ResultType,
 };
 use rmcp::{ClientLifecycleMode, ClientServiceExt, ServiceExt};
@@ -1035,7 +1035,7 @@ async fn mcp_code_queries_publish_structured_content_and_protocol_errors()
             .map_err(|error| error.to_string())?;
         running.waiting().await.map_err(|error| error.to_string())
     });
-    let client_info = ClientInfo::new(
+    let client_info = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("compass-code-query-test", env!("CARGO_PKG_VERSION")),
     )

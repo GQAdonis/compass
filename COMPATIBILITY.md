@@ -322,19 +322,32 @@ plugin packages are a separate contract.
 
 ## MCP transport compatibility
 
-Both stdio and Streamable HTTP require MCP 2026-07-28. Older protocol revisions
-are rejected rather than negotiated. Current clients begin with
-`server/discover`; subsequent requests carry the protocol's per-request
-metadata. HTTP requests additionally carry `Mcp-Protocol-Version`,
-`Mcp-Method`, and applicable parameter headers, and Compass neither issues nor
-requires `Mcp-Session-Id`.
+Both stdio and Streamable HTTP support MCP 2026-07-28, 2025-11-25,
+2025-06-18, and 2025-03-26. Clients using the three 2025 revisions begin with
+`initialize`; Compass returns the negotiated revision. Legacy HTTP clients
+receive an `Mcp-Session-Id` and use it on subsequent requests. Initialization
+does not require a protocol-version header; the version is carried in its body.
+Other initialize revisions negotiate a supported legacy fallback through rmcp;
+the explicit 2026-07-28 refusal described below remains in effect.
+Legacy-session responses use SSE even when `--json-response` is enabled.
+The rmcp 3.4.0 session manager closes inactive sessions after five minutes and
+allows 60 seconds for initialization. These SDK defaults are independent of
+the deprecated `--session-timeout` option.
+Compass admits at most 64 simultaneous legacy sessions. Additional initialize
+requests receive HTTP 429 with MCP error `-32024` until a session closes or
+expires. This bound applies whether or not API-key authentication is enabled.
 
-Compass does not ship a legacy MCP-2025 transport mode. `--stateless` remains an
-accepted compatibility spelling for the HTTP default. `--session-timeout`
-remains accepted in 0.4.x, validates its existing numeric grammar, emits a
-deprecation warning, and is ignored because no HTTP session exists. It is
-scheduled for removal in Compass 0.5.0. The warning does not change success,
-usage-error, or runtime-error exit codes.
+Clients using 2026-07-28 begin with `server/discover`; `initialize` is refused
+for that revision. Subsequent requests carry per-request metadata. HTTP requests
+additionally carry `Mcp-Protocol-Version`, `Mcp-Method`, and applicable parameter
+headers. This revision remains stateless and does not issue a session ID.
+HTTP requests missing a required method header are rejected before method dispatch.
+
+`--stateless` remains an accepted compatibility spelling; protocol negotiation
+selects the lifecycle. `--session-timeout` remains accepted in 0.4.x, validates
+its existing numeric grammar, emits a deprecation warning, and is ignored.
+It is scheduled for removal in Compass 0.5.0. The warning does not change
+success, usage-error, or runtime-error exit codes.
 
 ## MCP structured result compatibility
 
@@ -829,6 +842,11 @@ digest, projection fingerprint, engine, counts, and location. Explicit
 unavailable engine features fail explicitly. SurrealDB 3.2.4 is pinned under
 BUSL 1.1; enabling an engine feature carries the notice and redistribution
 conditions recorded in `THIRD_PARTY_NOTICES.md`.
+
+Official release binaries enable `surreal-remote` while retaining the
+unconditional JSON artifact and bundled SQLite sidecar engines. They can use a
+separately managed SurrealDB 3.2.4 server without embedding SurrealKV or RocksDB.
+Source builds keep the remote client optional through the explicit feature.
 
 The additive `remote` engine in `compass.surreal.ref/1` binds a canonical
 WebSocket endpoint plus namespace/database instead of a directory. Older

@@ -16,11 +16,18 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 use tower_http::limit::RequestBodyLimitLayer;
 
-use crate::{AgentGraphMcpConfig, CompassMcp, SUPPORTED_PROTOCOL_VERSION, supports_protocol};
+use crate::{
+    AgentGraphMcpConfig, CompassMcp, SUPPORTED_PROTOCOL_VERSIONS, protocol_uses_discovery,
+    supports_protocol,
+};
+
+/// Revision a request without an `MCP-Protocol-Version` header is taken to speak.
+const LEGACY_DEFAULT_PROTOCOL_VERSION: &str = "2025-03-26";
 
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STDIO_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_MAX_LEGACY_HTTP_SESSIONS: usize = 64;
 
 /// Configuration for the Compass-compatible MCP Streamable HTTP transport.
 #[derive(Clone, Debug)]
@@ -36,6 +43,8 @@ pub struct HttpOptions {
     pub json_response: bool,
     pub stateless: bool,
     pub session_timeout: Option<Duration>,
+    /// Maximum number of simultaneously active legacy MCP sessions.
+    pub max_sessions: usize,
     pub engine: compass_query::EngineSelection,
 }
 
@@ -53,6 +62,7 @@ impl HttpOptions {
             json_response: false,
             stateless: true,
             session_timeout: None,
+            max_sessions: DEFAULT_MAX_LEGACY_HTTP_SESSIONS,
             engine: compass_query::EngineSelection::Default,
         }
     }
@@ -63,6 +73,9 @@ struct HttpGate {
     api_key: Option<Arc<[u8]>>,
     allowed_hosts: Arc<[String]>,
     write_api_key: Option<Arc<[u8]>>,
+    session_manager: Arc<LocalSessionManager>,
+    session_creation_lock: Arc<tokio::sync::Mutex<()>>,
+    max_sessions: usize,
     convert_stateful_sse_to_json: bool,
 }
 
@@ -228,8 +241,14 @@ fn build_http_router(
     } else {
         allowed_hosts(&options.host, options.port)
     };
+    // Legacy sessions apply only to revisions before `2026-07-28`; rmcp serves `2026-07-28`
+    // statelessly regardless (SEP-2567). With them off, an older client got no
+    // `Mcp-Session-Id` and was routed statelessly, where the metadata requirement below
+    // rejects its ordinary requests, since pre-`2026-07-28` clients attach no per-request
+    // metadata. On, older clients get a session and `2026-07-28` clients keep the strict
+    // stateless path.
     let mut config = StreamableHttpServerConfig::default()
-        .with_legacy_session_mode(false)
+        .with_legacy_session_mode(true)
         .with_stateless_protocol_metadata_required(true)
         .with_json_response(options.json_response)
         .with_max_request_body_bytes(MAX_HTTP_REQUEST_BYTES)
@@ -239,7 +258,8 @@ fn build_http_router(
     } else {
         config = config.with_allowed_hosts(allowed_hosts.clone());
     }
-    let service = StreamableHttpService::new(move || Ok(factory_graph.clone()), manager, config);
+    let service =
+        StreamableHttpService::new(move || Ok(factory_graph.clone()), manager.clone(), config);
     let gate = HttpGate {
         api_key: options
             .api_key
@@ -250,7 +270,10 @@ fn build_http_router(
             .write_api_key
             .as_ref()
             .map(|key| Arc::<[u8]>::from(key.as_bytes())),
-        // rmcp 3.1.4 transport negotiation owns the response representation.
+        session_manager: manager.clone(),
+        session_creation_lock: Arc::new(tokio::sync::Mutex::new(())),
+        max_sessions: options.max_sessions,
+        // rmcp transport negotiation owns the response representation.
         convert_stateful_sse_to_json: false,
     };
     Ok(Router::new()
@@ -287,6 +310,7 @@ fn enforce_response_limit(response: Response, limit: usize) -> Response {
 }
 
 async fn http_gate(State(gate): State<HttpGate>, mut request: Request, next: Next) -> Response {
+    let mut session_creation_guard = None;
     if let Some(expected) = &gate.api_key {
         let provided = request
             .headers()
@@ -306,14 +330,20 @@ async fn http_gate(State(gate): State<HttpGate>, mut request: Request, next: Nex
         return response;
     }
     if request.method() == Method::POST {
+        let had_protocol_header = request.headers().contains_key("mcp-protocol-version");
         normalize_header(&mut request, "mcp-protocol-version");
         normalize_header(&mut request, "mcp-method");
         normalize_header(&mut request, "mcp-name");
+        // An absent header means `2025-03-26`, the rule rmcp's own validator applies
+        // (`streamable_http_server/tower.rs`). Clients send no header on the `initialize` POST,
+        // since the version travels in the body until negotiation completes, so treating
+        // absence as unsupported would refuse every client's first request.
         let protocol_version = request
             .headers()
             .get("mcp-protocol-version")
             .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
+            .map(str::to_owned)
+            .or_else(|| (!had_protocol_header).then(|| LEGACY_DEFAULT_PROTOCOL_VERSION.to_owned()));
         if !protocol_version.as_deref().is_some_and(supports_protocol) {
             let requested = protocol_version.map_or(serde_json::Value::Null, Into::into);
             return protocol_gate_error(
@@ -322,36 +352,59 @@ async fn http_gate(State(gate): State<HttpGate>, mut request: Request, next: Nex
                 -32022,
                 "Unsupported protocol version",
                 Some(serde_json::json!({
-                    "supported": [SUPPORTED_PROTOCOL_VERSION],
+                    "supported": SUPPORTED_PROTOCOL_VERSIONS,
                     "requested": requested,
                 })),
             )
             .await;
         }
-        let method = request
-            .headers()
-            .get("mcp-method")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        if method.is_none() {
-            return protocol_gate_error(
-                request,
-                StatusCode::BAD_REQUEST,
-                -32020,
-                "missing required Mcp-Method header",
-                None,
-            )
-            .await;
-        }
-        if method.as_deref() == Some("initialize") {
-            return protocol_gate_error(
-                request,
-                StatusCode::NOT_FOUND,
-                -32601,
-                "initialize is not available on stateless HTTP; use server/discover",
-                None,
-            )
-            .await;
+        // `2026-07-28` adds routing headers (SEP-2243) and discovery (SEP-2575).
+        // Older clients use initialize without these headers.
+        let uses_discovery = protocol_version
+            .as_deref()
+            .is_some_and(protocol_uses_discovery);
+        if uses_discovery {
+            let method = request
+                .headers()
+                .get("mcp-method")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            if method.is_none() {
+                return protocol_gate_error(
+                    request,
+                    StatusCode::BAD_REQUEST,
+                    -32020,
+                    "missing required Mcp-Method header",
+                    None,
+                )
+                .await;
+            }
+            if method.as_deref() == Some("initialize") {
+                return protocol_gate_error(
+                    request,
+                    StatusCode::NOT_FOUND,
+                    -32601,
+                    "initialize is not available in MCP 2026-07-28; use server/discover",
+                    None,
+                )
+                .await;
+            }
+        } else if !request.headers().contains_key("mcp-session-id") {
+            // Session creation is serialized so concurrent initialize requests cannot all pass the
+            // count before rmcp inserts their sessions. The guard remains held through dispatch,
+            // when the manager has either inserted the session or returned an error.
+            let guard = gate.session_creation_lock.clone().lock_owned().await;
+            if gate.session_manager.sessions.read().await.len() >= gate.max_sessions {
+                return protocol_gate_error(
+                    request,
+                    StatusCode::TOO_MANY_REQUESTS,
+                    -32024,
+                    "MCP legacy session limit reached",
+                    Some(serde_json::json!({"max_sessions": gate.max_sessions})),
+                )
+                .await;
+            }
+            session_creation_guard = Some(guard);
         }
     }
     let method = request.method().clone();
@@ -392,6 +445,7 @@ async fn http_gate(State(gate): State<HttpGate>, mut request: Request, next: Nex
         request = Request::from_parts(parts, Body::from(bytes));
     }
     let response = next.run(request).await;
+    drop(session_creation_guard);
     if gate.convert_stateful_sse_to_json && method == Method::POST {
         return sse_response_to_json(response).await;
     }
@@ -723,7 +777,10 @@ mod tests {
             .body(Body::from("{\"plain\":true}"))?;
         let plain = sse_response_to_json(plain).await;
         assert_eq!(plain.status(), StatusCode::ACCEPTED);
-        assert_eq!(to_bytes(plain.into_body(), 1024).await?, "{\"plain\":true}");
+        assert_eq!(
+            axum::body::to_bytes(plain.into_body(), 1024).await?,
+            "{\"plain\":true}"
+        );
 
         let sse = Response::builder()
             .header(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")
@@ -738,7 +795,7 @@ mod tests {
         );
         assert!(!converted.headers().contains_key(header::CONTENT_LENGTH));
         assert_eq!(
-            to_bytes(converted.into_body(), 1024).await?,
+            axum::body::to_bytes(converted.into_body(), 1024).await?,
             "{\"jsonrpc\":\"2.0\",\"id\":1}"
         );
 
@@ -747,7 +804,7 @@ mod tests {
             .body(Body::from("event: ping\ndata: invalid\n\n"))?;
         let invalid = sse_response_to_json(invalid).await;
         assert_eq!(
-            to_bytes(invalid.into_body(), 1024).await?,
+            axum::body::to_bytes(invalid.into_body(), 1024).await?,
             "event: ping\ndata: invalid\n\n"
         );
         Ok(())
@@ -778,7 +835,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stateful_json_transport_enforces_auth_and_lists_tools()
+    async fn legacy_session_transport_enforces_auth_and_lists_tools()
     -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let graph = temp.path().join("graph.json");
@@ -813,13 +870,15 @@ mod tests {
         )
         .await?;
         assert!(initialized.starts_with("HTTP/1.1 200 OK"));
+        // rmcp frames both initialization and subsequent legacy-session responses as SSE,
+        // even when the stateless transport's JSON response preference is enabled.
         assert!(
             initialized
                 .to_lowercase()
-                .contains("content-type: application/json")
+                .contains("content-type: text/event-stream")
         );
         let session = header_value(&initialized, "mcp-session-id").ok_or("missing session id")?;
-        let payload: Value = serde_json::from_str(response_body(&initialized))?;
+        let payload: Value = sse_data_json(response_body(&initialized))?;
         assert_eq!(payload["result"]["serverInfo"]["name"], "compass");
 
         let listed = request(
@@ -830,7 +889,13 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
         )
         .await?;
-        let payload: Value = serde_json::from_str(response_body(&listed))?;
+        assert!(listed.starts_with("HTTP/1.1 200 OK"));
+        assert!(
+            listed
+                .to_lowercase()
+                .contains("content-type: text/event-stream")
+        );
+        let payload: Value = sse_data_json(response_body(&listed))?;
         assert_eq!(
             payload["result"]["tools"].as_array().map(Vec::len),
             Some(18)
@@ -969,6 +1034,17 @@ mod tests {
 
     fn response_body(response: &str) -> &str {
         response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+    }
+
+    /// Parse the JSON response after any empty SSE priming events (SEP-1699).
+    fn sse_data_json(body: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        let data = body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .find(|data| !data.is_empty())
+            .ok_or("no nonempty SSE data line in response body")?;
+        Ok(serde_json::from_str(data)?)
     }
 
     fn header_value(response: &str, name: &str) -> Option<String> {

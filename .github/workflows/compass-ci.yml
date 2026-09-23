@@ -221,7 +221,9 @@ jobs:
         run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-surrealkv --locked
       - name: Qualify optional RocksDB surface
         run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-rocksdb --locked
-      - name: Compile combined embedded and standalone server surfaces
+      - name: Compile the standalone SurrealDB release surface
+        run: cargo check -p compass-cli --features surreal-remote --locked
+      - name: Compile combined embedded and remote SurrealDB surfaces
         run: cargo check -p compass-cli --features surreal-surrealkv,surreal-remote --locked
       - name: Verify bounded YAML and endpoint configuration
         run: cargo test -p compass-files --test surreal_configuration --locked
@@ -258,7 +260,9 @@ jobs:
         run: cargo test -p compass-graphdb-surreal --test '*' --features surrealkv --locked
       - name: Qualify fully wired SurrealKV surfaces
         run: cargo test -p compass-core -p compass-query -p compass-cli -p compass-mcp --test '*' --features surreal-surrealkv --locked
-      - name: Compile the shipped embedded and standalone surfaces
+      - name: Compile the standalone SurrealDB release surface
+        run: cargo check -p compass-cli --features surreal-remote --locked
+      - name: Compile combined embedded and remote SurrealDB surfaces
         run: cargo check -p compass-cli --features surreal-surrealkv,surreal-remote --locked
       - name: Verify bounded YAML and endpoint configuration
         run: cargo test -p compass-files --test surreal_configuration --locked
@@ -291,6 +295,13 @@ jobs:
           toolchain: 1.97.1
           target: ${{ matrix.target }}
 
+      - name: Install SurrealDB TLS build prerequisites
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: .
@@ -308,7 +319,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --release --locked -p compass-cli --bin compass --target ${{ matrix.target }}
+          cargo build --release --locked -p compass-cli --bin compass --features surreal-remote --target ${{ matrix.target }}
           ./scripts/test_install_ps1.ps1 `
             -CompassBinary "target/${{ matrix.target }}/release/compass.exe"
 

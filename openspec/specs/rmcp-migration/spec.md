@@ -5,15 +5,15 @@ TBD - created by archiving change rmcp-3-migration. Update Purpose after archive
 
 ## Requirements
 
-### Requirement: exact rmcp 3.1.4 dependency
+### Requirement: exact rmcp 3.4.0 dependency
 
-Compass SHALL resolve rmcp at exactly version 3.1.4 from the workspace
+Compass SHALL resolve rmcp at exactly version 3.4.0 from the workspace
 dependency declaration.
 
 #### Scenario: inspect workspace dependency state
 
 - **WHEN** Cargo metadata and the lockfile are inspected
-- **THEN** rmcp resolves to 3.1.4 and member crates inherit the workspace entry
+- **THEN** rmcp resolves to 3.4.0 and member crates inherit the workspace entry
 
 ### Requirement: stdio behavior remains compatible
 
@@ -34,7 +34,7 @@ ordered tool names and input schemas, and ordered resource inventory.
 
 #### Scenario: compare migrated discovery to the rmcp 2.2 golden
 
-- **WHEN** the normalized discovery contract is generated under rmcp 3.1.4
+- **WHEN** the normalized discovery contract is generated under rmcp 3.4.0
 - **THEN** it exactly matches the checked-in rmcp 2.2 golden
 
 ### Requirement: dependency policy remains satisfied

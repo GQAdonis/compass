@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Restore MCP initialization for 2025-11-25, 2025-06-18, and 2025-03-26 clients,
+  including The Boss. Stdio echoes the negotiated revision and Streamable HTTP
+  supports legacy sessions with SSE responses. MCP 2026-07-28 retains its
+  stateless discovery lifecycle and metadata requirements. Upgrade rmcp to 3.4.0
+  and use its legacy protocol negotiation helper.
+
+- Build official binaries with the SurrealDB 3.2.4 remote client alongside the
+  existing JSON and bundled SQLite engines. Remote-only builds now include the
+  projection limits and typed query errors needed by the production adapter.
+
 - Align Surreal-backed traversal with the typed engines. Directed trails now
   rank candidates by relation kind before evidence quality, matching the
   weighted selection 0.3.28 introduced for JSON and SQLite, so a Surreal graph

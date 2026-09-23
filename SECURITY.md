@@ -53,6 +53,12 @@ Compass parses untrusted project content and graph files. Its default structural
 - Stateless MCP 2026-07-28 Streamable HTTP exposes the server on the configured
   interface; every request remains independently subject to host validation,
   authentication when configured, and body limits
+- Legacy MCP 2025 Streamable HTTP creates server-side sessions after host and
+  configured API-key validation. Compass serializes admission and retains at
+  most 64 simultaneous legacy sessions; further initialize requests receive
+  HTTP 429 / MCP `-32024` until a session closes or expires. Deployments that
+  bind beyond loopback should require an API key even though the capacity bound
+  also applies to unauthenticated servers.
 - Agent Graph mutation is a separate opt-in capability. HTTP deployments must
   use distinct non-empty read and write API keys, canonical project allowlists,
   and server-owned principals/permissions. The write tool is absent when
@@ -101,11 +107,13 @@ read, before either adapter decodes them or creates a restore destination.
 The namespace is an isolation and lifecycle key, not an authorization
 mechanism. A future hosted adapter must add authentication, authorization,
 TLS, audit logging, quotas, and tenant-scoped GC outside the common contract.
-The local release has no cloud endpoint, credential, or TLS setting and does
-not link cloud SDKs into the CLI. Never attach a store database or raw backup
-to a public issue: it can disclose repository names, paths, source anchors,
-and graph structure. Share a sanitized `compass store status --format json`
-response instead.
+Official release binaries include the SurrealDB remote client but configure no
+remote endpoint or credential by default; JSON and SQLite remain available
+without network access, and remote use requires an explicit engine/reference
+and endpoint configuration. Never attach a store database or raw backup to a
+public issue: it can disclose repository names, paths, source anchors, and graph
+structure. Share a sanitized `compass store status --format json` response
+instead.
 
 The optional SurrealDB backend accepts only validated `compass.graph/1`
 documents and exposes no arbitrary SurrealQL API. `surreal.ref` and projection

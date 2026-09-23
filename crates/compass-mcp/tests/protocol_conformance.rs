@@ -3,7 +3,7 @@ use std::fs;
 
 use compass_mcp::CompassMcp;
 use rmcp::model::{
-    CallToolRequestParams, ClientCapabilities, ClientInfo, Implementation, ProtocolVersion,
+    CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation, ProtocolVersion,
     ReadResourceRequestParams,
 };
 use rmcp::{ClientLifecycleMode, ClientServiceExt, ServiceExt};
@@ -34,7 +34,7 @@ async fn stdio_conformance_discovers_lists_invokes_reads_and_closes() -> Result<
             .map_err(|error| error.to_string())?;
         running.waiting().await.map_err(|error| error.to_string())
     });
-    let client_info = ClientInfo::new(
+    let client_info = ClientConfig::new(
         ClientCapabilities::default(),
         Implementation::new("compass-conformance", env!("CARGO_PKG_VERSION")),
     )
@@ -129,8 +129,53 @@ async fn stdio_conformance_discovers_lists_invokes_reads_and_closes() -> Result<
     Ok(())
 }
 
+/// Every advertised legacy revision must be accepted through `initialize`.
+///
+/// The Boss SDK requests `2025-11-25` and uses `initialize`. The server must
+/// echo a supported requested revision and allow subsequent requests.
 #[tokio::test]
-async fn stdio_rejects_a_legacy_initialize_lifecycle() -> Result<(), Box<dyn Error>> {
+async fn stdio_accepts_initialize_for_every_pre_discovery_revision() -> Result<(), Box<dyn Error>> {
+    for version in [
+        ProtocolVersion::V_2025_11_25,
+        ProtocolVersion::V_2025_06_18,
+        ProtocolVersion::V_2025_03_26,
+    ] {
+        let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = CompassMcp::new("missing.json")
+                .serve(server_transport)
+                .await
+                .map_err(|error| error.to_string())?;
+            running.waiting().await.map_err(|error| error.to_string())
+        });
+        let client_info = ClientConfig::new(
+            ClientCapabilities::default(),
+            Implementation::new("initialize-conformance-client", env!("CARGO_PKG_VERSION")),
+        )
+        .with_protocol_version(version.clone());
+        let client = client_info
+            .serve_with_lifecycle(client_transport, ClientLifecycleMode::Initialize)
+            .await
+            .map_err(|error| format!("initialize refused for {version}: {error}"))?;
+
+        let peer = client.peer_info().ok_or("missing MCP peer information")?;
+        assert_eq!(
+            peer.protocol_version, version,
+            "server did not echo the negotiated revision"
+        );
+        // A handshake alone proves little; a real request must work on the negotiated session.
+        client.list_tools(None).await?;
+
+        client.cancel().await?;
+        server_task.await?.map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+/// Compass requires `server/discover` (SEP-2575) when the client explicitly names
+/// `2026-07-28`; rmcp's default would instead negotiate a legacy initialize version.
+#[tokio::test]
+async fn stdio_refuses_initialize_for_the_discovery_revision() -> Result<(), Box<dyn Error>> {
     let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
     let server_task = tokio::spawn(async move {
         let running = CompassMcp::new("missing.json")
@@ -139,22 +184,23 @@ async fn stdio_rejects_a_legacy_initialize_lifecycle() -> Result<(), Box<dyn Err
             .map_err(|error| error.to_string())?;
         running.waiting().await.map_err(|error| error.to_string())
     });
-    let client_info = ClientInfo::new(
+    let client_info = ClientConfig::new(
         ClientCapabilities::default(),
-        Implementation::new("legacy-conformance-client", "2025-11-25"),
+        Implementation::new("discovery-revision-client", env!("CARGO_PKG_VERSION")),
     )
-    .with_protocol_version(ProtocolVersion::V_2025_11_25);
+    .with_protocol_version(ProtocolVersion::V_2026_07_28);
     let client_result = client_info
         .serve_with_lifecycle(client_transport, ClientLifecycleMode::Initialize)
         .await;
 
     let error = client_result
         .err()
-        .ok_or("legacy stdio lifecycle was accepted")?;
-    let diagnostic = error.to_string();
+        .ok_or("initialize was accepted for 2026-07-28")?;
     assert!(
-        diagnostic.contains("initialize is not available in MCP 2026-07-28"),
-        "unexpected legacy rejection: {diagnostic}"
+        error
+            .to_string()
+            .contains("initialize is not available in MCP 2026-07-28"),
+        "unexpected refusal: {error}"
     );
     assert!(server_task.await?.is_err());
     Ok(())

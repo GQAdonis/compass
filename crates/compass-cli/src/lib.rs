@@ -673,6 +673,7 @@ pub fn run_mcp(arguments: &[OsString], stdout: &mut impl Write, stderr: &mut imp
             json_response: options.json_response,
             stateless: options.stateless,
             session_timeout: options.session_timeout,
+            max_sessions: compass_mcp::DEFAULT_MAX_LEGACY_HTTP_SESSIONS,
             engine: options.engine,
         }))
     } else {
