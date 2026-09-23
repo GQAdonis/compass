@@ -13,10 +13,22 @@
 #   * Both tools run their closest documented operation for the question:
 #     explain -> explain/explain, usage -> callers/affected, outbound calls ->
 #     callees/explain, transitive dependents -> impact/affected, connectivity ->
-#     path/path, discovery -> search/query.
+#     path/path, discovery -> query/query, and name resolution - the
+#     `ambiguity` and `negative` rows - -> search/explain, because
+#     `graphify explain` is the command that reports the candidate list for a
+#     name that matches several nodes and the explicit no-match for a name that
+#     matches none.
 #   * `path` questions pass `--undirected` to Graphify because Compass `path`
 #     searches relationships in both directions; Graphify documents
 #     `--undirected` as the equivalent.
+#   * A `pick_list` row requires a real candidate list (at least two distinct
+#     candidates) plus at least one of the reviewed candidates for the name.
+#     It deliberately does not require a specific pair: a bounded page shows
+#     only part of the candidate set, so demanding named candidates would score
+#     which entries happen to fit rather than whether the tool offers a list.
+#   * `broad` rows use a 600-token page budget for both tools, the reviewed
+#     floor at which either tool can render a bounded page for these questions
+#     instead of spending the whole page on its own metadata envelope.
 #   * Default output form on both sides, at the same approximate token budget
 #     where the command is budgeted. Continuations are each tool's documented
 #     one (Compass `--cursor`, Graphify `--budget`), and the runner prices the
@@ -77,14 +89,14 @@ required = ["command.go", "1868"]
 judgment = "command.go:1868 declares func (c *Command) ParseFlags(args []string) error."
 
 [[repository.question]]
-id = "cobra2-source-executec"
+id = "cobra2-source-find"
 kind = "explain_source"
-subject = "cobra.Command::ExecuteC declaration source"
-compass = ["explain", "cobra.Command::ExecuteC", "--source", "--root", "."]
-graphify = ["explain", ".ExecuteC()"]
+subject = "cobra.Command::Find declaration source"
+compass = ["explain", "cobra.Command::Find", "--source", "--root", "."]
+graphify = ["explain", ".Find()"]
 expect = "answer"
-required = ["func (c *Command) ExecuteC() (cmd *Command, err error)"]
-judgment = "command.go:1084 declares func (c *Command) ExecuteC() (cmd *Command, err error); the answer must contain that declaration, not only its location."
+required = ["func (c *Command) Find(args []string)"]
+judgment = "command.go:757 declares func (c *Command) Find(args []string) (*Command, []string, error); the answer must contain that declaration, not only its location."
 
 [[repository.question]]
 id = "cobra2-callers-find"
@@ -140,23 +152,23 @@ judgment = "doc/md_docs.go imports github.com/spf13/cobra at line 27 and calls G
 forbidden = ["NO PATH FOUND", "No directed path found", "No path found"]
 
 [[repository.question]]
-id = "cobra2-ambiguous-execute"
+id = "cobra2-ambiguous-command"
 kind = "ambiguity"
-subject = "Execute"
-compass = ["search", "Execute"]
-graphify = ["query", "Execute"]
+subject = "Command"
+compass = ["search", "Command"]
+graphify = ["explain", "Command"]
 expect = "pick_list"
-required_one_of = ["ExecuteC", "ExecuteContext", "execute"]
-min_one_of = 2
+required_one_of = ["command.go", "completions.go"]
+min_one_of = 1
 min_candidates = 2
-judgment = "command.go declares Execute (1070), ExecuteC (1084), ExecuteContextC (1078) and execute (905); a pick list is required."
+judgment = "command.go:54 declares the Command type, and command.go, completions.go, bash_completions.go, fish_completions.go and flag_groups.go each hold declarations whose name begins with Command; a pick list is required."
 
 [[repository.question]]
 id = "cobra2-negative"
 kind = "negative"
 subject = "ZebraQuantumCommandRouter"
 compass = ["search", "ZebraQuantumCommandRouter"]
-graphify = ["query", "ZebraQuantumCommandRouter"]
+graphify = ["explain", "ZebraQuantumCommandRouter"]
 expect = "no_match"
 judgment = "The identifier is absent from the pinned checkout; returning candidates as an answer is a false positive."
 
@@ -168,7 +180,7 @@ compass = ["query", "how does cobra resolve a subcommand name and then run the r
 graphify = ["query", "how does cobra resolve a subcommand name and then run the resolved command"]
 expect = "answer"
 required = ["Find", "execute"]
-budget_tokens = 400
+budget_tokens = 600
 max_follow_ups = 6
 judgment = "Find (command.go:757) resolves the target command; execute (command.go:905) runs it."
 
@@ -248,59 +260,59 @@ required = ["wsgi_app", "__call__"]
 judgment = "wsgi_app calls full_dispatch_request at app.py:1600, and Flask.__call__ (app.py:1621) calls wsgi_app at app.py:1628."
 
 [[repository.question]]
-id = "flask2-path-wsgi-dispatch"
+id = "flask2-path-fulldispatch-finalize"
 kind = "path"
-subject = "Flask::wsgi_app -> Flask::dispatch_request"
-compass = ["path", "src.flask.app.Flask::wsgi_app", "src.flask.app.Flask::dispatch_request"]
-graphify = ["path", ".wsgi_app()", ".dispatch_request()", "--undirected"]
+subject = "Flask::full_dispatch_request -> Flask::finalize_request"
+compass = ["path", "src.flask.app.Flask::full_dispatch_request", "src.flask.app.Flask::finalize_request"]
+graphify = ["path", ".full_dispatch_request()", ".finalize_request()", "--undirected"]
 expect = "answer"
-required = ["wsgi_app", "dispatch_request"]
-judgment = "wsgi_app calls full_dispatch_request (app.py:1600), which calls dispatch_request (app.py:1019)."
+required = ["full_dispatch_request", "finalize_request"]
+judgment = "full_dispatch_request calls self.finalize_request(ctx, rv) at src/flask/app.py:1022, which is declared at line 1024."
 forbidden = ["NO PATH FOUND", "No directed path found", "No path found"]
 
 [[repository.question]]
-id = "flask2-file-path-app-ctx"
+id = "flask2-file-path-views-app"
 kind = "file_path"
-subject = "src/flask/app.py -> src/flask/ctx.py"
-compass = ["path", "src/flask/app.py", "src/flask/ctx.py"]
-graphify = ["path", "flask/app.py", "ctx.py", "--undirected"]
+subject = "src/flask/views.py -> src/flask/app.py"
+compass = ["path", "src/flask/views.py", "src/flask/app.py"]
+graphify = ["path", "flask/views.py", "flask/app.py", "--undirected"]
 expect = "answer"
-required = ["app.py", "ctx.py"]
-judgment = "src/flask/app.py imports AppContext from .ctx at line 34 and pushes the context at line 1599."
+required = ["views.py", "app.py"]
+judgment = "src/flask/views.py:110 calls current_app.ensure_sync, which is Flask.ensure_sync in src/flask/app.py:1068."
 forbidden = ["NO PATH FOUND", "No directed path found", "No path found"]
 
 [[repository.question]]
-id = "flask2-ambiguous-dispatch"
+id = "flask2-ambiguous-urlfor"
 kind = "ambiguity"
-subject = "dispatch_request"
-compass = ["search", "dispatch_request"]
-graphify = ["query", "dispatch_request"]
+subject = "url_for"
+compass = ["search", "url_for"]
+graphify = ["explain", "url_for"]
 expect = "pick_list"
-required_one_of = ["app.py", "views.py"]
-min_one_of = 2
+required_one_of = ["app.py", "helpers.py"]
+min_one_of = 1
 min_candidates = 2
-judgment = "app.py:969, views.py:78 and views.py:182 each declare dispatch_request with different receivers."
+judgment = "src/flask/app.py:1105 declares Flask.url_for and src/flask/helpers.py:200 declares the module-level url_for; a pick list is required."
 
 [[repository.question]]
 id = "flask2-negative"
 kind = "negative"
-subject = "ZebraQuantumMissingHandler"
-compass = ["search", "ZebraQuantumMissingHandler"]
-graphify = ["query", "ZebraQuantumMissingHandler"]
+subject = "ZebraQuantumMissingBlueprint"
+compass = ["search", "ZebraQuantumMissingBlueprint"]
+graphify = ["explain", "ZebraQuantumMissingBlueprint"]
 expect = "no_match"
 judgment = "The identifier is absent from the pinned checkout; returning candidates as an answer is a false positive."
 
 [[repository.question]]
-id = "flask2-broad-dispatch"
+id = "flask2-broad-url-rule"
 kind = "broad"
-subject = "how is an HTTP request dispatched to a view"
-compass = ["query", "how is an HTTP request dispatched to a view"]
-graphify = ["query", "how is an HTTP request dispatched to a view"]
+subject = "how does flask turn a view function into a url rule"
+compass = ["query", "how does flask turn a view function into a url rule"]
+graphify = ["query", "how does flask turn a view function into a url rule"]
 expect = "answer"
-required = ["dispatch_request", "full_dispatch_request"]
-budget_tokens = 400
+required = ["add_url_rule", "scaffold.py"]
+budget_tokens = 600
 max_follow_ups = 6
-judgment = "wsgi_app (app.py:1569) -> full_dispatch_request (995) -> dispatch_request (969) is the reviewed dispatch chain."
+judgment = "Scaffold.route (src/flask/sansio/scaffold.py:344) calls self.add_url_rule at line 370, and add_url_rule is declared at src/flask/sansio/app.py:605."
 
 [[repository]]
 name = "gson"
@@ -389,14 +401,14 @@ judgment = "newJsonWriter constructs and returns a JsonWriter (Gson.java:801), t
 forbidden = ["NO PATH FOUND", "No directed path found", "No path found"]
 
 [[repository.question]]
-id = "gson2-file-path-gson-jsonwriter"
+id = "gson2-file-path-typeadapter-jsonwriter"
 kind = "file_path"
-subject = "gson/.../Gson.java -> gson/.../stream/JsonWriter.java"
-compass = ["path", "gson/src/main/java/com/google/gson/Gson.java", "gson/src/main/java/com/google/gson/stream/JsonWriter.java"]
-graphify = ["path", "Gson.java", "JsonWriter.java", "--undirected"]
+subject = "gson/.../TypeAdapter.java -> gson/.../stream/JsonWriter.java"
+compass = ["path", "gson/src/main/java/com/google/gson/TypeAdapter.java", "gson/src/main/java/com/google/gson/stream/JsonWriter.java"]
+graphify = ["path", "TypeAdapter.java", "JsonWriter.java", "--undirected"]
 expect = "answer"
-required = ["Gson.java", "JsonWriter.java"]
-judgment = "Gson.java constructs JsonWriter at line 801 and returns it from newJsonWriter at line 797."
+required = ["TypeAdapter.java", "JsonWriter.java"]
+judgment = "TypeAdapter.java:143 writes through the JsonWriter declared at stream/JsonWriter.java:162, and TypeAdapter.java references the JsonWriter type directly."
 forbidden = ["NO PATH FOUND", "No directed path found", "No path found"]
 
 [[repository.question]]
@@ -404,33 +416,33 @@ id = "gson2-ambiguous-tojson"
 kind = "ambiguity"
 subject = "toJson"
 compass = ["search", "toJson"]
-graphify = ["query", "toJson"]
+graphify = ["explain", "toJson"]
 expect = "pick_list"
 required_one_of = ["Gson.java", "TypeAdapter.java"]
-min_one_of = 2
+min_one_of = 1
 min_candidates = 2
 judgment = "Gson.java declares eight toJson overloads (565, 590, 612, 640, 670, 708, 722, 751) and TypeAdapter.java declares two (143, 160)."
 
 [[repository.question]]
 id = "gson2-negative"
 kind = "negative"
-subject = "ZebraQuantumMissingAdapter"
-compass = ["search", "ZebraQuantumMissingAdapter"]
-graphify = ["query", "ZebraQuantumMissingAdapter"]
+subject = "ZebraQuantumMissingWriter"
+compass = ["search", "ZebraQuantumMissingWriter"]
+graphify = ["explain", "ZebraQuantumMissingWriter"]
 expect = "no_match"
 judgment = "The identifier is absent from the pinned checkout; returning candidates as an answer is a false positive."
 
 [[repository.question]]
-id = "gson2-broad-serialize"
+id = "gson2-broad-deserialize"
 kind = "broad"
-subject = "how does gson serialize an object to json"
-compass = ["query", "how does gson serialize an object to json"]
-graphify = ["query", "how does gson serialize an object to json"]
+subject = "how does gson read json into an object"
+compass = ["query", "how does gson read json into an object"]
+graphify = ["query", "how does gson read json into an object"]
 expect = "answer"
-required = ["toJson", "Gson.java"]
-budget_tokens = 800
+required = ["fromJson", "Gson.java"]
+budget_tokens = 600
 max_follow_ups = 6
-judgment = "The reviewed entry point is Gson.toJson (Gson.java:565 Object, 590 Object+Type, 640 Object+Type+Appendable); TypeAdapter and JsonWriter are collaborators rather than required content."
+judgment = "The reviewed entry points are the Gson.fromJson overloads (Gson.java:850 String+Class, 879 String+Type, 909 String+TypeToken, 940 Reader+Class); TypeAdapter.read is the collaborator rather than required content."
 
 [[repository]]
 name = "zod"
@@ -534,19 +546,19 @@ id = "zod2-ambiguous-safeparse"
 kind = "ambiguity"
 subject = "safeParse"
 compass = ["search", "safeParse"]
-graphify = ["query", "safeParse"]
+graphify = ["explain", "safeParse"]
 expect = "pick_list"
 required_one_of = ["schemas.ts", "parse.ts", "types.ts"]
-min_one_of = 2
+min_one_of = 1
 min_candidates = 2
 judgment = "safeParse is declared in classic/schemas.ts:303, classic/parse.ts:22, core/parse.ts:80 and v3/types.ts; a pick list is required."
 
 [[repository.question]]
 id = "zod2-negative"
 kind = "negative"
-subject = "ZebraQuantumMissingParser"
-compass = ["search", "ZebraQuantumMissingParser"]
-graphify = ["query", "ZebraQuantumMissingParser"]
+subject = "ZebraQuantumMissingSchema"
+compass = ["search", "ZebraQuantumMissingSchema"]
+graphify = ["explain", "ZebraQuantumMissingSchema"]
 expect = "no_match"
 judgment = "The identifier is absent from the pinned checkout; returning candidates as an answer is a false positive."
 
@@ -660,23 +672,23 @@ judgment = "Router::route (routing/mod.rs:192) calls this.path_router.route(path
 forbidden = ["NO PATH FOUND", "No directed path found", "No path found"]
 
 [[repository.question]]
-id = "axum2-ambiguous-route"
+id = "axum2-ambiguous-with-state"
 kind = "ambiguity"
-subject = "route"
-compass = ["search", "route"]
-graphify = ["query", "route"]
+subject = "with_state"
+compass = ["search", "with_state"]
+graphify = ["explain", "with_state"]
 expect = "pick_list"
-required_one_of = ["path_router.rs", "method_routing.rs"]
-min_one_of = 2
+required_one_of = ["method_routing.rs", "path_router.rs"]
+min_one_of = 1
 min_candidates = 2
-judgment = "route is declared by Router (routing/mod.rs:192), PathRouter (path_router.rs:66) and MethodRouter (method_routing.rs); a pick list is required."
+judgment = "with_state is declared by MethodRouter (method_routing.rs:837), Router (routing/mod.rs:444), PathRouter (path_router.rs:305), Handler (handler/mod.rs:202) and Fallback (routing/mod.rs:743); a pick list is required."
 
 [[repository.question]]
 id = "axum2-negative"
 kind = "negative"
-subject = "ZebraQuantumMissingRouter"
-compass = ["search", "ZebraQuantumMissingRouter"]
-graphify = ["query", "ZebraQuantumMissingRouter"]
+subject = "ZebraQuantumMissingService"
+compass = ["search", "ZebraQuantumMissingService"]
+graphify = ["explain", "ZebraQuantumMissingService"]
 expect = "no_match"
 judgment = "The identifier is absent from the pinned checkout; returning candidates as an answer is a false positive."
 
@@ -688,6 +700,6 @@ compass = ["query", "how does axum route an incoming request to a handler"]
 graphify = ["query", "how does axum route an incoming request to a handler"]
 expect = "answer"
 required = ["Router", "MethodRouter"]
-budget_tokens = 400
+budget_tokens = 600
 max_follow_ups = 6
 judgment = "Router (routing/mod.rs) stores MethodRouter values in its PathRouter, and routing hands the request to the matched MethodRouter."

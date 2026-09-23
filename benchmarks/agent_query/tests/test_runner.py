@@ -245,7 +245,36 @@ class JudgeTests(unittest.TestCase):
         oracle = question(kind="negative", expect="no_match", required=())
         self.assertTrue(judge(oracle, "compass", '{"resultState": "no_match"}')[0])
         self.assertTrue(judge(oracle, "graphify", "No matching nodes found.")[0])
+        # `graphify explain` is the documented name-resolution command and
+        # reports the same outcome with different wording.
+        self.assertTrue(judge(oracle, "graphify", "No node matching 'Zed' found.")[0])
         self.assertFalse(judge(oracle, "graphify", "NODE Zebra [src=a.go loc=L1")[0])
+
+    def test_pick_list_counts_graphify_ambiguity_candidates(self) -> None:
+        oracle = question(
+            kind="ambiguity",
+            expect="pick_list",
+            required=(),
+            required_one_of=("command.go", "completions.go"),
+            min_one_of=2,
+            min_candidates=2,
+        )
+        payload = (
+            "Ambiguous: 'Command' matches 2 nodes in different files.\n"
+            "  command.go\n"
+            "    id: command_go_cobra_command\n"
+            "  completions.go\n"
+            "    id: completions_go_cobra_command\n"
+        )
+        self.assertTrue(judge(oracle, "graphify", payload)[0])
+        single = (
+            "Ambiguous: 'Command' matches 1 nodes in different files.\n"
+            "  command.go\n"
+            "    id: command_go_cobra_command\n"
+        )
+        passed, failures = judge(oracle, "graphify", single)
+        self.assertFalse(passed)
+        self.assertIn("candidates 1/2", failures[-1])
 
 
 class GraphMetricTests(unittest.TestCase):

@@ -19,6 +19,14 @@ closest documented operation on each side, and continuations are each tool's own
 Graphify because Compass `path` searches relationships in both directions. A row
 that a tool cannot answer fails and is reported as a recall gap.
 
+Name-resolution rows (`ambiguity`, `negative`) use Graphify's `explain`, the
+command that reports its candidate list for an ambiguous name and its explicit
+no-match, rather than `query`, which traverses the neighbourhood of a single
+matched node. `broad` rows use a 600-token page budget on both sides: below
+that, one tool's fixed metadata can consume the whole page. No v2 row repeats a
+question from the first suite; the audit compares repository, kind and addressed
+symbol across both files.
+
 The suite covers five real repositories in five languages:
 
 | Repository | Language | Focus |
@@ -74,7 +82,10 @@ builds `compass extract --code-only --no-viz --store sqlite` and
 
 - **Correctness**: bounded stdout is judged against the suite's anchors. A
   `negative` question passes only with an explicit no-match signal, and a
-  `pick_list` question passes only when enough distinct candidates are shown.
+  `pick_list` question passes only when the answer shows at least two distinct
+  candidates and at least one reviewed candidate for the name; it deliberately
+  does not require a specific pair, because a bounded page can only show part
+  of the candidate set.
   An `answer` row requires every `required` anchor and, when it also declares
   `required_one_of`/`min_one_of`, at least that many of those alternatives, so
   a question with several source-reviewed answers (for example the Zod

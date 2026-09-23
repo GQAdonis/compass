@@ -42,6 +42,7 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _CURSOR = re.compile(r"next=([^\s]+)")
 _GRAPHIFY_NODE = re.compile(r"^NODE (.+?) \[src=(\S+) loc=L(\d+)", re.MULTILINE)
+_GRAPHIFY_CANDIDATE = re.compile(r"^\s+id: (\S+)", re.MULTILINE)
 
 KINDS = {
     "explain",
@@ -370,6 +371,11 @@ def _candidate_count(tool: str, text: str) -> int:
     labels = {match.group(1) for match in _GRAPHIFY_NODE.finditer(text)}
     if labels:
         return len(labels)
+    # `graphify explain` answers a name that matches several nodes with an
+    # ambiguity list, one `id:` line per candidate.
+    candidates = set(_GRAPHIFY_CANDIDATE.findall(text))
+    if candidates:
+        return len(candidates)
     # `graphify affected` prints one "- <label> [relation] file:Lline" per node.
     return len({line.strip() for line in text.splitlines() if line.startswith("- ")})
 
@@ -380,7 +386,9 @@ def judge(question: Question, tool: str, text: str) -> tuple[bool, tuple[str, ..
         if tool == "compass":
             passed = "no_match" in text
         else:
-            passed = "No matching nodes found" in text
+            # `graphify query` reports "No matching nodes found"; the documented
+            # name-resolution command `explain` reports "No node matching ...".
+            passed = "No matching nodes found" in text or "No node matching" in text
         return passed, () if passed else ("no-match signal",)
     if question.expect == "pick_list":
         hits = [value for value in question.required_one_of if value in text]

@@ -31,7 +31,7 @@ entry point and needs a semantic synonym (`serialize` to `toJson`).
 
 The second suite, `benchmarks/agent_query/suite_v2.toml`, asks 50 further
 questions under a blackbox fairness contract and reaches a much closer result
-(47/50 versus 43/50); it is reported in "Second suite" below.
+(48/50 versus 44/50); it is reported in "Second suite" below.
 
 ## Design
 
@@ -218,12 +218,23 @@ fresh 50-question file built against an explicit fairness contract instead:
   every row is read from source, never from either tool's output;
 - each row asks the same question of the same declaration, and each tool is
   invoked through the closest documented operation for that question
-  (`explain`, `search`/`query`, `callers`/`affected`, `callees`/`explain`,
-  `impact`/`affected`, `path`/`path`) in its own address form;
+  (`explain`, `callers`/`affected`, `callees`/`explain`, `impact`/`affected`,
+  `path`/`path`, `query`/`query`) in its own address form. The `ambiguity` and
+  `negative` rows are name-resolution questions, so they use Graphify's
+  resolution command `explain` - the command that reports its candidate list
+  and its explicit no-match - rather than `query`, which traverses the
+  neighbourhood of one matched node;
 - both sides use their default output form, and a row that needs a continuation
   gets each tool's documented one, priced end to end;
 - `path` rows pass `--undirected` to Graphify because Compass `path` searches
   relationships in both directions;
+- a `pick_list` row requires at least two distinct candidates plus one reviewed
+  candidate for the name, never a specific pair: a bounded page shows part of
+  the candidate set, so demanding named candidates would score which entries
+  happened to fit;
+- `broad` rows use a 600-token page budget for both tools, the reviewed floor
+  at which either tool can render a bounded page instead of spending the whole
+  page on its own metadata envelope;
 - a row that a tool cannot answer fails and is counted as a recall gap; no
   oracle is weakened to favour either tool.
 
@@ -233,16 +244,16 @@ projection rows. It contributes ten questions per repository.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 47/50 | 43/50 |
-| Questions both tools answered | 40 | 40 |
-| Questions only that tool answered | 7 | 3 |
+| Source-reviewed answers passed | 48/50 | 44/50 |
+| Questions both tools answered | 42 | 42 |
+| Questions only that tool answered | 6 | 2 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 91% |
-| Median tokens, own passing rows | 544 | 112 |
-| Median tokens, the 40 paired answers | 410 | 97 |
+| Median tokens, own passing rows | 544 | 98 |
+| Median tokens, the 42 paired answers | 498 | 88 |
 
 Paired tokens matter more than the per-tool medians: the first number prices
-different rows for each tool, while the paired number compares only the 40
+different rows for each tool, while the paired number compares only the 42
 questions where the same source-reviewed oracle passed for both. The runner now
 reports both, and `run.json` carries the per-kind split.
 
@@ -254,28 +265,54 @@ reports both, and `run.json` carries the per-kind split.
 | `callees` | 5/5 | 5/5 | 595 / 249 |
 | `impact` | 5/5 | 5/5 | 1967 / 112 |
 | `path` | 5/5 | 5/5 | 82 / 22 |
-| `file_path` | 5/5 | 4/5 | 90 / 26 |
-| `ambiguity` | 5/5 | 4/5 | 1970 / 1592 |
-| `negative` | 5/5 | 5/5 | 111 / 7 |
-| `broad` | 2/5 | 5/5 | 756 / 561 |
+| `file_path` | 5/5 | 4/5 | 92 / 32 |
+| `ambiguity` | 5/5 | 5/5 | 1967 / 165 |
+| `negative` | 5/5 | 5/5 | 112 / 13 |
+| `broad` | 3/5 | 5/5 | 588 / 595 |
+
+### Suite audit
+
+The first pass of this suite reused thirteen of the first file's questions -
+the same repository, kind and subject with different argument vectors - which
+is not what "fifty new evals" means. The audit that found them compared each
+row's repository, kind and addressed symbol against `suite.toml`; all thirteen
+were replaced with fresh source-reviewed questions before the final
+verification:
+
+| Repository | Replaced (repeated) | New subject |
+| --- | --- | --- |
+| cobra | `ExecuteC` source | `Command::Find` declaration source |
+| cobra | `Execute` ambiguity | `Command` ambiguity |
+| flask | `wsgi_app -> dispatch_request` | `full_dispatch_request -> finalize_request` |
+| flask | `app.py -> ctx.py` | `views.py -> app.py` |
+| flask | `dispatch_request` ambiguity | `url_for` ambiguity |
+| flask | missing-handler negative | missing-blueprint negative |
+| flask | HTTP dispatch question | view function to URL rule |
+| gson | `Gson.java -> JsonWriter.java` | `TypeAdapter.java -> JsonWriter.java` |
+| gson | missing-adapter negative | missing-writer negative |
+| gson | serialize question | read JSON into an object |
+| zod | missing-parser negative | missing-schema negative |
+| axum | `route` ambiguity | `with_state` ambiguity |
+| axum | missing-router negative | missing-service negative |
 
 ### Where Graphify wins
 
-- **Broad natural questions: 5/5 versus 2/5.** Graphify's query is keyword BFS
+- **Broad natural questions: 5/5 versus 3/5.** Graphify's query is keyword BFS
   over node labels, so a question that names the domain terms ("serialize",
   "json schema", "dispatch") reaches both ends of the reviewed chain. Compass's
   discovery router seeds the operation it recognizes and misses the other half:
-  for "how does cobra resolve a subcommand name and then run the resolved
-  command" it seeded `Command::execute` (matched `run`) and never reached
-  `Command::Find`; for the Flask dispatch question it seeded three
-  `dispatch_request` candidates and never reached `full_dispatch_request`.
-  The first suite's older phrasing ("find a subcommand and execute it") did
-  reach `Find`, which makes this a wording-sensitivity finding rather than a
-  capability ceiling.
-- **Tokens.** Graphify answers the median paired question with 97 tokens
-  against Compass's 410. The gap is widest on `negative` (7 versus 111, where
+  for "how does gson read json into an object" it seeded
+  `LazilyParsedNumber::readObject` and `JsonObject::get` and never reached the
+  reviewed `Gson.fromJson` entry points, and for "how does zod convert a json
+  schema into a zod schema" it never reached `fromJSONSchema` or
+  `convertSchema`. Compass does reach the Cobra resolver question at the
+  reviewed 600-token floor, but it needs three cursor pages and 2,356 tokens to
+  do it, against one 1,755-token Graphify answer - at the first pass's
+  400-token budget that row failed outright.
+- **Tokens.** Graphify answers the median paired question with 88 tokens
+  against Compass's 498. The gap is widest on `negative` (13 versus 112, where
   the agent envelope is the whole cost) and narrowest on `ambiguity`
-  (1592 versus 1970).
+  (165 versus 1967).
 - **Latency.** Compass's bounded pages cost wall-clock time: the Cobra impact
   row took 31 seconds, the Zod impact and caller rows 48-51 seconds, and the
   Gson caller row 20 seconds, against 130-360 ms for every Graphify call. The
@@ -318,11 +355,12 @@ its first page. The judgment records that reasoning.
   line per node and no declaration text, so its `explain` cannot return the
   body it points at. Compass renders the digest-verified declaration; a stale
   digest drops the anchor instead of printing unverified text.
-- **Ambiguity pick lists: 5/5 versus 4/5.** Compass's bounded candidate list
-  names every same-named declaration. Graphify's `query` starts from the
-  best-matching node and expands its neighbourhood, so the Flask
-  `dispatch_request` row returns 63 neighbouring nodes without the
-  `views.py` declarations that share the name.
+- **Ambiguity pick lists are answered by both (5/5 each).** Compass lists
+  bounded candidates from `search`; Graphify's `explain` reports its own
+  ambiguity list, and this suite counts it (`_candidate_count` reads its
+  `id:` entries). The earlier pass scored 4/5 for Graphify only because the row
+  used `query`, whose traversal cannot enumerate same-named declarations in
+  other files; that mapping was the eval's artifact, not a capability gap.
 - **File connectivity: 5/5 versus 4/5.** Graphify's `path` resolves its own
   file labels lossily in Axum: `routing/mod.rs` and `routing/path_router.rs`
   collapse onto a test file, and the returned chain never names the target.
@@ -344,7 +382,7 @@ differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final8/runs/20260923T120351Z/`.
 The second suite's evidence lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-final/runs/20260923T171731Z/`
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-final2/runs/20260923T173454Z/`
 and uses the same checkouts, pinned separately in
 `benchmarks/agent_query/suite_v2.toml`.
 
