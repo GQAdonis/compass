@@ -2016,26 +2016,66 @@ fn require_owned_or_absent(destination: &Path) -> Result<(), String> {
     if !destination.exists() {
         if let Some(parent) = destination.parent()
             && parent.exists()
-            && fs::read_dir(parent)
+        {
+            if managed_skill_is_incomplete(parent) {
+                return Ok(());
+            }
+            if fs::read_dir(parent)
                 .map_err(|error| format!("error: could not inspect {}: {error}", parent.display()))?
                 .next()
                 .is_some()
-        {
-            return Err(format!(
-                "error: {} exists but is not an empty or Compass-managed skill directory",
-                parent.display()
-            ));
+            {
+                return Err(format!(
+                    "error: {} exists but is not an empty or Compass-managed skill directory",
+                    parent.display()
+                ));
+            }
         }
         return Ok(());
     }
-    if is_managed_skill(destination) {
+    // A complete install, and an incomplete one whose only defect is missing
+    // managed files, are both Compass's to rewrite.
+    let owned = is_managed_skill(destination)
+        || destination
+            .parent()
+            .is_some_and(managed_skill_is_incomplete);
+    if owned {
         Ok(())
+    } else if managed_skill_is_configured(destination) {
+        // The manifest is there and the files are not, which means someone
+        // edited the installed skill. Overwriting it would discard their work
+        // without asking, so the failure names the state and the repair.
+        Err(format!(
+            "error: {} was modified since Compass installed it and will not be overwritten; remove it and run `compass install` to restore the managed skill",
+            destination.display()
+        ))
     } else {
         Err(format!(
             "error: {} exists but is not managed by Compass",
             destination.display()
         ))
     }
+}
+
+/// Whether a managed skill directory is an incomplete install of this package.
+///
+/// The ownership manifest records every file Compass wrote. A file that is
+/// *missing* puts nothing of the operator's at risk - there is no content to
+/// preserve - so `install` may restore it, which is what the health note tells
+/// an operator to do. A present file whose digest differs, an unowned file, or
+/// a symbolic link still belongs to someone else and keeps the directory
+/// unmanaged, because reinstalling would overwrite it.
+fn managed_skill_is_incomplete(directory: &Path) -> bool {
+    let Ok(Some(manifest)) = read_manifest(directory) else {
+        return false;
+    };
+    let Ok(actual) = collect_managed_files(directory) else {
+        return false;
+    };
+    actual.len() < manifest.files.len()
+        && actual
+            .iter()
+            .all(|(relative, digest)| manifest.files.get(relative) == Some(digest))
 }
 
 fn is_managed_skill(path: &Path) -> bool {
@@ -3582,7 +3622,14 @@ fn manifest_is_current(
     let Some(manifest) = read_manifest(directory)? else {
         return Ok(false);
     };
-    let verified = verify_manifest(directory)?;
+    let verified = match verify_manifest(directory) {
+        Ok(verified) => verified,
+        // The directory is Compass-owned but incomplete: `install` rewrites
+        // the whole package over it (see `managed_skill_is_incomplete`), so no
+        // manifest describing it is current.
+        Err(_) if managed_skill_is_incomplete(directory) => return Ok(false),
+        Err(error) => return Err(error),
+    };
     if verified.compass_version != SKILL_VERSION || &verified.consumers != consumers {
         return Ok(false);
     }

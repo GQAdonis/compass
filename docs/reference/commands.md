@@ -927,6 +927,15 @@ detects agents and also installs the portable Agent Skills package. Dry-run
 output includes the complete skill and adapter path plan and performs read-only
 preflight checks.
 
+An installed skill is owned through its `.compass-install.json` manifest, and
+`compass ensure` reports drift before it builds: a managed skill that is
+missing, or one whose files no longer match the manifest, is named on the
+build's output with the command that repairs it. A missing managed file is an
+incomplete install, so a plain `compass install` restores it. A file that was
+edited since it was installed is never overwritten: the install fails with
+`was modified since Compass installed it and will not be overwritten`, and the
+operator decides whether to remove it and reinstall.
+
 ### `uninstall`
 
 ```text

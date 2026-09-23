@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Repair a partially removed installation instead of refusing to touch it.
+  `compass ensure` already reported a missing or edited managed skill, but the
+  repair command it named failed when the skill file had disappeared: `install`
+  saw a non-empty skill directory it could not verify and stopped. A directory
+  whose only defect is missing managed files is now an incomplete install that
+  `compass install` restores from the package, while a file edited since it was
+  installed still is not overwritten - and now says so
+  (`was modified since Compass installed it and will not be overwritten`)
+  instead of reporting the directory as unmanaged. The build's health note
+  names the two states separately.
+
 - Print only what a caller has to weigh in the text projection. A relationship
   row now keeps its endpoints, relation and site on one line and spells out the
   confidence and resolution only when they are not the strongest `exact`, and

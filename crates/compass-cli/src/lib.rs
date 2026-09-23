@@ -1868,10 +1868,20 @@ fn collect_state_health_notes(
         let drifted = configured && !install_commands::managed_skill_is_healthy(&skill);
         let missing_in_existing_directory =
             managed_directory.as_deref().is_some_and(Path::is_dir) && !skill.is_file();
-        if drifted || missing_in_existing_directory {
+        // The two states need different advice: a missing managed skill is
+        // restored by reinstalling it, while edited managed content is never
+        // overwritten, so the operator has to decide what to discard first.
+        if missing_in_existing_directory {
             record_attempt(relative);
             notes.push(format!(
-                "[compass health] {platform} managed skill is missing or modified at {}; repair with `compass install --platform {}`",
+                "[compass health] {platform} managed skill is missing at {}; repair with `compass install --platform {}`",
+                skill.display(),
+                platform.to_ascii_lowercase()
+            ));
+        } else if drifted {
+            record_attempt(relative);
+            notes.push(format!(
+                "[compass health] {platform} managed skill at {} no longer matches its install manifest; review it, then remove it and run `compass install --platform {}` to restore it",
                 skill.display(),
                 platform.to_ascii_lowercase()
             ));
