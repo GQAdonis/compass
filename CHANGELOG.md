@@ -27,12 +27,14 @@
   probe, and every candidate it verified cost one snapshot read: on the Axum
   corpus ~1,000 candidates made a two-edge `callers` answer take 7.7 s, and the
   Zod and Gson graphs spent 50 s per impact query the same way. The probe now
-  verifies at most 64 candidate sources per query and reports that it stopped
-  early; the owner-scoped adjacency still publishes the direct and
-  module-level evidence. Median `callers` latency falls from 7.8 s to 0.7 s
-  and median `impact` latency from 30.9 s to 3.9 s on the 50-question suite,
-  which now costs 29 s of query wall time in total instead of 247 s, with the
-  same 50/50 result.
+  runs only while an answer is thinner than the self-check threshold, verifies
+  at most 16 candidate sources even then, and reports that it stopped early;
+  the consistency diagnostic that flags a suspiciously empty relationship
+  answer stays reachable, and the owner-scoped adjacency still publishes the
+  direct and module-level evidence. Median `callers` latency falls from 7.8 s
+  to 0.23 s, median `impact` latency from 30.9 s to 0.66 s, and the suite's
+  total query wall time from 247 s to 16 s, with the same 50/50 result and a
+  paired median of 304 tokens.
 
 - Spend the text page budget on evidence instead of envelope. The default
   `text` projection now renders at most the Agent View's profile per page (12

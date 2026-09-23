@@ -256,13 +256,16 @@ targets a containing owner (a module, file or alias target) through a
 term-posting probe. Each candidate the probe verified cost one snapshot read,
 so a symbol whose owner carries a common identifier could turn a two-edge
 answer into ~1,000 reads: 7.7 s per `callers` query on the Axum corpus and 50 s
-per `impact` query on Zod and Gson. The probe now verifies at most 64 candidate
-sources per query and, when candidates remain, keeps `relationshipInconsistency`
-reporting that the observed importer count is a lower bound ("at least N"). The
-owner-scoped adjacency still publishes every direct, module-level and
-alias-target edge it resolves, so an answer that was complete at the caller's
-`--max-edges` bound stays complete; an answer whose owner-level importer set is
-wider than 64 verified candidates is bounded rather than unbounded work. The
+per `impact` query on Zod and Gson. The probe is now a fallback rather than an
+always-on enrichment: it runs only while the containment walk has published
+fewer than `RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS` (8) edges, verifies at most
+16 candidate sources even then, and keeps reporting the observed importer count
+as a lower bound through `relationshipInconsistency`. The owner-scoped
+adjacency still publishes every direct, module-level and alias-target edge it
+resolves, so an answer that was complete at the caller's `--max-edges` bound
+stays complete; an answer whose owner-level importer set is wider is bounded
+rather than unbounded work, and a well-connected symbol's answer no longer
+carries supplementary owner-level importer edges beyond that. The
 `compass.query/1` schema, limits and diagnostics are unchanged.
 
 ### Agent text page budget

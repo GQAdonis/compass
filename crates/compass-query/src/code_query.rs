@@ -49,9 +49,11 @@ const RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS: usize = 8;
 /// produce hundreds of them, and each verification is an independent snapshot
 /// read. On the Axum corpus that loop was about 7.7 s of an 8 s `callers`
 /// query for a two-edge answer; the owner-scoped adjacency had already
-/// published the direct and module-level evidence. The probe stays, bounded,
-/// and reports that it stopped early.
-const RELATIONSHIP_IMPORTER_VERIFY_LIMIT: usize = 64;
+/// published the direct and module-level evidence. The probe runs only while an
+/// answer is thinner than `RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS`, verifies at
+/// most this many candidates even then, and reports that it stopped early, so
+/// the threshold that raises the consistency diagnostic is still reachable.
+const RELATIONSHIP_IMPORTER_VERIFY_LIMIT: usize = 16;
 const RELATIONSHIP_OWNER_SCOPE_LIMIT: usize = 32;
 const RELATIONSHIP_TERM_LIMIT: usize = 128;
 const RELATIONSHIP_SOURCE_EDGE_SCAN_LIMIT: usize = 256;
@@ -2458,6 +2460,17 @@ impl CodeQueryEngine {
                 observed,
                 probe_truncated,
             ));
+        }
+        // The owner-level importer probe below is a recall fallback for answers
+        // that would otherwise look empty: it is the only path that raises
+        // "usages exist for this symbol but the relationship query returned
+        // almost nothing", and it costs one snapshot read per verified
+        // candidate. Once the containment walk has published the self-check
+        // threshold itself, the answer no longer depends on it, so a
+        // well-connected symbol does not pay for the probe at every hop of an
+        // impact traversal.
+        if edges.len() >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS {
+            return Ok((edges.into_values().collect(), truncated, 0, false));
         }
         let mut terms = BTreeSet::new();
         for owner_id in &owner_ids {

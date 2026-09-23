@@ -249,8 +249,8 @@ projection rows. It contributes ten questions per repository.
 | Questions only that tool answered | 6 | 0 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 91% |
-| Median tokens, own passing rows | 380 | 98 |
-| Median tokens, the 44 paired answers | 366 | 98 |
+| Median tokens, own passing rows | 327 | 98 |
+| Median tokens, the 44 paired answers | 304 | 98 |
 
 Paired tokens matter more than the per-tool medians: the first number prices
 different rows for each tool, while the paired number compares only the 44
@@ -261,9 +261,9 @@ reports both, and `run.json` carries the per-kind split.
 | --- | ---: | ---: | ---: |
 | `explain` | 5/5 | 5/5 | 288 / 210 |
 | `explain_source` | 5/5 | 0/5 | - |
-| `callers` | 5/5 | 5/5 | 382 / 67 |
-| `callees` | 5/5 | 5/5 | 322 / 249 |
-| `impact` | 5/5 | 5/5 | 537 / 112 |
+| `callers` | 5/5 | 5/5 | 222 / 67 |
+| `callees` | 5/5 | 5/5 | 305 / 249 |
+| `impact` | 5/5 | 5/5 | 428 / 112 |
 | `path` | 5/5 | 5/5 | 44 / 22 |
 | `file_path` | 5/5 | 4/5 | 51 / 32 |
 | `ambiguity` | 5/5 | 5/5 | 628 / 165 |
@@ -472,15 +472,15 @@ verified.
 The probe now verifies at most 64 candidate sources per query and reports that
 it stopped early, while the owner-scoped adjacency keeps publishing the direct,
 module-level and alias-target edges. Re-verified on the same 50-question suite
-(`agent-query-v2-fast2/runs/20260923T203416Z` against
+(`agent-query-v2-fast3/runs/20260923T215256Z` against
 `agent-query-v2-lean6/runs/20260923T195442Z`):
 
 | Metric | Before | After |
 | --- | ---: | ---: |
-| `callers` median wall time | 7,779 ms | **661 ms** |
-| `impact` median wall time | 30,863 ms | **3,868 ms** |
-| Total Compass wall time over the suite | 247,494 ms | **29,108 ms** |
-| Paired median answer tokens | 362 | **338** |
+| `callers` median wall time | 7,779 ms | **233 ms** |
+| `impact` median wall time | 30,863 ms | **664 ms** |
+| Total Compass wall time over the suite | 247,494 ms | **16,180 ms** |
+| Paired median answer tokens | 362 | **304** |
 | Answers passed | 50/50 | **50/50** |
 
 The first suite is unchanged at 47/47 versus Graphify's 22/47. Graphify answers
