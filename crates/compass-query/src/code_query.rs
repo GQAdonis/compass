@@ -4596,8 +4596,10 @@ mod fuzzy_term_variant_tests {
         // of an 8 s `callers` answer. It must still exceed the threshold that
         // lets a thin answer raise the consistency diagnostic, and stay far
         // below the default edge bound (1,000).
-        assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS);
-        assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT * 8 < 1_000);
+        const {
+            assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS);
+            assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT * 8 < 1_000);
+        }
     }
 
     #[test]

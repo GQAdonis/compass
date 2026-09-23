@@ -116,12 +116,13 @@ fn expired_typed_query_deadline_fails_closed_with_a_typed_timeout()
         EngineSelection::Json,
     )?
     .with_deadline(Instant::now());
-    let error = engine
-        .search(SearchRequest {
-            query: "UserService".to_owned(),
-            limits: CodeQueryLimits::default(),
-        })
-        .expect_err("an expired deadline must fail closed");
+    let error = match engine.search(SearchRequest {
+        query: "UserService".to_owned(),
+        limits: CodeQueryLimits::default(),
+    }) {
+        Ok(_) => return Err("an expired deadline must fail closed".into()),
+        Err(error) => error,
+    };
     assert_eq!(error.code(), "code_query_timeout");
     assert_eq!(error.kind(), QueryErrorKind::Timeout);
     Ok(())
