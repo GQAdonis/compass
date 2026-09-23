@@ -48,8 +48,10 @@ KINDS = {
     "explain_source",
     "brief",
     "callers",
+    "callees",
     "brief_callers",
     "paged_callers",
+    "impact",
     "path",
     "file_path",
     "ambiguity",
@@ -528,9 +530,10 @@ def run_question(
                 break
             cursor = match.group(1)
         else:
-            if question.kind in {"paged_callers", "brief_callers"}:
-                # Graphify has no continuation for this shape; one response is
-                # its complete answer.
+            if question.kind != "broad":
+                # Graphify documents a continuation for `query` only: it re-runs
+                # with a larger `--budget`. `affected`, `explain` and `path` have
+                # no continuation, so one response is its complete answer.
                 break
             budget *= 4
         follow_ups += 1
@@ -779,6 +782,25 @@ def render_report(run: dict) -> str:
     lines.append("")
     lines.append("`P` passed the source-reviewed oracle, `F` failed, `T` timed out.")
     lines.append("")
+    lines.append("## Questions both tools answered")
+    lines.append("")
+    lines.append(
+        "Token medians above cover each tool's own passing rows, which prices different"
+    )
+    lines.append(
+        "questions. The table below restricts the comparison to rows where the same"
+    )
+    lines.append("source-reviewed oracle passed for both tools.")
+    lines.append("")
+    lines.append("| Scope | Both answered | Compass only | Graphify only | Neither | Median Compass tokens | Median Graphify tokens |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for scope, entry in run["paired"].items():
+        lines.append(
+            f"| {scope} | {entry['bothPassed']} | {entry['compassOnly']} | "
+            f"{entry['graphifyOnly']} | {entry['neither']} | "
+            f"{entry['medianCompassTokens']:.0f} | {entry['medianGraphifyTokens']:.0f} |"
+        )
+    lines.append("")
     lines.append("## Aggregate")
     lines.append("")
     lines.append("| Scope | Tool | Passed | Pass rate | Median first-page tokens | Median answer tokens | Median wall ms |")
@@ -796,6 +818,8 @@ def render_report(run: dict) -> str:
     verdict = run["verdict"]
     lines.append(f"- Correctness (suite pass rate): {verdict['correctness']}")
     lines.append(f"- Token efficiency (median answer tokens): {verdict['tokens']}")
+    lines.append(f"- Token efficiency (paired answers only): {verdict['pairedTokens']}")
+    lines.append(f"- Oracle split: {verdict['split']}")
     lines.append(f"- Graph quality (source-backed ratio and reviewed anchors): {verdict['graphQuality']}")
     lines.append("")
     lines.append("## Limits")
@@ -824,6 +848,7 @@ def _verdict_pair(compass: dict | None, graphify: dict | None) -> str:
 def _aggregate(run: dict) -> None:
     observations = run["observations"]
     summaries: dict[str, dict] = {}
+    paired: dict[str, dict] = {}
     for scope in ("all", *sorted(KINDS)):
         subset = [
             observation
@@ -835,7 +860,9 @@ def _aggregate(run: dict) -> None:
         summaries[scope] = {
             tool: _summary_objects(subset, tool) for tool in ("compass", "graphify")
         }
+        paired[scope] = _paired_summary(subset)
     run["summaries"] = summaries
+    run["paired"] = paired
     verdict: dict[str, str] = {}
     all_scope = summaries["all"]
     compass, graphify = all_scope["compass"], all_scope["graphify"]
@@ -870,6 +897,19 @@ def _aggregate(run: dict) -> None:
             )
     else:
         verdict["tokens"] = "Not comparable: one tool has no passing answers"
+    both = paired["all"]
+    if both["bothPassed"]:
+        verdict["pairedTokens"] = (
+            f"On the {both['bothPassed']} questions both tools answered, Compass costs "
+            f"{both['medianCompassTokens']:.0f} tokens and Graphify "
+            f"{both['medianGraphifyTokens']:.0f} tokens (median)"
+        )
+    else:
+        verdict["pairedTokens"] = "No question was answered by both tools"
+    verdict["split"] = (
+        f"Both {both['bothPassed']}, Compass only {both['compassOnly']}, "
+        f"Graphify only {both['graphifyOnly']}, neither {both['neither']}"
+    )
     metrics = run["graphMetrics"]
     compass_anchors = sum(m["anchorHits"] for m in metrics if m["tool"] == "compass")
     graphify_anchors = sum(m["anchorHits"] for m in metrics if m["tool"] == "graphify")
@@ -896,6 +936,50 @@ def _summary_objects(observations: list[dict], tool: str) -> dict:
         "medianFirstPageTokens": _median([o["firstPageTokens"] for o in subset]),
         "medianAnswerTokens": _median([o["totalTokens"] for o in passed]),
         "medianWallMs": _median([o["wallMs"] for o in subset]),
+    }
+
+
+def _paired_summary(observations: list[dict]) -> dict:
+    """Compare token cost only on questions the same tool-independent oracle passed.
+
+    A per-tool median over each tool's own passing subset prices different
+    questions, so a tool that passes cheap rows and fails expensive ones - or the
+    reverse - is credited or charged for work the other tool never did. Pairing
+    the observations keeps the comparison on identical, source-reviewed answers.
+    """
+    by_question: dict[tuple[str, str], dict[str, dict]] = {}
+    for observation in observations:
+        by_question.setdefault(
+            (observation["repository"], observation["question"]), {}
+        )[observation["tool"]] = observation
+    both_passed = [
+        entry for entry in by_question.values() if all(t in entry for t in ("compass", "graphify"))
+    ]
+    passed = [entry for entry in both_passed if entry["compass"]["passed"] and entry["graphify"]["passed"]]
+    compass_only = 0
+    graphify_only = 0
+    neither = 0
+    for entry in by_question.values():
+        compass = entry.get("compass")
+        graphify = entry.get("graphify")
+        if compass is None or graphify is None:
+            continue
+        if compass["passed"] and not graphify["passed"]:
+            compass_only += 1
+        elif graphify["passed"] and not compass["passed"]:
+            graphify_only += 1
+        elif not compass["passed"] and not graphify["passed"]:
+            neither += 1
+    return {
+        "questions": len(by_question),
+        "bothPassed": len(passed),
+        "compassOnly": compass_only,
+        "graphifyOnly": graphify_only,
+        "neither": neither,
+        "medianCompassTokens": _median([entry["compass"]["totalTokens"] for entry in passed]),
+        "medianGraphifyTokens": _median([entry["graphify"]["totalTokens"] for entry in passed]),
+        "medianCompassWallMs": _median([entry["compass"]["wallMs"] for entry in passed]),
+        "medianGraphifyWallMs": _median([entry["graphify"]["wallMs"] for entry in passed]),
     }
 
 

@@ -1,8 +1,23 @@
 # Agent query evaluation
 
 `benchmarks/agent-query` measures how well Compass answers the agent questions
-in `suite.toml` compared with Graphify on the same pinned checkouts. It is
+in its suites compared with Graphify on the same pinned checkouts. It is
 developer-side tooling: Compass never runs it, and it never installs Graphify.
+
+Two suites share the harness:
+
+| Suite | Questions | Shape |
+| --- | ---: | --- |
+| `suite.toml` | 47 | The first five-repository suite, including Compass's compact and paged projections |
+| `suite_v2.toml` | 50 | A blackbox-fair extension: same questions for both tools, default output forms, no tool-specific projections |
+
+`suite_v2.toml` states its fairness contract inline and keeps it in the rows:
+both tools are blackboxes over the same pinned checkout, every oracle is read
+from source, each row asks the same question of the same declaration through the
+closest documented operation on each side, and continuations are each tool's own
+(Compass `--cursor`, Graphify `--budget`). `path` rows pass `--undirected` to
+Graphify because Compass `path` searches relationships in both directions. A row
+that a tool cannot answer fails and is reported as a recall gap.
 
 The suite covers five real repositories in five languages:
 
@@ -14,12 +29,13 @@ The suite covers five real repositories in five languages:
 | `colinhacks/zod` | TypeScript | schema parse and safe-parse helpers |
 | `tokio-rs/axum` | Rust | routing and service dispatch |
 
-Each repository contributes source-reviewed questions across seven kinds:
-`explain`, `callers`, `path`, `file_path`, `ambiguity`, `negative`, and
-`broad`. Every question declares the exact per-tool argument vector, the
-expected outcome, and the file, line, or symbol anchors the reviewer read in
-the pinned checkout. Every repository also declares graph anchors that both
-graphs must contain as source-backed nodes.
+Both suites contribute source-reviewed questions across `explain`,
+`explain_source`, `callers`, `callees`, `impact`, `path`, `file_path`,
+`ambiguity`, `negative`, and `broad` (the first suite adds the `brief`,
+`brief_callers`, and `paged_callers` projections). Every question declares the
+exact per-tool argument vector, the expected outcome, and the file, line, or
+symbol anchors the reviewer read in the pinned checkout. Every repository also
+declares graph anchors that both graphs must contain as source-backed nodes.
 
 ## Run
 
@@ -34,6 +50,7 @@ python3 benchmarks/agent-query/runner.py doctor \
   --source axum=/Volumes/Workspace/Github/tokio-rs/axum
 
 python3 benchmarks/agent-query/runner.py run \
+  --suite benchmarks/agent-query/suite_v2.toml \
   --workspace /Volumes/Workspace/CrabData/compass-evaluations/agent-query \
   --compass-binary /Volumes/Workspace/crabbuild-target/compass/release/compass \
   --graphify-binary "$(command -v graphify)" \
@@ -43,6 +60,9 @@ python3 benchmarks/agent-query/runner.py run \
   --source zod=/Volumes/Workspace/Github/colinhacks/zod \
   --source axum=/Volumes/Workspace/Github/tokio-rs/axum
 ```
+
+`--suite` defaults to `suite.toml` beside the runner. Passing
+`suite_v2.toml` runs the 50 blackbox questions instead.
 
 `doctor` fails when a checkout is not at the suite's pinned commit. `run`
 builds `compass extract --code-only --no-viz --store sqlite` and
@@ -71,6 +91,12 @@ builds `compass extract --code-only --no-viz --store sqlite` and
   documented continuation - Compass uses the `--cursor` ledger, Graphify
   re-runs with a four-times larger budget - up to `max_follow_ups`, so
   pagination and budget guessing are priced rather than hidden.
+- **Paired tokens**: the aggregate table also reports token medians restricted
+  to the questions where the same source-reviewed oracle passed for both tools.
+  A per-tool median over each tool's own passing rows prices different
+  questions; the paired number is the like-for-like comparison, and
+  `run.json` carries the per-kind split of both-only, Compass-only,
+  Graphify-only, and neither.
 - **Latency**: wall-clock milliseconds per tool invocation, including
   follow-ups.
 - **Graph quality**: node and edge counts, source-backed node ratio, dangling

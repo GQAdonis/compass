@@ -29,6 +29,10 @@ behavior terms to graph-verified agent nouns (`route` to `Router`,
 stays in the JSON model (`JsonObject` family) instead of the serialization
 entry point and needs a semantic synonym (`serialize` to `toJson`).
 
+The second suite, `benchmarks/agent_query/suite_v2.toml`, asks 50 further
+questions under a blackbox fairness contract and reaches a much closer result
+(46/50 versus 43/50); it is reported in "Second suite" below.
+
 ## Design
 
 `benchmarks/agent_query/suite.toml` pins one checkout per language:
@@ -201,6 +205,110 @@ digest before it is printed; a rewritten file fails closed with
    command failed on Python, Java, and TypeScript file endpoints. These are
    capability gaps, not recall differences.
 
+## Second suite: 50 blackbox questions
+
+The first suite grew by adding rows to a file that was already tuned around
+Compass's stronger surfaces: it used Compass-only projections (`brief`,
+`paged_callers`, `explore --source`), addressed Graphify with an operation
+(`query`) that is not its node-lookup command, and priced a `negative` answer
+against different output shapes. `benchmarks/agent_query/suite_v2.toml` is a
+fresh 50-question file built against an explicit fairness contract instead:
+
+- both tools are blackboxes over the same pinned checkout, and the oracle for
+  every row is read from source, never from either tool's output;
+- each row asks the same question of the same declaration, and each tool is
+  invoked through the closest documented operation for that question
+  (`explain`, `search`/`query`, `callers`/`affected`, `callees`/`explain`,
+  `impact`/`affected`, `path`/`path`) in its own address form;
+- both sides use their default output form, and a row that needs a continuation
+  gets each tool's documented one, priced end to end;
+- `path` rows pass `--undirected` to Graphify because Compass `path` searches
+  relationships in both directions;
+- a row that a tool cannot answer fails and is counted as a recall gap; no
+  oracle is weakened to favour either tool.
+
+The suite adds the two kinds the first file could not compare - outbound calls
+(`callees`) and transitive dependents (`impact`) - and drops the Compass-only
+projection rows. It contributes ten questions per repository.
+
+| Metric | Compass | Graphify |
+| --- | ---: | ---: |
+| Source-reviewed answers passed | 46/50 | 43/50 |
+| Questions both tools answered | 39 | 39 |
+| Questions only that tool answered | 7 | 4 |
+| Reviewed graph anchors present | 15/15 | 13/15 |
+| Source-backed nodes | 100% | 91% |
+| Median tokens, own passing rows | 492 | 112 |
+| Median tokens, the 39 paired answers | 379 | 107 |
+
+Paired tokens matter more than the per-tool medians: the first number prices
+different rows for each tool, while the paired number compares only the 39
+questions where the same source-reviewed oracle passed for both. The runner now
+reports both, and `run.json` carries the per-kind split.
+
+| Kind | Compass | Graphify | Paired median tokens (Compass/Graphify) |
+| --- | ---: | ---: | ---: |
+| `explain` | 5/5 | 5/5 | 288 / 210 |
+| `explain_source` | 5/5 | 0/5 | - |
+| `callers` | 5/5 | 5/5 | 1992 / 67 |
+| `callees` | 5/5 | 5/5 | 595 / 249 |
+| `impact` | 4/5 | 5/5 | 1974 / 120 |
+| `path` | 5/5 | 5/5 | 82 / 22 |
+| `file_path` | 5/5 | 4/5 | 90 / 26 |
+| `ambiguity` | 5/5 | 4/5 | 1970 / 1598 |
+| `negative` | 5/5 | 5/5 | 111 / 7 |
+| `broad` | 2/5 | 5/5 | 756 / 561 |
+
+### Where Graphify wins
+
+- **Broad natural questions: 5/5 versus 2/5.** Graphify's query is keyword BFS
+  over node labels, so a question that names the domain terms ("serialize",
+  "json schema", "dispatch") reaches both ends of the reviewed chain. Compass's
+  discovery router seeds the operation it recognizes and misses the other half:
+  for "how does cobra resolve a subcommand name and then run the resolved
+  command" it seeded `Command::execute` (matched `run`) and never reached
+  `Command::Find`; for the Flask dispatch question it seeded three
+  `dispatch_request` candidates and never reached `full_dispatch_request`.
+  The first suite's older phrasing ("find a subcommand and execute it") did
+  reach `Find`, which makes this a wording-sensitivity finding rather than a
+  capability ceiling.
+- **Transitive impact: 5/5 versus 4/5.** For
+  `cobra.Command::ParseFlags` at depth three, Graphify's `affected` returns the
+  direct caller `execute` (command.go:919). Compass's `impact` does not report
+  `execute` on any of the four pages it serves - 7,890 tokens and 107 seconds
+  across the printed ledger - even though Compass's own `callers` command does
+  list `cobra.Command::execute` for the same symbol. That is a bounded-recall
+  gap in the traversal, not an oracle difference.
+- **Tokens.** Graphify answers the median paired question with 107 tokens
+  against Compass's 379. The gap is widest on `negative` (7 versus 111, where
+  the agent envelope is the whole cost) and narrowest on `ambiguity`
+  (1598 versus 1970).
+- **Latency.** Compass's bounded pages cost wall-clock time: the Cobra impact
+  row took 107 seconds for four pages, the Zod caller row 49 seconds, and the
+  Gson caller row 20 seconds, against 130-320 ms for every Graphify call.
+
+### Where Compass wins
+
+- **Declaration source: 5/5 versus 0/5.** Graphify's graph stores a file and a
+  line per node and no declaration text, so its `explain` cannot return the
+  body it points at. Compass renders the digest-verified declaration; a stale
+  digest drops the anchor instead of printing unverified text.
+- **Ambiguity pick lists: 5/5 versus 4/5.** Compass's bounded candidate list
+  names every same-named declaration. Graphify's `query` starts from the
+  best-matching node and expands its neighbourhood, so the Flask
+  `dispatch_request` row returns 63 neighbouring nodes without the
+  `views.py` declarations that share the name.
+- **File connectivity: 5/5 versus 4/5.** Graphify's `path` resolves its own
+  file labels lossily in Axum: `routing/mod.rs` and `routing/path_router.rs`
+  collapse onto a test file, and the returned chain never names the target.
+- **Callers and callees are answered by both.** All five caller and all five
+  callee rows pass on both sides, so the difference is price rather than recall
+  (paired median 1992 versus 67 tokens for callers). The shared artifacts do
+  show one recall difference outside this suite: Graphify's Cobra graph records
+  570 test-file call edges but not the two that call `ExecuteC`
+  (`command_test.go:54`, `completions_test.go:4109`), which is what the first
+  suite's `ExecuteC` caller row measures.
+
 ## Reproduction boundary
 
 The run used Apple silicon macOS with the release Compass binary at
@@ -210,6 +318,10 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final8/runs/20260923T120351Z/`.
+The second suite's evidence lives under
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2/runs/20260923T162200Z/`
+and uses the same checkouts, pinned separately in
+`benchmarks/agent_query/suite_v2.toml`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

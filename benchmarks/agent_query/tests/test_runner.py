@@ -9,6 +9,7 @@ from benchmarks.agent_query.runner import (
     Anchor,
     Question,
     Repository,
+    _paired_summary,
     estimate_tokens,
     graph_metrics,
     judge,
@@ -75,6 +76,94 @@ class SuiteTests(unittest.TestCase):
                 "broad",
             },
         )
+
+    def test_blackbox_suite_asks_fifty_symmetric_questions(self) -> None:
+        suite = load_suite(ROOT / "suite_v2.toml")
+        self.assertEqual(
+            {repository.name for repository in suite.repositories},
+            {"cobra", "flask", "gson", "zod", "axum"},
+        )
+        questions = [question for repository in suite.repositories for question in repository.questions]
+        self.assertEqual(len(questions), 50)
+        for repository in suite.repositories:
+            self.assertEqual(len(repository.questions), 10)
+            self.assertGreaterEqual(len(repository.anchors), 3)
+        self.assertEqual(
+            {question.kind for question in questions},
+            {
+                "explain",
+                "explain_source",
+                "callers",
+                "callees",
+                "impact",
+                "path",
+                "file_path",
+                "ambiguity",
+                "negative",
+                "broad",
+            },
+        )
+        for question in questions:
+            # The blackbox suite never prices a Compass-only projection.
+            self.assertNotIn("--brief", question.compass)
+            self.assertNotIn("--format", question.compass)
+            if question.kind == "explain_source":
+                self.assertIn("--source", question.compass)
+            if question.kind == "path" or question.kind == "file_path":
+                # Compass `path` searches relationships in both directions.
+                self.assertIn("--undirected", question.graphify)
+            if question.kind == "impact":
+                # Compass pages the bounded traversal with its cursor ledger.
+                self.assertGreater(question.max_follow_ups, 0)
+            if question.kind == "broad":
+                self.assertGreater(question.budget_tokens, 0)
+
+
+class PairedSummaryTests(unittest.TestCase):
+    def observation(self, question: str, tool: str, passed: bool, tokens: int) -> dict:
+        return {
+            "repository": "cobra",
+            "question": question,
+            "kind": "callers",
+            "tool": tool,
+            "passed": passed,
+            "totalTokens": tokens,
+            "wallMs": tokens,
+        }
+
+    def test_paired_tokens_use_only_questions_both_tools_passed(self) -> None:
+        observations = [
+            # Both answered: this pair sets the reported medians.
+            self.observation("shared", "compass", True, 400),
+            self.observation("shared", "graphify", True, 100),
+            # Only Compass answered: its cheap row must not enter the medians.
+            self.observation("compass-only", "compass", True, 10),
+            self.observation("compass-only", "graphify", False, 0),
+            # Only Graphify answered.
+            self.observation("graphify-only", "compass", False, 0),
+            self.observation("graphify-only", "graphify", True, 20),
+            # Neither answered.
+            self.observation("neither", "compass", False, 0),
+            self.observation("neither", "graphify", False, 0),
+        ]
+        summary = _paired_summary(observations)
+        self.assertEqual(summary["questions"], 4)
+        self.assertEqual(summary["bothPassed"], 1)
+        self.assertEqual(summary["compassOnly"], 1)
+        self.assertEqual(summary["graphifyOnly"], 1)
+        self.assertEqual(summary["neither"], 1)
+        self.assertEqual(summary["medianCompassTokens"], 400)
+        self.assertEqual(summary["medianGraphifyTokens"], 100)
+
+    def test_paired_tokens_are_zero_without_a_shared_answer(self) -> None:
+        observations = [
+            self.observation("a", "compass", True, 50),
+            self.observation("a", "graphify", False, 5),
+        ]
+        summary = _paired_summary(observations)
+        self.assertEqual(summary["bothPassed"], 0)
+        self.assertEqual(summary["medianCompassTokens"], 0)
+        self.assertEqual(summary["medianGraphifyTokens"], 0)
 
 
 class EstimateTests(unittest.TestCase):
