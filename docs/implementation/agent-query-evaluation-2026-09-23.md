@@ -9,23 +9,24 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 42/44 | 19/44 |
+| Source-reviewed answers passed | 43/44 | 19/44 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
-| Median tokens per answered question | 525 | 277 |
-| Broad natural questions answered | 3/5 | 5/5 |
+| Median tokens per answered question | 575 | 278 |
+| Broad natural questions answered | 4/5 | 5/5 |
 | Paged caller questions answered | 2/2 | 0/2 |
 | Compact caller questions answered | 2/2 | 0/2 |
 
 Compass passed every `callers`, `explain_source`, `file_path`, and `negative`
 row, plus every `path` and both `paged_callers` rows; Graphify passed none of
 the `callers`, `paged_callers`, `explain_source`, or `file_path` rows and only
-two of four `path` rows. The
-remaining Compass failures are natural-language `broad` questions on Gson,
-Zod, and Axum, where discovery seeded surface terms such as `json`, `object`,
-`input`, and `request` instead of the domain symbols `toJson`, `JsonWriter`,
-`safeParse`, and `Router`. The Zod row's oracle requires the `parse` family
-specifically, so it is the weakest of the three judgments.
+two of four `path` rows. Four of the five broad natural questions now pass:
+Cobra and Flask from the start, Zod after the oracle was corrected to credit
+the reviewed `validate` family, and Axum after discovery learned to expand
+behavior terms to graph-verified agent nouns (`route` to `Router`,
+`MethodRouter`, `PathRouter`). The one remaining failure is Gson, whose answer
+stays in the JSON model (`JsonObject` family) instead of the serialization
+entry point and needs a semantic synonym (`serialize` to `toJson`).
 
 ## Design
 
@@ -70,9 +71,17 @@ does zod validate input data". The row now accepts any reviewed validation
 entry point, and Compass passes it in two pages and 783 tokens while Graphify
 passes in one page and 411. Continuation pages also stopped re-printing caveat
 paragraphs: the first page still states them in full, later pages summarize
-them, so the same page budget reaches results instead of prose. The remaining
-two broad misses are Gson (the answer stays in the JSON model instead of the
-serialization entry point) and Axum (`Router` is named, `MethodRouter` is not).
+them, so the same page budget reaches results instead of prose.
+
+The Axum row then closed on measured morphology: the question says "route"
+while the graph declares `Router`/`MethodRouter`, and adding the `router`
+spelling to the query reached `MethodRouter` (61 mentions), `PathRouter`, and
+`Router`. Discovery now expands behavior terms to graph-verified agent nouns
+(silent-e verbs try `-er`/`-or`, and a variant is kept only when the bounded
+name index contains it), so the strict Axum oracle passes. The one remaining
+broad miss is Gson: its answer stays in the JSON model (`JsonObject` family)
+instead of the serialization entry point, which needs a semantic synonym
+(`serialize` to `toJson`) that morphology cannot supply.
 
 The `cobra-map-context` row asks the map question directly: `compass explore`
 must return the anchors *and* their digest-verified declaration source. It
@@ -224,7 +233,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final5/runs/20260923T112114Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final6/runs/20260923T113717Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

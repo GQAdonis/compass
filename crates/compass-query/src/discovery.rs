@@ -2508,6 +2508,30 @@ mod tests {
     }
 
     #[test]
+    fn behavior_terms_gain_graph_verified_agent_nouns() -> Result<(), Box<dyn std::error::Error>> {
+        let engine = engine(vec![node("n:router", "Router")], Vec::new());
+        let prepared = engine.prepare_discovery_query("how does the code route a request")?;
+        assert!(
+            prepared.ranking_terms.iter().any(|term| term == "router"),
+            "a graph that names Router must expand the behavior term: {:?}",
+            prepared.ranking_terms
+        );
+        assert_eq!(
+            crate::code_query::agent_noun_variants("route"),
+            ["router", "routor"]
+        );
+
+        // Vocabulary the graph does not contain is never invented.
+        let prepared = engine.prepare_discovery_query("how does the code florp a widget")?;
+        assert!(
+            !prepared.ranking_terms.iter().any(|term| term == "florper"),
+            "{:?}",
+            prepared.ranking_terms
+        );
+        Ok(())
+    }
+
+    #[test]
     fn explicit_direction_is_identified_as_explicit() -> Result<(), Box<dyn std::error::Error>> {
         let engine = engine(vec![node("n:alpha", "alpha")], Vec::new());
         for direction in [

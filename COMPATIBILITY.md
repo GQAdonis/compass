@@ -224,6 +224,17 @@ count rather than the capped projection count. The fields, schemas, digests,
 and raw `compass.query/1` response are unchanged; consumers that relied on the
 previous ID-sorted presentation must treat the new order as the contract.
 
+### Discovery agent-noun expansion
+
+Natural discovery now adds graph-verified agent-noun spellings of behavior
+terms to the bounded ranking terms: a term ending in a silent `e` also tries
+`-er` and `-or` (`route` → `router`, `validate` → `validator`), and a variant is
+kept only when the graph's bounded name index returns at least one node for it.
+The response schema, `seed terms` rendering, limits, and candidate budgets are
+unchanged, and the expansion cannot introduce a term the graph does not
+declare. Questions that previously matched only `route`-shaped names can now
+seed `Router`, `PathRouter`, and `MethodRouter`.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

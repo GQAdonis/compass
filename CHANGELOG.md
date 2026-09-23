@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Expand behavior questions to graph-verified agent nouns. A question that asks
+  how code routes a request now also ranks the `router` spelling that the graph
+  actually declares (`Router`, `MethodRouter`, `PathRouter`) instead of
+  matching only `route`-shaped names. The expansion drops a silent trailing
+  `e` and tries `-er`/`-or` (route → router, serialize → serializer,
+  validate → validator), and a variant is added only when the graph's bounded
+  name index contains it, so no vocabulary is invented. The reviewed
+  relevance qualification corpus still passes, and the Axum evaluation question
+  now answers with `Router`, `PathRouter`, and `MethodRouter`.
+
 - Spend continuation-page budgets on results instead of repeated prose. Pages
   after the first now summarize the unchanged caveat set (`CAVEATS: N unchanged
   from page 1 (code×count)`) instead of re-printing every caveat paragraph, for

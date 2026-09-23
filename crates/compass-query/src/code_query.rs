@@ -1971,7 +1971,8 @@ impl CodeQueryEngine {
             .take(compass_model::query_contract::MAX_INDEXED_QUERY_TERMS.saturating_add(1))
             .collect::<Vec<_>>();
         validate_search_term_count(&recall_terms)?;
-        let ranking_terms = discovery_terms.ranking_terms;
+        let mut ranking_terms = discovery_terms.ranking_terms;
+        self.expand_agent_noun_terms(&mut ranking_terms)?;
         let mut terms = recall_terms.clone();
         for term in &ranking_terms {
             if terms.len() >= compass_model::query_contract::MAX_INDEXED_QUERY_TERMS {
@@ -1992,6 +1993,38 @@ impl CodeQueryEngine {
         };
         cache.insert(cache_key, prepared.clone());
         Ok(prepared)
+    }
+
+    /// Add graph-verified agent-noun spellings of the question's behavior terms.
+    ///
+    /// A question names behavior in plain English ("how does axum route a
+    /// request") while the graph names the implementing type (`Router`). The
+    /// variant is added only when the graph's name index actually contains it,
+    /// so the expansion can never invent vocabulary, and it stays inside the
+    /// bounded query-term budget.
+    fn expand_agent_noun_terms(&self, terms: &mut Vec<String>) -> Result<(), QueryError> {
+        let mut additions = Vec::new();
+        for term in terms.iter() {
+            for candidate in agent_noun_variants(term) {
+                if terms.contains(&candidate) || additions.contains(&candidate) {
+                    continue;
+                }
+                let (nodes, _) = self.backend.nodes_by_normalized_name(&candidate, 1)?;
+                if !nodes.is_empty() {
+                    additions.push(candidate);
+                }
+            }
+        }
+        additions.sort();
+        additions.dedup();
+        let cap = compass_model::query_contract::MAX_INDEXED_QUERY_TERMS;
+        for candidate in additions {
+            if terms.len() >= cap {
+                break;
+            }
+            terms.push(candidate);
+        }
+        Ok(())
     }
 
     pub(crate) fn materialized_term_candidates(
@@ -3816,6 +3849,22 @@ pub(crate) fn search_query_terms(value: &str) -> Result<Vec<String>, QueryError>
         .collect::<Vec<_>>();
     validate_search_term_count(&terms)?;
     Ok(terms)
+}
+
+/// Deterministic agent-noun spellings of one behavior term.
+///
+/// English verbs that end in a silent "e" form the agent noun by dropping it:
+/// `route` → `router`, `serialize` → `serializer`, `validate` → `validator`.
+pub(crate) fn agent_noun_variants(term: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    if term.len() < 4 || !term.is_ascii() {
+        return variants;
+    }
+    if let Some(stem) = term.strip_suffix('e') {
+        variants.push(format!("{stem}er"));
+        variants.push(format!("{stem}or"));
+    }
+    variants
 }
 
 fn validate_search_term_count(terms: &[String]) -> Result<(), QueryError> {
