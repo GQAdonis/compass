@@ -84,6 +84,51 @@ fn persist_historical_repository_profile(root: &Path) -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn review_lists_markdown_sections_and_rejects_invalid_selection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    initialize(root.path())?;
+
+    let listed = run(
+        root.path(),
+        &["review", "--format", "markdown", "--list-sections"],
+    )?;
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(listed.stdout)?
+            .trim()
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "summary",
+            "risk-factors",
+            "merge-checks",
+            "findings",
+            "not-included"
+        ]
+    );
+
+    let unknown = run(
+        root.path(),
+        &["review", "--format", "markdown", "--section", "bogus"],
+    )?;
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("--section must be one of"));
+
+    let wrong_format = run(
+        root.path(),
+        &["review", "--format", "json", "--section", "findings"],
+    )?;
+    assert!(!wrong_format.status.success());
+    assert!(String::from_utf8_lossy(&wrong_format.stderr).contains("require --format markdown"));
+    Ok(())
+}
+
+#[test]
 fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     initialize(directory.path())?;

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Let `compass review --format markdown` extract one section at a time.
+  `--list-sections` prints the canonical section names (`summary`,
+  `risk-factors`, `merge-checks`, `findings`, `not-included`) without needing a
+  comparison, and `--section NAME` (repeatable or comma-separated) renders only
+  those sections while keeping the title and report reference. `--max-findings`
+  and `--max-output-bytes` still bound the projection and report exact
+  omissions.
+
 - Bound every typed query with a deadline. `ask`, `search`, `callers`,
   `callees`, `impact`, `explore`, and `node` accept `--timeout-ms <N>`
   (default 60000, maximum 600000), checked between resolution, candidate,

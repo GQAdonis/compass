@@ -176,6 +176,20 @@ record bounds; partial results are not published. Library and MCP callers keep
 the previous unbounded behavior unless they arm a deadline with
 `CodeQueryEngine::with_deadline`, so no existing response shape changes.
 
+### Review Markdown sections
+
+`compass review --format markdown` accepts the additive `--section NAME`
+(repeatable or comma-separated) and `--list-sections` options. Section names
+are `summary`, `risk-factors`, `merge-checks`, `findings`, and `not-included`;
+an unknown name is a usage error. `--list-sections` prints one name per line and
+does not require a comparison. A filtered report always keeps the `## Compass
+PR review` title and the report reference so the extracted text still
+identifies the canonical report, and the unfiltered default output is
+byte-identical to the previous rendering. `--max-findings` and
+`--max-output-bytes` continue to bound the projection and report exact
+omissions; `--section` and `--list-sections` are rejected with `--readiness` and
+with non-Markdown formats.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

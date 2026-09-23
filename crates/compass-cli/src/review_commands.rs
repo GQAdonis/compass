@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use compass_history::{ExtractionFingerprint, Repository};
+use compass_output::ReviewSection;
 use compass_pr_intelligence::{Completeness, RepositoryIdentity};
 use compass_prs::{
     ChangeRequestSource, GithubChangeRequestSource, LocalGitChangeRequestSource, SystemRunner,
@@ -30,6 +31,8 @@ struct Options {
     max_findings: Option<usize>,
     max_output_bytes: Option<usize>,
     readiness: bool,
+    sections: Vec<ReviewSection>,
+    list_sections: bool,
 }
 
 pub(crate) fn command(args: &[String]) -> Outcome {
@@ -54,6 +57,13 @@ pub(crate) fn command(args: &[String]) -> Outcome {
 
 fn execute(args: &[String]) -> Result<String, ReviewCommandError> {
     let options = parse(args).map_err(ReviewCommandError::Usage)?;
+    if options.list_sections {
+        return Ok(ReviewSection::ALL
+            .iter()
+            .map(|section| section.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
     let current = std::env::current_dir().map_err(runtime)?;
     let repository = Repository::discover(&current).map_err(runtime)?;
     let request = if let Some(number) = options.pull_request {
@@ -155,12 +165,18 @@ fn execute(args: &[String]) -> Result<String, ReviewCommandError> {
             Format::Text => compass_output::render_review_text(&report).map_err(runtime)?,
             Format::Json => compass_output::render_review_json(&report).map_err(runtime)?,
             Format::Markdown => {
-                compass_output::render_review_markdown_bounded(
+                let sections = if options.sections.is_empty() {
+                    ReviewSection::ALL.to_vec()
+                } else {
+                    options.sections.clone()
+                };
+                compass_output::render_review_markdown_selected(
                     &report,
                     options.max_findings.unwrap_or(report.findings.len()),
                     options
                         .max_output_bytes
                         .unwrap_or(compass_output::MAX_REVIEW_RENDER_BYTES),
+                    &sections,
                 )
                 .map_err(runtime)?
                 .content
@@ -191,6 +207,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut max_findings = None;
     let mut max_output_bytes = None;
     let mut readiness = false;
+    let mut sections = Vec::new();
+    let mut list_sections = false;
     let mut index = 0;
     while index < args.len() {
         let argument = &args[index];
@@ -287,6 +305,34 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 }
                 readiness = true;
             }
+            "--section" => {
+                let raw = value("--section", inline, args, &mut index)?;
+                for name in raw.split(',') {
+                    let trimmed = name.trim();
+                    if trimmed.is_empty() {
+                        return Err("--section requires a section name".to_owned());
+                    }
+                    let section = ReviewSection::parse(trimmed).ok_or_else(|| {
+                        format!(
+                            "--section must be one of: {}",
+                            ReviewSection::ALL
+                                .iter()
+                                .map(|section| section.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
+                    if !sections.contains(&section) {
+                        sections.push(section);
+                    }
+                }
+            }
+            "--list-sections" => {
+                if inline.is_some() || list_sections {
+                    return Err("duplicate or valued --list-sections".to_owned());
+                }
+                list_sections = true;
+            }
             value if value.starts_with('-') => return Err(format!("unknown option {value}")),
             value => return Err(format!("unexpected positional argument {value:?}")),
         }
@@ -294,17 +340,22 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     let local = base.is_some() || head.is_some();
     let github = pull_request.is_some();
-    if local && github {
-        return Err("--pr conflicts with --base/--head".to_owned());
+    if (list_sections || !sections.is_empty()) && format != Format::Markdown {
+        return Err("--section and --list-sections require --format markdown".to_owned());
     }
-    if local && (base.is_none() || head.is_none()) {
-        return Err("local review requires both --base and --head".to_owned());
-    }
-    if github && repository.is_none() {
-        return Err("GitHub review requires --repo OWNER/REPO".to_owned());
-    }
-    if !local && !github {
-        return Err("review requires --base/--head or --pr/--repo".to_owned());
+    if !list_sections {
+        if local && github {
+            return Err("--pr conflicts with --base/--head".to_owned());
+        }
+        if local && (base.is_none() || head.is_none()) {
+            return Err("local review requires both --base and --head".to_owned());
+        }
+        if github && repository.is_none() {
+            return Err("GitHub review requires --repo OWNER/REPO".to_owned());
+        }
+        if !local && !github {
+            return Err("review requires --base/--head or --pr/--repo".to_owned());
+        }
     }
     if report_pull_request.is_some() && !local {
         return Err("--pull-request-number is only valid with --base/--head".to_owned());
@@ -339,6 +390,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 .to_owned(),
         );
     }
+    if readiness && (list_sections || !sections.is_empty()) {
+        return Err(
+            "--section and --list-sections apply only to canonical report Markdown".to_owned(),
+        );
+    }
     Ok(Options {
         base,
         head,
@@ -352,6 +408,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         max_findings,
         max_output_bytes,
         readiness,
+        sections,
+        list_sections,
     })
 }
 
