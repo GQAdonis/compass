@@ -136,6 +136,14 @@ fn surreal_cli_is_wired_through_publication_queries_compassql_and_operations()
         require_success(&result, command[0])?;
         let value: Value = serde_json::from_slice(&result.stdout)?;
         assert_eq!(value["schema"], "compass.query/1", "command: {command:?}");
+        if command[0] == "ask" {
+            assert_eq!(value["operation"], "callers");
+            assert!(
+                value["edges"]
+                    .as_array()
+                    .is_some_and(|edges| edges.iter().any(|edge| edge["kind"] == "calls"))
+            );
+        }
     }
 
     let default_search = run(root.path(), &["search", "callee", "--format", "json"])?;
