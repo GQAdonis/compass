@@ -140,6 +140,18 @@ digest before it is printed; a rewritten file fails closed with
    symbols and its answer names `Router`; it still misses `MethodRouter`, and
    Gson still prefers `JsonObject` over the exact-name `serialize` match, so
    term weighting by document frequency remains the follow-up.
+
+   A bounded follow-up attempt was made and reverted. It probed each matched
+   concept through the bounded name index, reserved one seed slot for the most
+   specific uncovered concept, and kept the reviewed relevance corpus green.
+   The three broad rows still failed: the Gson answer gained
+   `JsonSerializationContext::serialize` but never reached `toJson` or
+   `JsonWriter`, Zod's reserved slot promoted a project-name match (`zod`), and
+   Axum's promoted a truncated token (`incom`). Specificity by name-index
+   frequency alone is therefore not sufficient; the next attempt needs
+   project-name and partial-token awareness, and possibly deeper expansion from
+   the specific verb rather than seed reordering. The reverted state keeps the
+   verified behavior, and the 500-query relevance qualification still passes.
 2. **Verified answers cost more tokens than unverified ones on the
    single-shot paths.** Compass spends 3.6x Graphify's median tokens per
    answered question across the whole suite, driven by `callers` (6.3k median
