@@ -327,9 +327,17 @@ verification:
   source-text rows it cannot answer by construction and one Axum file-path row.
   Graphify's remaining edge is cost, not coverage.
 - **Tokens.** Graphify answers the median paired question with 98 tokens
-  against Compass's 560. The gap is widest on `negative` (13 versus 112, where
-  the agent envelope is the whole cost) and narrowest on `ambiguity`
-  (165 versus 1967); on `broad` it is 566 versus 597.
+  against Compass's 560, but the two sides of that number are different
+  problems. On the rows where both tools return the same content the gap is the
+  fixed agent-view envelope: a `negative` answer costs Compass 112 tokens and
+  Graphify 13, and a `path` answer 82 against 22. On the rows where Compass
+  fills its 2,000-token page - `callers` (1,992 versus 67) and `impact` (1,967
+  versus 112) - Graphify is not answering the same question: its graph records
+  a handful of edges for the same symbol where Compass resolves forty-three, so
+  part of that ratio is how much less it reports rather than how much more
+  Compass spends. The comparable rows are `broad` (597 versus 566), where both
+  tools answer in full. Reducing the envelope on small answers and raising
+  information per token on large ones are the two separate follow-ups.
 - **Latency.** Compass's bounded pages cost wall-clock time: the Cobra impact
   row took 31 seconds, the Zod impact and caller rows 48-51 seconds, and the
   Gson caller row 20 seconds, against 130-360 ms for every Graphify call. The
