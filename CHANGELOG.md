@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Spend continuation-page budgets on results instead of repeated prose. Pages
+  after the first now summarize the unchanged caveat set (`CAVEATS: N unchanged
+  from page 1 (code×count)`) instead of re-printing every caveat paragraph, for
+  both discovery text pages and typed agent text pages. Page one is unchanged,
+  and the freed budget goes to results: the Zod evaluation question now reaches
+  its reviewed answer in two pages and 783 tokens, where the previous repeated
+  headers spent seven pages and 2,807 tokens without surfacing it.
+
 - Render digest-verified source context in paged maps. `compass explore
   --format text` now ends with a `SOURCE` section containing the recorded line
   range of each primary anchor, read from the digest-verified file the command

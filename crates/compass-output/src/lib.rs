@@ -35,7 +35,8 @@ pub use agent_query::{
     AgentRelationship, AgentRelationshipEvidence, AgentRequest, AgentResultState, AgentSeverity,
     AgentSource, AgentStatus, AgentTextPage, AgentTextPageCursor, AgentTextPageOptions,
     DEFAULT_AGENT_TEXT_PAGE_TOKENS, build_code_query_brief, build_code_query_view,
-    build_discovery_query_view, decode_agent_text_page_cursor, render_agent_query_header_lines,
+    build_discovery_query_view, decode_agent_text_page_cursor,
+    render_agent_query_continuation_header, render_agent_query_header_lines,
     render_agent_query_text, render_code_query_text_page,
 };
 pub use architecture_projection::{

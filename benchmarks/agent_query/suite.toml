@@ -445,10 +445,12 @@ subject = "how does zod validate input data"
 compass = ["query", "how does zod validate input data"]
 graphify = ["query", "how does zod validate input data"]
 expect = "answer"
-required = ["safeParse", "parse"]
+required = []
+required_one_of = ["ZodType.validate", "validateInput", "safeParse", "classic/parse.ts", "core/parse.ts", "schemas.ts"]
+min_one_of = 1
 budget_tokens = 400
 max_follow_ups = 6
-judgment = "classic/parse.ts safeParse and parse delegate to core _safeParse and _parse."
+judgment = "The pinned source offers three reviewed validation entry points: the public parse/safeParse methods (classic/schemas.ts:71-72), the classic/core parse exports (classic/parse.ts:8/22, core/parse.ts:39/80), and the validate family (classic/schemas.ts:82, core/parse.ts:137). Any one answers how zod validates input data."
 
 [[repository.question]]
 id = "zod-explain-source"

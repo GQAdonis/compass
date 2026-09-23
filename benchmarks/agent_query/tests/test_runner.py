@@ -94,6 +94,17 @@ class JudgeTests(unittest.TestCase):
         self.assertFalse(passed)
         self.assertEqual(failures, ("missing 'command.go'",))
 
+    def test_answer_oracle_accepts_one_of_alternatives(self) -> None:
+        oracle = question(
+            required=(),
+            required_one_of=("safeParse", "validate"),
+            min_one_of=1,
+        )
+        self.assertTrue(judge(oracle, "compass", "ZodType.validate")[0])
+        passed, failures = judge(oracle, "compass", "unrelated output")
+        self.assertFalse(passed)
+        self.assertTrue(any("at least 1 of" in failure for failure in failures))
+
     def test_forbidden_anchor_fails(self) -> None:
         oracle = question(forbidden=("wrong.go",))
         passed, failures = judge(oracle, "graphify", "sample.go wrong.go")

@@ -146,6 +146,13 @@ validated backup) instead of querying it. `compass store status` intentionally
 keeps the cheaper digest-and-integrity check and does not claim semantic
 validation.
 
+Continuation pages of the discovery text pager (`compass query --cursor`) and
+of the typed agent text pager now replace the repeated caveat block with a
+single `CAVEATS: N unchanged from page 1 (code×count)` line. Page one still
+prints every caveat in full, the cursor contract and pagination footer are
+unchanged, and the same page budget now carries more result entries. Consumers
+that parsed caveat text from continuation pages must read it from page one.
+
 ### TypeScript path aliases and file-shaped path input
 
 A TypeScript or JavaScript project that is the `extends` base of another

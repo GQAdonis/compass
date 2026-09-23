@@ -434,6 +434,11 @@ or stale cursor fails explicitly. The ledger is derived from the raw
 View bounds omit; when the underlying query bound itself is reached, the page
 reports it and asks for wider `--max-nodes`/`--max-edges` limits.
 
+Page one states the result state, answer, and every caveat in full. Continuation
+pages keep the state and answer and replace the caveat block with a single
+`CAVEATS: N unchanged from page 1 (code×count)` line, so the same budget is
+spent on result entries rather than repeated prose.
+
 `agent-json` and `json` are incompatible with text-only `--cursor`,
 `--text-budget`, `--evidence`, and `--result-envelope` controls. Agent View JSON contains
 bounded `nextActions` as argv arrays or JSON argument objects; clients should

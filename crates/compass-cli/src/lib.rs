@@ -77,9 +77,10 @@ use compass_output::{
     build_code_query_view, build_discovery_query_view, export_obsidian, export_wiki,
     graph_artifact_identity, graph_community_view_model_document, graph_view_model_bundle_document,
     graph_view_model_document, node_filenames, project_architecture,
-    render_agent_query_header_lines, render_agent_query_text, render_orientation_json,
-    validate_orientation_graph_identity, write_callflow_html, write_canvas, write_cypher,
-    write_graphml, write_svg, write_tree_html, write_workbench_html_with_source_navigation,
+    render_agent_query_continuation_header, render_agent_query_header_lines,
+    render_agent_query_text, render_orientation_json, validate_orientation_graph_identity,
+    write_callflow_html, write_canvas, write_cypher, write_graphml, write_svg, write_tree_html,
+    write_workbench_html_with_source_navigation,
 };
 use compass_prs::{ProcessRunner, SystemRunner};
 use compass_query::{
@@ -5878,7 +5879,12 @@ fn command_discovery_query(
             Ok(view) => view,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };
-        let mut prefix = match render_agent_query_header_lines(&view) {
+        let header = if cursor.is_some() {
+            render_agent_query_continuation_header(&view)
+        } else {
+            render_agent_query_header_lines(&view)
+        };
+        let mut prefix = match header {
             Ok(prefix) => prefix,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };

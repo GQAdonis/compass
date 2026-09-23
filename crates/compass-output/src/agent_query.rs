@@ -1432,7 +1432,11 @@ fn render_agent_text_page_body(
     token_budget: usize,
     next_cursor: Option<&str>,
 ) -> String {
-    let mut lines = header.to_vec();
+    let mut lines = if page > 1 {
+        continuation_header(view, header)
+    } else {
+        header.to_vec()
+    };
     let mut section: Option<TextPageSection> = None;
     for (entry_section, text) in &entries[start..end] {
         if section != Some(*entry_section) {
@@ -1465,6 +1469,51 @@ fn render_agent_text_page_body(
         });
     }
     lines.join("\n")
+}
+
+/// Compact follow-up header: keep the state and answer, summarize caveats.
+///
+/// Page one states every caveat in full. A continuation page repeats the same
+/// immutable result, so re-printing paragraphs of caveat text would spend the
+/// page budget without adding information.
+fn continuation_header(view: &AgentQueryView, header: &[String]) -> Vec<String> {
+    let mut kept = Vec::new();
+    for line in header {
+        if line == "CAVEATS" {
+            if view.caveats.is_empty() {
+                continue;
+            }
+            let mut counts = BTreeMap::<&str, usize>::new();
+            for caveat in &view.caveats {
+                *counts.entry(caveat.code.as_str()).or_default() += 1;
+            }
+            let codes = counts
+                .iter()
+                .map(|(code, count)| format!("{code}×{count}"))
+                .collect::<Vec<_>>();
+            kept.push(format!(
+                "CAVEATS: {} unchanged from page 1 ({})",
+                view.caveats.len(),
+                codes.join(", ")
+            ));
+            break;
+        }
+        kept.push(line.clone());
+    }
+    kept
+}
+
+/// Build the compact header for a continuation page.
+///
+/// Callers that pre-render a page prefix (the discovery text pager) use this
+/// instead of [`render_agent_query_header_lines`] whenever a cursor continues
+/// an immutable result, so a page budget is not spent re-printing caveat
+/// paragraphs that page one already stated in full.
+pub fn render_agent_query_continuation_header(
+    view: &AgentQueryView,
+) -> Result<Vec<String>, OutputError> {
+    let header = render_agent_query_header_lines(view)?;
+    Ok(continuation_header(view, &header))
 }
 
 fn text_page_entries(

@@ -393,7 +393,15 @@ def judge(question: Question, tool: str, text: str) -> tuple[bool, tuple[str, ..
         return not failures, tuple(failures)
     missing = [value for value in question.required if value not in text]
     forbidden = [value for value in question.forbidden if value in text]
-    failures = tuple([f"missing {value!r}" for value in missing] + [f"forbidden {value!r}" for value in forbidden])
+    failures = [f"missing {value!r}" for value in missing]
+    if question.required_one_of and question.min_one_of > 0:
+        hits = [value for value in question.required_one_of if value in text]
+        if len(hits) < question.min_one_of:
+            failures.append(
+                f"at least {question.min_one_of} of {list(question.required_one_of)}"
+            )
+    failures.extend(f"forbidden {value!r}" for value in forbidden)
+    failures = tuple(failures)
     return not failures, failures
 
 

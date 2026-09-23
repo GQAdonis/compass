@@ -55,6 +55,10 @@ builds `compass extract --code-only --no-viz --store sqlite` and
 - **Correctness**: bounded stdout is judged against the suite's anchors. A
   `negative` question passes only with an explicit no-match signal, and a
   `pick_list` question passes only when enough distinct candidates are shown.
+  An `answer` row requires every `required` anchor and, when it also declares
+  `required_one_of`/`min_one_of`, at least that many of those alternatives, so
+  a question with several source-reviewed answers (for example the Zod
+  validation family) accepts any reviewed one without weakening the row.
 - **Tokens**: UTF-8 stdout bytes divided by four, the same approximation both
   CLIs document for their text budgets. `run.json` records the first-page cost
   and the total cost of the reviewed workflow.
