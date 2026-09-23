@@ -14,6 +14,7 @@ categories.workspace = true
 [dependencies]
 compass-agent-graph = { path = "../compass-agent-graph", version = "0.3.28" }
 ahash.workspace = true
+base64.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

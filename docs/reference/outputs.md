@@ -536,6 +536,14 @@ anchors, reports `status.matchState = ambiguous`, and emits
 instead of issuing a broad search. Primary results are deduplicated by node ID,
 including when a real self-edge names the same node twice.
 
+Typed text output is paged. Each page carries a
+`Pagination: version=compass.query.agent-text-page/1 … next=<CURSOR>` footer;
+`--cursor` continues the same ledger at the same `--text-budget`. The cursor is
+a checksummed base64url envelope that binds the operation, graph identity, page
+number, and a digest of the reviewed entry prefix. A cursor from another graph,
+another operation, or a changed result fails closed rather than restarting the
+page.
+
 The fixed presentation profile retains at most 12 primary results, 24
 relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is
 limited to 256 KiB and text to 64 KiB. `omissions` and

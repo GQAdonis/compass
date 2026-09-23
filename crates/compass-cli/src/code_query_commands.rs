@@ -5,7 +5,8 @@ use compass_model::query_contract::{
     NodeTrailRequest, SearchRequest,
 };
 use compass_output::{
-    AgentOperandRole, AgentQueryContext, build_code_query_view, render_agent_query_text,
+    AgentOperandRole, AgentQueryContext, AgentTextPageOptions, DEFAULT_AGENT_TEXT_PAGE_TOKENS,
+    build_code_query_view, decode_agent_text_page_cursor, render_code_query_text_page,
 };
 use compass_query::{
     EngineSelection, NaturalQueryRequest, open_with_engine, open_with_verified_document,
@@ -18,7 +19,7 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
-    if format == SharedOutputFormat::AgentJson
+    if format != SharedOutputFormat::Text
         && query_args.iter().any(|arg| {
             matches!(
                 arg.as_str(),
@@ -28,10 +29,28 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
         })
     {
         return Outcome::failure(
-            "error: --cursor, --text-budget, --evidence, and --result-envelope are text-only and cannot be used with --format agent-json".to_owned(),
+            "error: --cursor, --text-budget, --evidence, and --result-envelope are text-only and require --format text".to_owned(),
         );
     }
-    match execute(operation, &query_args) {
+    let text_budget = match number(&query_args, "--text-budget", DEFAULT_AGENT_TEXT_PAGE_TOKENS) {
+        Ok(budget) => budget,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    if text_budget == 0 {
+        return Outcome::failure("error: --text-budget requires a positive integer".to_owned());
+    }
+    let text_cursor = option(&query_args, "--cursor").map(str::to_owned);
+    if let Some(cursor) = text_cursor.as_deref()
+        && let Err(error) = decode_agent_text_page_cursor(cursor)
+    {
+        return Outcome::failure(format!("error: {error}"));
+    }
+    let result = if format == SharedOutputFormat::Text {
+        execute_paged(operation, &query_args)
+    } else {
+        execute(operation, &query_args, 1)
+    };
+    match result {
         Ok(execution) => {
             if format == SharedOutputFormat::Json {
                 match serde_json::to_string_pretty(&execution.response) {
@@ -46,8 +65,15 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
             } else if format == SharedOutputFormat::Text {
-                match build_code_query_view(&execution.response, execution.context)
-                    .and_then(|view| render_agent_query_text(&view))
+                match render_code_query_text_page(
+                    &execution.response,
+                    execution.context,
+                    AgentTextPageOptions {
+                        token_budget: text_budget,
+                        cursor: text_cursor.as_deref(),
+                    },
+                )
+                .map(|page| page.text)
                 {
                     Ok(text) => Outcome::success(text),
                     Err(error) => Outcome::failure(format!("error: {error}")),
@@ -65,7 +91,30 @@ struct QueryExecution {
     context: AgentQueryContext,
 }
 
-fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
+/// Upper bound for the page-widening loop.
+///
+/// One widening step keeps the ledger stable across pages without paying for
+/// repeated full traversals on every page. A still-truncated response keeps the
+/// explicit bound footer so the caller can raise the record limits.
+const MAX_PAGE_WIDENING_SCALE: u32 = 4;
+
+/// Execute a paged text query with a stable ledger.
+///
+/// Every page re-runs the same widening sequence so the entry ledger does not
+/// change between pages: widen the record bounds until the response is
+/// complete or the widening ceiling is reached.
+fn execute_paged(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
+    let mut scale = 1_u32;
+    loop {
+        let execution = execute(operation, args, scale)?;
+        if !execution.response.truncated || scale >= MAX_PAGE_WIDENING_SCALE {
+            return Ok(execution);
+        }
+        scale = scale.saturating_mul(4);
+    }
+}
+
+fn execute(operation: &str, args: &[String], page_scale: u32) -> Result<QueryExecution, String> {
     let positional = positional(args);
     let graph_option = option(args, "--graph");
     let revision = option(args, "--at");
@@ -136,7 +185,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
         open_with_engine(&graph, program.as_deref(), &cache, engine)
             .map_err(|error| error.to_string())?
     };
-    let limits = limits(args)?;
+    let limits = limits(args, page_scale)?;
     let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
     let (response, question, operands) = match operation {
         "ask" => {
@@ -246,14 +295,21 @@ fn resolve_snapshot_artifact(path: PathBuf) -> Result<PathBuf, String> {
     compass_files::BuildGuard::resolve_requested_artifact(&path).map_err(|error| error.to_string())
 }
 
-fn limits(args: &[String]) -> Result<CodeQueryLimits, String> {
+/// Build the effective typed-query limits.
+///
+/// A continuation page widens the record bounds by its page number so the
+/// requested slice is reachable while the returned page stays the same size.
+/// `max_response_bytes` still bounds what the query may materialize.
+fn limits(args: &[String], page_scale: u32) -> Result<CodeQueryLimits, String> {
     let defaults = CodeQueryLimits::default();
+    let scale = page_scale.max(1);
     Ok(CodeQueryLimits {
         max_depth: number(args, "--max-depth", defaults.max_depth)?,
-        max_nodes: number(args, "--max-nodes", defaults.max_nodes)?,
-        max_edges: number(args, "--max-edges", defaults.max_edges)?,
-        max_paths: number(args, "--max-paths", defaults.max_paths)?,
-        max_candidates: number(args, "--max-candidates", defaults.max_candidates)?,
+        max_nodes: number(args, "--max-nodes", defaults.max_nodes)?.saturating_mul(scale),
+        max_edges: number(args, "--max-edges", defaults.max_edges)?.saturating_mul(scale),
+        max_paths: number(args, "--max-paths", defaults.max_paths)?.saturating_mul(scale),
+        max_candidates: number(args, "--max-candidates", defaults.max_candidates)?
+            .saturating_mul(scale),
         max_source_bytes: number(args, "--max-source-bytes", defaults.max_source_bytes)?,
         max_response_bytes: number(args, "--max-response-bytes", defaults.max_response_bytes)?,
     })
@@ -299,6 +355,8 @@ fn positional(args: &[String]) -> Vec<String> {
         "--max-candidates",
         "--max-source-bytes",
         "--max-response-bytes",
+        "--text-budget",
+        "--cursor",
     ];
     let mut values = Vec::new();
     let mut skip = false;

@@ -65,6 +65,7 @@ class SuiteTests(unittest.TestCase):
                 "explain",
                 "explain_source",
                 "callers",
+                "paged_callers",
                 "path",
                 "file_path",
                 "ambiguity",

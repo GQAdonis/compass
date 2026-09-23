@@ -47,6 +47,7 @@ KINDS = {
     "explain",
     "explain_source",
     "callers",
+    "paged_callers",
     "path",
     "file_path",
     "ambiguity",
@@ -443,7 +444,7 @@ def _tool_argv(
 ) -> tuple[str, ...]:
     base = list(question.compass if tool == "compass" else question.graphify)
     if tool == "compass":
-        if question.kind == "broad":
+        if question.kind in {"broad", "paged_callers"}:
             base.extend(["--text-budget", str(budget or question.budget_tokens)])
         if cursor is not None:
             base.extend(["--cursor", cursor])
@@ -517,6 +518,10 @@ def run_question(
                 break
             cursor = match.group(1)
         else:
+            if question.kind == "paged_callers":
+                # Graphify has no continuation for this shape; one response is
+                # its complete answer.
+                break
             budget *= 4
         follow_ups += 1
     return Observation(

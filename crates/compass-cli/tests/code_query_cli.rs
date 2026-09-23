@@ -1002,6 +1002,69 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
 }
 
 #[test]
+fn typed_text_paging_continues_the_same_result_with_a_cursor() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let graph_arg = graph.as_os_str().to_owned();
+    let first = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg.clone(),
+            OsString::from("--format"),
+            OsString::from("text"),
+            OsString::from("--text-budget"),
+            OsString::from("120"),
+        ],
+    );
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let cursor = first
+        .stdout
+        .lines()
+        .find_map(|line| line.split("next=").nth(1))
+        .ok_or("expected a continuation cursor")?
+        .to_owned();
+    assert!(first.stdout.contains("range=1-"), "{}", first.stdout);
+
+    let second = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg,
+            OsString::from("--format"),
+            OsString::from("text"),
+            OsString::from("--text-budget"),
+            OsString::from("120"),
+            OsString::from("--cursor"),
+            OsString::from(cursor),
+        ],
+    );
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert!(second.stdout.contains("range=2-"), "{}", second.stdout);
+
+    let rejected = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from("--text-budget"),
+            OsString::from("120"),
+        ],
+    );
+    assert_ne!(rejected.code, 0);
+    assert!(rejected.stderr.contains("text-only"), "{}", rejected.stderr);
+    Ok(())
+}
+
+#[test]
 fn ambiguous_typed_lookup_returns_a_pick_list_instead_of_an_empty_result()
 -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;

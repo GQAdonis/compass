@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Add bounded text pagination to the typed lookups. `ask`, `search`,
+  `callers`, `callees`, `impact`, `explore`, and `node` accept
+  `--text-budget` and `--cursor`; each text page ends with a
+  `compass.query.agent-text-page/1` cursor that continues the same
+  deterministic ledger at the same page budget, so a capped result no longer
+  forces guess-and-repeat with a larger limit. The ledger is derived from the
+  raw query response, so paging reaches records that the compact agent view
+  omits.
+
+- Make `compass store validate` prove graph semantics, not only stored bytes:
+  it re-materializes the selected snapshot, applies the strict
+  `compass.graph/1` validation used by readers, and reports the offending
+  record IDs instead of reporting `valid: true` for an artifact every strict
+  reader rejects. `compass store status` keeps the cheaper integrity check.
+
 - Make agent-facing lookups recoverable and self-checking: `callers`,
   `callees`, and `impact` now return the candidate pick list when a name is
   ambiguous, ambiguous `path` endpoints list each candidate's label, source

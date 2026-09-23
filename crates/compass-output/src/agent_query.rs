@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use compass_model::code_graph::NodeRole;
 use compass_model::provenance::{EvidenceConfidence, ResolutionState, SourceAnchor};
 use compass_model::query_contract::{
@@ -1018,6 +1020,338 @@ pub fn render_agent_query_text(view: &AgentQueryView) -> Result<String, OutputEr
         });
     }
     Ok(text)
+}
+
+/// Version of the paged agent text projection.
+pub const AGENT_TEXT_PAGE_VERSION: &str = "compass.query.agent-text-page/1";
+/// Default page budget, in approximate tokens, for paged agent text output.
+pub const DEFAULT_AGENT_TEXT_PAGE_TOKENS: usize = 2_000;
+
+const AGENT_TEXT_PAGE_FOOTER_RESERVE_CHARS: usize = 384;
+const AGENT_TEXT_PAGE_MAX_CURSOR_BYTES: usize = 4_096;
+
+/// Continuation state for one paged agent text response.
+///
+/// The cursor binds the page to the reviewed prefix of the deterministic
+/// agent-view ledger. A later page re-runs the same query with wider internal
+/// bounds, so the decoded cursor carries only the page number and the verified
+/// prefix identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTextPageCursor {
+    pub version: String,
+    pub operation: String,
+    pub graph_identity: String,
+    pub page: u32,
+    pub prefix_count: usize,
+    pub prefix_digest: String,
+}
+
+/// Options for one paged agent text response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentTextPageOptions<'a> {
+    pub token_budget: usize,
+    pub cursor: Option<&'a str>,
+}
+
+/// One bounded page of agent text with an optional continuation cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentTextPage {
+    pub text: String,
+    pub next_cursor: Option<String>,
+    pub page: u32,
+    pub entry_start: usize,
+    pub entry_end: usize,
+    pub entry_total: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextPageSection {
+    PrimaryResults,
+    Paths,
+    Relationships,
+}
+
+impl TextPageSection {
+    fn heading(self) -> &'static str {
+        match self {
+            Self::PrimaryResults => "PRIMARY RESULTS",
+            Self::Paths => "PATHS",
+            Self::Relationships => "RELATIONSHIPS",
+        }
+    }
+}
+
+/// Decode and verify the self-contained envelope of one page cursor.
+///
+/// The ledger digest is verified when the page is rendered; this decoder only
+/// proves that the token is intact and readable so a caller can learn which
+/// page the token continues.
+pub fn decode_agent_text_page_cursor(value: &str) -> Result<AgentTextPageCursor, OutputError> {
+    if value.len() > AGENT_TEXT_PAGE_MAX_CURSOR_BYTES {
+        return Err(OutputError::InvalidAgentTextPage(
+            "cursor exceeds the supported size".to_owned(),
+        ));
+    }
+    let (payload, checksum) = value.split_once('.').ok_or_else(|| {
+        OutputError::InvalidAgentTextPage("cursor encoding is incomplete".to_owned())
+    })?;
+    if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(OutputError::InvalidAgentTextPage(
+            "cursor checksum is invalid".to_owned(),
+        ));
+    }
+    if hex_digest(payload.as_bytes()) != checksum {
+        return Err(OutputError::InvalidAgentTextPage(
+            "cursor checksum does not match its payload".to_owned(),
+        ));
+    }
+    let bytes = URL_SAFE_NO_PAD.decode(payload).map_err(|_| {
+        OutputError::InvalidAgentTextPage("cursor payload is not valid base64url".to_owned())
+    })?;
+    let cursor: AgentTextPageCursor = serde_json::from_slice(&bytes).map_err(|_| {
+        OutputError::InvalidAgentTextPage("cursor payload is not a valid page cursor".to_owned())
+    })?;
+    if cursor.version != AGENT_TEXT_PAGE_VERSION {
+        return Err(OutputError::InvalidAgentTextPage(format!(
+            "cursor version {} is not {AGENT_TEXT_PAGE_VERSION}",
+            cursor.version
+        )));
+    }
+    if cursor.page == 0 {
+        return Err(OutputError::InvalidAgentTextPage(
+            "cursor page must be greater than zero".to_owned(),
+        ));
+    }
+    Ok(cursor)
+}
+
+/// Render one bounded page of agent text and its continuation cursor.
+///
+/// The ledger is derived from the authoritative query response rather than the
+/// capped agent view, so paging can reach records that the view's own bounds
+/// omit. The page keeps at least one entry so a pathological budget cannot
+/// return an empty page, and a continuation cursor only becomes valid when the
+/// next response reproduces the same reviewed prefix.
+pub fn render_code_query_text_page(
+    response: &CodeQueryResponse,
+    context: AgentQueryContext,
+    options: AgentTextPageOptions<'_>,
+) -> Result<AgentTextPage, OutputError> {
+    if options.token_budget == 0 {
+        return Err(OutputError::InvalidAgentTextPage(
+            "token budget must be greater than zero".to_owned(),
+        ));
+    }
+    let entries = text_page_entries(response, &context);
+    let view = build_code_query_view(response, context)?;
+    view.validate()?;
+    let (page, start) = match options.cursor {
+        None => (1_u32, 0_usize),
+        Some(cursor) => {
+            let envelope = decode_agent_text_page_cursor(cursor)?;
+            if envelope.operation != view.request.operation.label() {
+                return Err(OutputError::InvalidAgentTextPage(format!(
+                    "cursor continues operation {} but this response is {}",
+                    envelope.operation,
+                    view.request.operation.label()
+                )));
+            }
+            if envelope.graph_identity != view.identity.graph_identity {
+                return Err(OutputError::InvalidAgentTextPage(
+                    "cursor belongs to a different graph identity".to_owned(),
+                ));
+            }
+            if envelope.prefix_count > entries.len() {
+                return Err(OutputError::InvalidAgentTextPage(
+                    "cursor prefix is longer than the retained ledger".to_owned(),
+                ));
+            }
+            if prefix_digest(&entries[..envelope.prefix_count]) != envelope.prefix_digest {
+                return Err(OutputError::InvalidAgentTextPage(
+                    "cursor prefix does not match the current response".to_owned(),
+                ));
+            }
+            (envelope.page, envelope.prefix_count)
+        }
+    };
+    let max_chars = options.token_budget.saturating_mul(4);
+    let header = render_agent_query_header_lines(&view)?;
+    let header_chars = rendered_chars(&header);
+    let mut end = start;
+    let mut used = header_chars.saturating_add(AGENT_TEXT_PAGE_FOOTER_RESERVE_CHARS);
+    while end < entries.len() {
+        let (section, text) = &entries[end];
+        let mut cost = text.chars().count().saturating_add(1);
+        if end == start || Some(*section) != entries.get(end.saturating_sub(1)).map(|entry| entry.0)
+        {
+            cost = cost.saturating_add(section.heading().chars().count() + 2);
+        }
+        if used.saturating_add(cost) > max_chars && end > start {
+            break;
+        }
+        used = used.saturating_add(cost);
+        end += 1;
+    }
+    loop {
+        let next_cursor = if end < entries.len() {
+            Some(encode_agent_text_page_cursor(&AgentTextPageCursor {
+                version: AGENT_TEXT_PAGE_VERSION.to_owned(),
+                operation: view.request.operation.label().to_owned(),
+                graph_identity: view.identity.graph_identity.clone(),
+                page: page.saturating_add(1),
+                prefix_count: end,
+                prefix_digest: prefix_digest(&entries[..end]),
+            })?)
+        } else {
+            None
+        };
+        let text = render_agent_text_page_body(
+            &view,
+            response,
+            &header,
+            &entries,
+            start,
+            end,
+            page,
+            options.token_budget,
+            next_cursor.as_deref(),
+        );
+        if text.chars().count() <= max_chars || end <= start.saturating_add(1) {
+            return Ok(AgentTextPage {
+                text,
+                next_cursor,
+                page,
+                entry_start: start,
+                entry_end: end,
+                entry_total: entries.len(),
+            });
+        }
+        end = end.saturating_sub(1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_agent_text_page_body(
+    view: &AgentQueryView,
+    response: &CodeQueryResponse,
+    header: &[String],
+    entries: &[(TextPageSection, String)],
+    start: usize,
+    end: usize,
+    page: u32,
+    token_budget: usize,
+    next_cursor: Option<&str>,
+) -> String {
+    let mut lines = header.to_vec();
+    let mut section: Option<TextPageSection> = None;
+    for (entry_section, text) in &entries[start..end] {
+        if section != Some(*entry_section) {
+            lines.push(String::new());
+            lines.push(entry_section.heading().to_owned());
+            section = Some(*entry_section);
+        }
+        lines.push(text.clone());
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Pagination: version={AGENT_TEXT_PAGE_VERSION} page={page} range={}-{} of {} budget_tokens=~{} next={}",
+        if end > start { start + 1 } else { 0 },
+        end,
+        entries.len(),
+        token_budget,
+        next_cursor.unwrap_or("none")
+    ));
+    if view.omissions.total > 0 || response.truncated {
+        lines.push(if response.truncated {
+            format!(
+                "Bound: query retained a bounded slice ({} record(s) beyond the compact view); continue with next=, then raise --max-nodes/--max-edges for a wider query bound.",
+                view.omissions.total
+            )
+        } else {
+            format!(
+                "Bound: {} record(s) are beyond the compact view limits; continue with next= to page through the complete result.",
+                view.omissions.total
+            )
+        });
+    }
+    lines.join("\n")
+}
+
+fn text_page_entries(
+    response: &CodeQueryResponse,
+    context: &AgentQueryContext,
+) -> Vec<(TextPageSection, String)> {
+    let nodes = response
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    entries.extend(
+        primary_node_ids(context.operation, &context.operands, response, &nodes)
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .filter_map(|id| nodes.get(id).copied())
+            .map(|node| {
+                (
+                    TextPageSection::PrimaryResults,
+                    render_entity(&agent_entity(node)),
+                )
+            }),
+    );
+    let mut paths = response
+        .paths
+        .iter()
+        .map(|path| (path.id.clone(), agent_path(path, &nodes, &response.edges)))
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| left.0.cmp(&right.0));
+    entries.extend(
+        paths
+            .iter()
+            .map(|(_, path)| (TextPageSection::Paths, render_path(path))),
+    );
+    let mut relationships = response
+        .edges
+        .iter()
+        .enumerate()
+        .map(|(index, edge)| {
+            let relationship = agent_relationship(edge, index, &nodes);
+            (relationship.id.clone(), relationship)
+        })
+        .collect::<Vec<_>>();
+    relationships.sort_by(|left, right| left.0.cmp(&right.0));
+    entries.extend(relationships.iter().map(|(_, relationship)| {
+        (
+            TextPageSection::Relationships,
+            render_relationship(relationship),
+        )
+    }));
+    entries
+}
+
+fn prefix_digest(entries: &[(TextPageSection, String)]) -> String {
+    let joined = entries
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    hex_digest(joined.as_bytes())
+}
+
+fn rendered_chars(lines: &[String]) -> usize {
+    lines.iter().map(|line| line.chars().count() + 1).sum()
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn encode_agent_text_page_cursor(cursor: &AgentTextPageCursor) -> Result<String, OutputError> {
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?);
+    let checksum = hex_digest(payload.as_bytes());
+    Ok(format!("{payload}.{checksum}"))
 }
 
 fn render_result_lines(view: &AgentQueryView) -> Vec<String> {

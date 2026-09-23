@@ -123,6 +123,29 @@ The additive `relationship_inconsistency` diagnostic extends the strict
 TypeScript consumers and the checked-in manifest must accept the new value
 before interpreting a relationship result that carries it.
 
+### Typed text pages and store self-check
+
+Typed commands (`ask`, `search`, `callers`, `callees`, `impact`, `explore`, and
+`node`) accept `--text-budget` and `--cursor` for `--format text`. Text output
+is now paged with the additive `compass.query.agent-text-page/1` cursor: the
+page carries a `Pagination:` footer, and the cursor continues the same
+deterministic ledger at the same page budget. The ledger is derived from the
+raw `compass.query/1` response, so a page can reach records that the compact
+`compass.query.agent-view/1` bounds omit. The raw `json` and `agent-json`
+shapes are unchanged, and a cursor is rejected for non-text formats. Cursors
+remain valid only for the same operation, graph identity, and reviewed prefix;
+consumers must treat an invalid cursor as an explicit failure rather than
+falling back to the first page.
+
+`compass store validate` now materializes the selected snapshot and applies
+the strict `compass.graph/1` validation used by readers, in addition to the
+existing tree-integrity, manifest, and `store.ref` checks. An artifact that an
+older publisher wrote with records that strict readers reject now reports
+`valid: false` with the offending record IDs; rebuild the graph (or restore a
+validated backup) instead of querying it. `compass store status` intentionally
+keeps the cheaper digest-and-integrity check and does not claim semantic
+validation.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

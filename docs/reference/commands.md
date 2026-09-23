@@ -415,8 +415,20 @@ every evidence record. The natural `query` command accepts the same
 `agent-json` format for discovery; its text header is answer-first while the
 existing discovery entry ledger and v2 cursor remain unchanged.
 
-`agent-json` is incompatible with text-only `--cursor`, `--text-budget`,
-`--evidence`, and `--result-envelope` controls. Agent View JSON contains
+Text output is paged. `--text-budget <N>` sets the approximate token budget of
+one page (default 2000) and the closing `Pagination:` line carries a
+`compass.query.agent-text-page/1` cursor in `next=`. Passing that token back as
+`--cursor` continues the same deterministic ledger at the same page budget, so
+a capped result set is read page by page instead of re-run with a guessed
+larger limit. Each continuation re-runs the same query with wider internal
+record bounds and verifies the reviewed prefix before rendering, and an invalid
+or stale cursor fails explicitly. The ledger is derived from the raw
+`compass.query/1` response, so paging reaches records that the compact Agent
+View bounds omit; when the underlying query bound itself is reached, the page
+reports it and asks for wider `--max-nodes`/`--max-edges` limits.
+
+`agent-json` and `json` are incompatible with text-only `--cursor`,
+`--text-budget`, `--evidence`, and `--result-envelope` controls. Agent View JSON contains
 bounded `nextActions` as argv arrays or JSON argument objects; clients should
 use those values instead of reconstructing shell commands from result text.
 

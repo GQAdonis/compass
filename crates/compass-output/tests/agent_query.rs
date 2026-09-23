@@ -10,7 +10,8 @@ use compass_model::query_contract::{
 };
 use compass_output::{
     AgentEvidence, AgentExecution, AgentMatch, AgentOperation, AgentQueryContext, AgentResultState,
-    build_code_query_view, render_agent_query_text,
+    AgentTextPageOptions, build_code_query_view, render_agent_query_text,
+    render_code_query_text_page,
 };
 
 fn anchor(file: &str, line: u32) -> SourceAnchor {
@@ -60,6 +61,116 @@ fn response(operation: CodeQueryOperation) -> CodeQueryResponse {
 
 fn context(operation: AgentOperation) -> AgentQueryContext {
     AgentQueryContext::new(operation, "graph-identity", "generation-identity")
+}
+
+#[test]
+fn paged_text_covers_records_beyond_the_compact_view_and_continues() -> Result<(), Box<dyn Error>> {
+    let caller_anchor = anchor("src/caller.rs", 10);
+    let target_anchor = anchor("src/target.rs", 20);
+    let mut response = response(CodeQueryOperation::Callers);
+    response
+        .nodes
+        .push(node("n:target", "Target", &target_anchor));
+    for index in 0..40 {
+        let id = format!("n:caller-{index:02}");
+        response
+            .nodes
+            .push(node(&id, &format!("Caller{index:02}"), &caller_anchor));
+        response.edges.push(QueryEdge {
+            id: format!("e:caller-{index:02}"),
+            source: id,
+            target: "n:target".to_owned(),
+            kind: EdgeKind::Calls,
+            relationship_site: Some(caller_anchor.clone()),
+            details: None,
+            evidence: vec![evidence(&caller_anchor)],
+        });
+    }
+    let mut query_context = context(AgentOperation::Callers);
+    query_context = query_context.with_operand(compass_output::AgentOperandRole::Symbol, "Target");
+
+    let first = render_code_query_text_page(
+        &response,
+        query_context.clone(),
+        AgentTextPageOptions {
+            token_budget: 300,
+            cursor: None,
+        },
+    )?;
+    assert!(first.entry_total > 24, "ledger must exceed the view bound");
+    assert!(first.entry_end > first.entry_start);
+    assert!(first.text.contains("Pagination:"));
+    let cursor = first.next_cursor.clone().ok_or("expected a continuation")?;
+
+    let second = render_code_query_text_page(
+        &response,
+        query_context.clone(),
+        AgentTextPageOptions {
+            token_budget: 300,
+            cursor: Some(&cursor),
+        },
+    )?;
+    assert_eq!(second.entry_start, first.entry_end);
+    assert!(second.entry_end > second.entry_start);
+    assert!(second.page > first.page);
+
+    let tampered = format!("{}x", &cursor[..cursor.len() - 1]);
+    assert!(
+        render_code_query_text_page(
+            &response,
+            query_context,
+            AgentTextPageOptions {
+                token_budget: 300,
+                cursor: Some(&tampered),
+            },
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn paged_text_reaches_the_end_without_a_continuation() -> Result<(), Box<dyn Error>> {
+    let caller_anchor = anchor("src/caller.rs", 10);
+    let target_anchor = anchor("src/target.rs", 20);
+    let mut response = response(CodeQueryOperation::Callers);
+    response.nodes = vec![
+        node("n:caller", "Caller", &caller_anchor),
+        node("n:target", "Target", &target_anchor),
+    ];
+    response.edges.push(QueryEdge {
+        id: "e:caller-target".to_owned(),
+        source: "n:caller".to_owned(),
+        target: "n:target".to_owned(),
+        kind: EdgeKind::Calls,
+        relationship_site: Some(caller_anchor.clone()),
+        details: None,
+        evidence: vec![evidence(&caller_anchor)],
+    });
+    let mut query_context = context(AgentOperation::Callers);
+    query_context = query_context.with_operand(compass_output::AgentOperandRole::Symbol, "Target");
+    let mut cursor: Option<String> = None;
+    let mut pages = 0_u32;
+    loop {
+        let page = render_code_query_text_page(
+            &response,
+            query_context.clone(),
+            AgentTextPageOptions {
+                token_budget: 2_000,
+                cursor: cursor.as_deref(),
+            },
+        )?;
+        pages += 1;
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => {
+                assert_eq!(page.entry_end, page.entry_total);
+                break;
+            }
+        }
+        assert!(pages < 10, "pagination must terminate");
+    }
+    Ok(())
 }
 
 #[test]
