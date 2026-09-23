@@ -46,6 +46,7 @@ _GRAPHIFY_NODE = re.compile(r"^NODE (.+?) \[src=(\S+) loc=L(\d+)", re.MULTILINE)
 KINDS = {
     "explain",
     "explain_source",
+    "brief",
     "callers",
     "brief_callers",
     "paged_callers",

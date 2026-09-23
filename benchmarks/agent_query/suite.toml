@@ -37,6 +37,36 @@ required = ["ExecuteC", "command.go", "1084"]
 judgment = "command.go:1084 declares func (c *Command) ExecuteC()."
 
 [[repository.question]]
+id = "cobra-brief-explore"
+kind = "brief"
+subject = "map ExecuteC and Find through the compact projection"
+compass = ["explore", "cobra.Command::ExecuteC", "cobra.Command::Find", "--root", ".", "--format", "agent-json", "--brief"]
+graphify = ["explain", ".ExecuteC()"]
+expect = "answer"
+required = ["ExecuteC", "Find"]
+judgment = "The compact map projection must still resolve both anchors."
+
+[[repository.question]]
+id = "cobra-brief-ambiguity"
+kind = "brief"
+subject = "Execute"
+compass = ["search", "Execute", "--format", "agent-json", "--brief"]
+graphify = ["query", "Execute", "--budget", "600"]
+expect = "pick_list"
+required_one_of = ["ExecuteC", "ExecuteContext", "execute"]
+min_one_of = 2
+judgment = "The compact ambiguity projection must still offer the candidate pick list."
+
+[[repository.question]]
+id = "cobra-brief-negative"
+kind = "brief"
+subject = "ZebraQuantumMissingSymbol"
+compass = ["search", "ZebraQuantumMissingSymbol", "--format", "agent-json", "--brief"]
+graphify = ["query", "ZebraQuantumMissingSymbol", "--budget", "600"]
+expect = "no_match"
+judgment = "The compact projection must keep the explicit no-match state cheaply."
+
+[[repository.question]]
 id = "cobra-callers-executec"
 kind = "callers"
 subject = "cobra.Command::ExecuteC"

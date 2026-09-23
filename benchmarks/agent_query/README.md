@@ -59,6 +59,11 @@ builds `compass extract --code-only --no-viz --store sqlite` and
   `required_one_of`/`min_one_of`, at least that many of those alternatives, so
   a question with several source-reviewed answers (for example the Zod
   validation family) accepts any reviewed one without weakening the row.
+- **Compact rows**: `brief` and `brief_callers` questions run the compact
+  `compass.query.agent-view.brief/1` projection (or the typed agent path) so the
+  suite reports the token cost of the lean agent answer beside the full
+  projection.
+
 - **Tokens**: UTF-8 stdout bytes divided by four, the same approximation both
   CLIs document for their text budgets. `run.json` records the first-page cost
   and the total cost of the reviewed workflow.

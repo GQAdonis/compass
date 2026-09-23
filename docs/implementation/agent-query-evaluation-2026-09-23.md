@@ -9,13 +9,14 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 
 | Metric | Compass | Graphify |
 | --- | ---: | ---: |
-| Source-reviewed answers passed | 44/44 | 19/44 |
+| Source-reviewed answers passed | 47/47 | 22/47 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
-| Median tokens per answered question | 650 | 278 |
+| Median tokens per answered question | 575 | 277 |
 | Broad natural questions answered | 5/5 | 5/5 |
 | Paged caller questions answered | 2/2 | 0/2 |
 | Compact caller questions answered | 2/2 | 0/2 |
+| Compact-projection rows (median tokens) | 3/3 · 305 | 3/3 · 277 |
 
 Compass passed every `callers`, `explain_source`, `file_path`, and `negative`
 row, plus every `path` and both `paged_callers` rows; Graphify passed none of
@@ -181,15 +182,16 @@ digest before it is printed; a rewritten file fails closed with
    promoted project-name and truncated-token matches, and declared-name
    priority inside relation evidence could not outrank the operation-root key.
    The 500-query relevance qualification passes after every landed change.
-2. **Verified answers still cost more tokens than unverified ones on the
-   single-shot paths.** Compass spends 2.3x Graphify's median tokens per
-   answered question (650 versus 278) while answering all 44 rows to
-   Graphify's 19, and the medians are not like-for-like. Per kind where both
-   tools passed, Compass is 1.8x more expensive on `explain` (369 versus 201),
-   4.7x on `path` (122 versus 26), 3.3x on `ambiguity` (1788 versus 546), 55x on
-   `negative` (389 versus 7), and 1.8x on `broad` (726 versus 412) - but the
-   compact paths are competitive: caller answers fall from 6.3k tokens to 1.9k
-   with `--brief` and 554 with paging, and both remain correct.
+2. **The compact projection is at token parity; the full projection is an
+   audit format.** Across all 47 rows Compass spends 2.1x Graphify's median
+   tokens (575 versus 277) while answering every row to Graphify's 22. The
+   like-for-like comparison is narrow rows: on the compact `--brief` questions
+   both tools pass 3/3 with a median of 305 tokens for Compass and 277 for
+   Graphify - 1.1x, effectively parity - and caller answers fall from 6.3k
+   tokens in the full projection to 1.9k compact and 554 paged, all correct.
+   The remaining per-kind gaps come from the full projection carrying stable
+   IDs, digests, and per-edge evidence that Graphify's rows do not, and from
+   the no-match envelope (389 versus 7) noted below.
 3. **No-match answers are 55x Graphify's cost** (389 versus 7 median tokens).
    The agent view keeps its full identity and omission envelope even when the
    answer is "nothing matched". A compact no-match projection is the cheapest
@@ -207,7 +209,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final7/runs/20260923T115812Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final8/runs/20260923T120351Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

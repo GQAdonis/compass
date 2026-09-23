@@ -64,6 +64,7 @@ class SuiteTests(unittest.TestCase):
             {
                 "explain",
                 "explain_source",
+                "brief",
                 "callers",
                 "brief_callers",
                 "paged_callers",
