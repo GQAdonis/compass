@@ -117,7 +117,11 @@ digest before it is printed; a rewritten file fails closed with
    three failed `broad` rows did not fail on pagination or bounds; they seeded
    the wrong symbols. Term selection should weight rare, symbol-shaped terms
    over generic surface nouns, and must keep the reviewed relevance
-   qualification corpus green.
+   qualification corpus green. One bounded step landed: `route` is no longer
+   discarded as a generic relational term, so the Axum question now seeds route
+   symbols and its answer names `Router`; it still misses `MethodRouter`, and
+   Gson still prefers `JsonObject` over the exact-name `serialize` match, so
+   term weighting by document frequency remains the follow-up.
 2. **Verified answers cost more tokens than unverified ones on the
    single-shot paths.** Compass spends 3.6x Graphify's median tokens per
    answered question across the whole suite, driven by `callers` (6.3k median

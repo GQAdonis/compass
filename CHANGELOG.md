@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Stop discarding `route`/`routes`/`routing` from natural discovery terms.
+  Those words name the subject in routing questions, so a question such as
+  "how does axum route an incoming request" now seeds route symbols instead of
+  only the generic nouns around them. The reviewed relevance qualification
+  corpus still passes.
+
 - Resolve TypeScript `paths` aliases for a project that other projects
   `extends`. A shared root `tsconfig.json` that declares its own `files` or
   `include` is a project for those files again, while a same-directory
