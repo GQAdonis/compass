@@ -368,7 +368,13 @@ fn exact_relationship_view_is_answer_first_and_round_trips() -> Result<(), Box<d
     assert_eq!(view.relationships[0].source.label, "Fixture.Caller");
     assert_eq!(view.relationships[0].target.label, "Fixture.Target");
     let text = render_agent_query_text(&view)?;
-    assert!(text.starts_with("RESULT answered · match=exact"));
+    // The resolved states are the default and stay out of the envelope; the
+    // coverage qualifier is the one a caller has to weigh.
+    assert!(
+        text.starts_with("RESULT answered · coverage="),
+        "a resolved page states only its qualifiers: {}",
+        text.lines().next().unwrap_or_default()
+    );
     assert!(
         text.find("ANSWER").ok_or("missing answer")?
             < text
@@ -637,8 +643,9 @@ fn text_page_prints_identifiers_only_where_it_resolves_a_name() -> Result<(), Bo
         "a resolved caller row is addressed by name and anchor: {}",
         resolved.text
     );
-    // A candidate page whose name is not exact keeps the identifiers an agent
-    // disambiguates with; an exact-name pick list does not need them.
+    // A pick-list row is addressed by the qualified name and source anchor it
+    // prints, so a candidate page pays for identifiers only where the printed
+    // name cannot pick the row out of the page.
     let mut candidates = response.clone();
     candidates.operation = CodeQueryOperation::Search;
     candidates.results.push(SearchHit {
@@ -670,9 +677,34 @@ fn text_page_prints_identifiers_only_where_it_resolves_a_name() -> Result<(), Bo
         },
     )?;
     assert!(
-        fuzzy_pick_list.text.contains("  id: "),
-        "a candidate page that cannot address a row by name keeps its identifiers: {}",
+        !fuzzy_pick_list.text.contains("  id: "),
+        "a candidate page of distinct names is addressed by those names: {}",
         fuzzy_pick_list.text
+    );
+    // Two retained rows under one label cannot be told apart by that label, so
+    // both carry the identifier that separates them.
+    let mut colliding = candidates.clone();
+    colliding
+        .nodes
+        .push(node("n:twin", "Target", &anchor("src/twin.rs", 40)));
+    colliding.results.push(SearchHit {
+        node_id: "n:twin".to_owned(),
+        score: 0.9,
+        matched_fields: vec!["name".to_owned()],
+    });
+    let colliding_pick_list = render_code_query_text_page(
+        &colliding,
+        context(AgentOperation::Search)
+            .with_operand(compass_output::AgentOperandRole::Query, "Targat"),
+        AgentTextPageOptions {
+            token_budget: 2_000,
+            cursor: None,
+        },
+    )?;
+    assert!(
+        colliding_pick_list.text.matches("  id: ").count() >= 2,
+        "rows that share a label keep the identifiers that separate them: {}",
+        colliding_pick_list.text
     );
     // The JSON projection carries identifiers for both.
     let view = build_code_query_view(
@@ -719,7 +751,7 @@ fn text_page_envelope_stays_compact_and_cursors_stay_short() -> Result<(), Box<d
     assert!(!pagination.contains("budget_tokens"), "{pagination}");
     let cursor = page.next_cursor.ok_or("expected a continuation")?;
     assert!(
-        cursor.len() <= 220,
+        cursor.len() <= 120,
         "a cursor is re-printed on every page, so it stays compact: {} chars",
         cursor.len()
     );
@@ -732,10 +764,12 @@ fn legacy_page_cursor_encoding_is_rejected_with_a_version_error() -> Result<(), 
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use sha2::{Digest, Sha256};
 
-    // The previous release wrote long keys with a string version and full
-    // digests. Such a cursor must fail explicitly, not be reinterpreted as the
-    // compact wire form with defaulted fields.
-    let legacy = serde_json::json!({
+    // Two earlier encodings exist: the release that wrote long keys with a
+    // string version and full digests, and the base64url-wrapped compact JSON
+    // that followed it. Neither may be reinterpreted as a field in the current
+    // form, so both must fail explicitly instead of carrying a caller into
+    // another query's page.
+    let legacy_verbose = serde_json::json!({
         "version": "compass.query.agent-text-page/1",
         "operation": "callers",
         "graphIdentity": "a".repeat(64),
@@ -743,16 +777,26 @@ fn legacy_page_cursor_encoding_is_rejected_with_a_version_error() -> Result<(), 
         "prefixCount": 1,
         "prefixDigest": "b".repeat(64),
     });
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&legacy)?);
-    let checksum = format!("{:x}", Sha256::digest(payload.as_bytes()));
-    let cursor = format!("{payload}.{checksum}");
-    let error = compass_output::decode_agent_text_page_cursor(&cursor)
-        .expect_err("a legacy cursor must not be reinterpreted");
-    let message = error.to_string();
-    assert!(
-        message.contains("cursor"),
-        "the failure names the cursor: {message}"
-    );
+    let legacy_compact = serde_json::json!({
+        "v": 1,
+        "o": "callers",
+        "g": "a".repeat(16),
+        "p": 2,
+        "c": 1,
+        "d": "b".repeat(16),
+    });
+    for legacy in [legacy_verbose, legacy_compact] {
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&legacy)?);
+        let checksum = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        let cursor = format!("{payload}.{checksum}");
+        let error = compass_output::decode_agent_text_page_cursor(&cursor)
+            .expect_err("a legacy cursor must not be reinterpreted");
+        let message = error.to_string();
+        assert!(
+            message.contains("cursor"),
+            "the failure names the cursor: {message}"
+        );
+    }
     Ok(())
 }
 

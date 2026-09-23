@@ -414,19 +414,24 @@ leaves that anchor out of the source section instead of presenting unverified
 text.
 
 `text` is the answer-first Agent View projection. It starts with one `RESULT`
-line carrying the result, match, evidence, execution, and coverage states,
-then `ANSWER` and any blocking `CAVEATS`, then the source-located entities,
-paths, relationships, and bounded next actions. Warning caveats print their
-actionable sentence and leave the explanatory remainder to `agent-json`/`json`.
-An entity prints its stable identifier only where the page has to resolve a
-name - a `search` pick list, or any answer whose match state is not exact;
-every other row is addressed by the qualified name and source anchor it prints.
+line carrying the result state and whichever of match, evidence, execution and
+coverage qualify the answer; `match=exact`, `evidence=exact` and
+`execution=complete` are what a resolved answer means and are left out, so an
+ordinary page opens `RESULT answered · coverage=incomplete`. `ANSWER` and any
+blocking `CAVEATS` follow, then the source-located entities, paths,
+relationships, and bounded next actions. Warning caveats print their actionable
+sentence and leave the explanatory remainder to `agent-json`/`json`, and a
+caveat retained more than once is stated once. An entity prints its stable
+identifier only where the page has to resolve a name *and* the label it printed
+cannot pick that row out of the answer, which is when two retained rows share
+the label; every other row is addressed by the qualified name and source anchor
+it prints.
 `agent-json` emits the strict
 `compass.query.agent-view/1` object. `json` remains the unchanged raw
 `compass.query/1` response and is the right choice when an audit consumer needs
 every evidence record. The natural `query` command accepts the same
 `agent-json` format for discovery; its text header is answer-first while the
-existing discovery entry ledger and v2 cursor remain unchanged.
+existing discovery entry ledger and v2 cursor semantics are unchanged.
 
 Text output is paged. `--text-budget <N>` sets the approximate token budget of
 one page (default 2000) and the closing `Pagination:` line carries a
@@ -541,7 +546,10 @@ Shows one node and incoming/outgoing connections. An exact node ID or unique
 exact qualified name resolves directly. When a label or qualified name names
 multiple source-backed declarations, Compass lists the candidates and their
 source ranges and asks for the full node ID instead of silently selecting one.
-Connection lines include the stored relationship site.
+Connection lines include the stored relationship site; extraction is the
+graph's default provenance, so `[EXTRACTED]` is stated once in the
+`Connections (N, extracted unless marked):` header and a line carries a
+provenance tag only when the edge is something else.
 Connections and ambiguous candidates use the same bounded, deterministic
 pagination contract as natural-language queries instead of silently cutting off
 after the first group.

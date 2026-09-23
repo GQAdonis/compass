@@ -1,5 +1,3 @@
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use compass_model::provenance::SourceAnchor;
 use compass_model::query_contract::{
     DiscoveryDirection, DiscoveryDirectionSource, DiscoveryQueryResponse, DiscoveryResultEnvelope,
@@ -9,6 +7,10 @@ use compass_model::query_contract::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+
+use crate::text_cursor::{
+    CursorTokenError, decode_cursor_token, encode_cursor_token, is_cursor_digest,
+};
 
 pub const DISCOVERY_TEXT_PAGE_VERSION: &str = "compass.query.discovery-text-page/2";
 pub const DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET: usize = 8_000;
@@ -120,31 +122,12 @@ struct CursorEnvelope {
     offset: usize,
 }
 
-/// Wire form of one continuation cursor.
-///
-/// The key names and the stored digest prefixes are the compact representation:
-/// a cursor is re-printed at the end of every page, so its wording must not
-/// dominate the page budget. Each digest is bound at 64 bits - ample for
-/// detecting that a continuation no longer reproduces the same request, graph
-/// and result - and the payload checksum still covers the whole token.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CursorWire {
-    v: u8,
-    r: String,
-    g: String,
-    d: String,
-    s: String,
-    e: bool,
-    c: String,
-    i: usize,
-    o: usize,
-}
-
 /// Cursor wire version. Older encodings fail with an explicit version error.
-const CURSOR_WIRE_VERSION: u8 = 1;
+const CURSOR_WIRE_VERSION: u8 = 2;
 /// Hex characters stored for each digest the cursor binds.
 const CURSOR_DIGEST_CHARS: usize = 16;
+/// Fields this cursor carries behind its wire version.
+const CURSOR_WIRE_FIELDS: usize = 8;
 
 fn cursor_digest_prefix(value: &str) -> String {
     value.chars().take(CURSOR_DIGEST_CHARS).collect()
@@ -155,35 +138,68 @@ fn cursor_digest_matches(stored: &str, current: &str) -> bool {
 }
 
 impl CursorEnvelope {
-    fn to_wire(&self) -> CursorWire {
-        CursorWire {
-            v: CURSOR_WIRE_VERSION,
-            r: cursor_digest_prefix(&self.request_digest),
-            g: cursor_digest_prefix(&self.graph_identity),
-            d: cursor_digest_prefix(&self.graph_digest),
-            s: cursor_digest_prefix(&self.semantic_result_digest),
-            e: self.include_evidence,
-            c: self.section.clone(),
-            i: self.item,
-            o: self.offset,
-        }
+    fn to_wire_fields(&self) -> Vec<String> {
+        vec![
+            cursor_digest_prefix(&self.request_digest),
+            cursor_digest_prefix(&self.graph_identity),
+            cursor_digest_prefix(&self.graph_digest),
+            cursor_digest_prefix(&self.semantic_result_digest),
+            if self.include_evidence { "1" } else { "0" }.to_owned(),
+            self.section.clone(),
+            self.item.to_string(),
+            self.offset.to_string(),
+        ]
     }
 
-    fn from_wire(wire: CursorWire) -> Result<Self, DiscoveryTextPageError> {
-        if wire.v != CURSOR_WIRE_VERSION {
-            return Err(DiscoveryTextPageError::UnsupportedCursorVersion);
-        }
+    fn from_wire_fields(fields: Vec<String>) -> Result<Self, DiscoveryTextPageError> {
+        let [
+            request_digest,
+            graph_identity,
+            graph_digest,
+            semantic_result_digest,
+            include_evidence,
+            section,
+            item,
+            offset,
+        ] = <[String; CURSOR_WIRE_FIELDS]>::try_from(fields)
+            .map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)?;
+        let include_evidence = match include_evidence.as_str() {
+            "1" => true,
+            "0" => false,
+            _ => return Err(DiscoveryTextPageError::InvalidCursorEncoding),
+        };
+        let parse_position = |value: &str| {
+            value
+                .parse::<usize>()
+                .map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)
+        };
         Ok(Self {
             version: DISCOVERY_TEXT_PAGE_VERSION.to_owned(),
-            request_digest: wire.r,
-            graph_identity: wire.g,
-            graph_digest: wire.d,
-            semantic_result_digest: wire.s,
-            include_evidence: wire.e,
-            section: wire.c,
-            item: wire.i,
-            offset: wire.o,
+            request_digest: cursor_field_digest(&request_digest)?,
+            // The graph identity is the artifact's own spelling - it may carry
+            // a `sha256:` prefix - so the shared decoder's field check is the
+            // only bound it needs; the prefix is compared against the graph the
+            // continuation is running on.
+            graph_identity,
+            graph_digest: cursor_field_digest(&graph_digest)?,
+            semantic_result_digest: cursor_field_digest(&semantic_result_digest)?,
+            include_evidence,
+            section,
+            item: parse_position(&item)?,
+            offset: parse_position(&offset)?,
         })
+    }
+}
+
+/// One digest prefix read back from a cursor field.
+///
+/// The digest is compared against the current request, graph, and result, so
+/// this only rejects a field the encoder could not have written.
+fn cursor_field_digest(value: &str) -> Result<String, DiscoveryTextPageError> {
+    if is_cursor_digest(value, CURSOR_DIGEST_CHARS) {
+        Ok(value.to_owned())
+    } else {
+        Err(DiscoveryTextPageError::InvalidCursorEncoding)
     }
 }
 
@@ -217,7 +233,7 @@ fn render_discovery_text_page_internal(
         return Err(DiscoveryTextPageError::InvalidBudget);
     }
     for digest in [options.request_digest, options.graph_digest] {
-        if !valid_digest(digest) {
+        if !valid_caller_digest(digest) {
             return Err(DiscoveryTextPageError::InvalidCursorEncoding);
         }
     }
@@ -825,36 +841,37 @@ fn validate_cursor(
 }
 
 fn encode_cursor(cursor: &CursorEnvelope) -> Result<String, DiscoveryTextPageError> {
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor.to_wire())?);
-    let checksum = digest(payload.as_bytes());
-    Ok(format!("{payload}.{checksum}"))
+    let fields = cursor.to_wire_fields();
+    let fields = fields.iter().map(String::as_str).collect::<Vec<_>>();
+    Ok(encode_cursor_token(CURSOR_WIRE_VERSION, &fields))
 }
 
 fn decode_cursor(value: &str) -> Result<CursorEnvelope, DiscoveryTextPageError> {
     if value.len() > MAX_CURSOR_BYTES {
         return Err(DiscoveryTextPageError::CursorTooLarge);
     }
-    let (payload, checksum) = value
-        .split_once('.')
-        .ok_or(DiscoveryTextPageError::InvalidCursorEncoding)?;
-    if !valid_digest(checksum) || digest(payload.as_bytes()) != checksum {
-        return Err(DiscoveryTextPageError::InvalidCursorChecksum);
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)?;
-    // The checksum already proved the payload is intact, so a payload that does
-    // not parse as this wire form belongs to another cursor version.
-    let wire: CursorWire = serde_json::from_slice(&bytes)
-        .map_err(|_| DiscoveryTextPageError::UnsupportedCursorVersion)?;
-    CursorEnvelope::from_wire(wire)
+    // The shared decoder proves the token is intact and readable as this wire
+    // form; every field's meaning is this pager's own.
+    decode_cursor_token(value, CURSOR_WIRE_VERSION, CURSOR_WIRE_FIELDS)
+        .map_err(|error| match error {
+            CursorTokenError::ChecksumMismatch => DiscoveryTextPageError::InvalidCursorChecksum,
+            CursorTokenError::UnsupportedVersion => {
+                DiscoveryTextPageError::UnsupportedCursorVersion
+            }
+            CursorTokenError::MissingChecksum | CursorTokenError::Malformed => {
+                DiscoveryTextPageError::InvalidCursorEncoding
+            }
+        })
+        .and_then(CursorEnvelope::from_wire_fields)
 }
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn valid_digest(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+
+/// Whether a caller handed in a full request or graph digest.
+fn valid_caller_digest(value: &str) -> bool {
+    is_cursor_digest(value, 64)
 }
 fn rendered_values(values: &[String]) -> String {
     if values.is_empty() {

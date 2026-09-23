@@ -931,12 +931,23 @@ pub fn render_explanation_page(
         .map(|(outgoing, neighbor, edge_index)| {
             let edge = graph.edge(*edge_index);
             let site = formatted_site(&edge.string("source_file"), &edge.string("source_location"));
+            // Extraction is what the graph does by default, so the provenance
+            // tag is printed only where the edge is something else. A uniform
+            // `[EXTRACTED]` on every row of a thirty-row connection list costs
+            // more of the page than the list itself explains, and the header
+            // states the default once.
+            let confidence = edge.string("confidence");
+            let provenance = if confidence.is_empty() || confidence == "EXTRACTED" {
+                String::new()
+            } else {
+                format!(" [{confidence}]")
+            };
             vec![format!(
-                "  {} {} [{}] [{}]{}",
+                "  {} {} [{}]{}{}",
                 if *outgoing { "-->" } else { "<--" },
                 graph.node(*neighbor).label(),
                 edge.string("relation"),
-                edge.string("confidence"),
+                provenance,
                 if site.is_empty() {
                     String::new()
                 } else {
@@ -946,7 +957,10 @@ pub fn render_explanation_page(
         })
         .collect::<Vec<_>>();
     lines.push(String::new());
-    lines.push(format!("Connections ({}):", connection_lines.len()));
+    lines.push(format!(
+        "Connections ({}, extracted unless marked):",
+        connection_lines.len()
+    ));
     let fixed = lines.join("\n");
     let rendered = render_paginated_groups(
         &connection_lines,

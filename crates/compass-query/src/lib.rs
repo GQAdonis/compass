@@ -20,6 +20,7 @@ mod score;
 mod source;
 mod telemetry;
 mod text;
+mod text_cursor;
 mod traversal;
 
 pub use affected::{DEFAULT_AFFECTED_RELATIONS, affected_nodes, format_affected, resolve_seed};
@@ -67,6 +68,10 @@ pub use telemetry::{
     QueryStageTimings, WorkCounts,
 };
 pub use text::{normalize_context_filters, query_terms, sanitize_label, search_tokens};
+pub use text_cursor::{
+    CURSOR_CHECKSUM_CHARS, CURSOR_FIELD_SEPARATOR, CursorTokenError, decode_cursor_token,
+    encode_cursor_token, is_cursor_digest,
+};
 pub use traversal::{
     DEFAULT_PATH_DEPTH_LIMIT, DEFAULT_TEXT_TOKEN_BUDGET, ExplainedSource, ExplanationSourceError,
     ProfiledTextPageOptions, TextPageOptions, TextPaginationError, TraversalMode,
@@ -411,10 +416,10 @@ mod tests {
         assert!(exact.contains(&format!("ID:        {second}")));
         assert!(exact.contains("Source:    src/tikv.rs L20:4-L20:28"));
         assert!(exact.contains("Type:      code"));
+        assert!(exact.contains("--> process_delayed_slices [calls] src/tikv.rs:L24:8-L24:30"));
         assert!(
-            exact.contains(
-                "--> process_delayed_slices [calls] [EXTRACTED] src/tikv.rs:L24:8-L24:30"
-            )
+            exact.contains("Connections (1, extracted unless marked):"),
+            "the provenance default is stated once: {exact}"
         );
         Ok(())
     }
@@ -554,13 +559,19 @@ mod tests {
                 ],
                 "links": [
                     {"source":"caller","target":"target","relation":"calls","confidence":"EXTRACTED"},
-                    {"source":"target","target":"callee","relation":"calls","confidence":"EXTRACTED"}
+                    {"source":"target","target":"callee","relation":"calls","confidence":"INFERRED"}
                 ]
             }"#,
         )?;
         let output = render_explanation(&graph, "target", &HashMap::new());
-        assert!(output.contains("<-- caller() [calls] [EXTRACTED]"));
-        assert!(output.contains("--> callee() [calls] [EXTRACTED]"));
+        // The extracted default is unmarked; the edge that is something else
+        // keeps its provenance tag.
+        assert!(output.contains("<-- caller() [calls]"), "{output}");
+        assert!(!output.contains("[EXTRACTED]"), "{output}");
+        assert!(
+            output.contains("--> callee() [calls] [INFERRED]"),
+            "{output}"
+        );
         Ok(())
     }
 
@@ -584,9 +595,10 @@ mod tests {
         let output = render_explanation(&graph, "barrel", &HashMap::new());
 
         assert!(output.contains("Degree:    2"));
-        assert!(output.contains("Connections (1):"));
+        assert!(output.contains("Connections (1, extracted unless marked):"));
         assert_eq!(output.matches("--> module.ts").count(), 1);
-        assert!(output.contains("[imports_from] [EXTRACTED]"));
+        assert!(output.contains("[imports_from]"), "{output}");
+        assert!(!output.contains("[EXTRACTED]"), "{output}");
         Ok(())
     }
 
@@ -668,7 +680,10 @@ mod tests {
 
         let explain_first = render_explanation_page(&graph, "Seed", 60, 1, &HashMap::new())?;
         let explain_second = render_explanation_page(&graph, "Seed", 60, 2, &HashMap::new())?;
-        assert!(explain_first.contains("Connections (8):"));
+        assert!(
+            explain_first.contains("Connections (8, extracted unless marked):"),
+            "{explain_first}"
+        );
         assert!(explain_first.contains("connections=1-1/8"));
         assert!(explain_second.contains("connections=2-2/8"));
         assert_ne!(explain_first, explain_second);

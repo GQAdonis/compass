@@ -3,15 +3,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use compass_model::code_graph::NodeRole;
 use compass_model::provenance::{EvidenceConfidence, ResolutionState, SourceAnchor};
 use compass_model::query_contract::{
     CodeQueryOperation, CodeQueryResponse, DiscoveryEdge, DiscoveryQueryResponse, QueryDiagnostic,
     QueryDiagnosticCode, QueryEdge, QueryEvidence, QueryEvidenceLayer, QueryNode, QueryPath,
 };
-use compass_query::{code_query_response_digest, discovery_response_digest};
+use compass_query::{
+    CursorTokenError, code_query_response_digest, decode_cursor_token, discovery_response_digest,
+    encode_cursor_token,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -1002,7 +1003,15 @@ pub fn render_agent_query_header_lines(view: &AgentQueryView) -> Result<Vec<Stri
     if !view.caveats.is_empty() {
         lines.push(String::new());
         lines.push("CAVEATS".to_owned());
-        lines.extend(view.caveats.iter().map(render_caveat));
+        // One caveat can be retained twice under the same code - the same
+        // truncated sentence is the same warning, so it is stated once.
+        let mut seen = HashSet::new();
+        lines.extend(
+            view.caveats
+                .iter()
+                .map(render_caveat)
+                .filter(|line| seen.insert(line.clone())),
+        );
     }
     Ok(lines)
 }
@@ -1014,10 +1023,11 @@ pub fn render_agent_query_text(view: &AgentQueryView) -> Result<String, OutputEr
     if view.primary_results.is_empty() {
         lines.push("- None retained.".to_owned());
     } else {
+        let ambiguous_labels = duplicated_entity_labels(&view.primary_results);
         lines.extend(view.primary_results.iter().map(|entity| {
             render_entity(
                 entity,
-                page_keeps_entity_ids(view.request.operation, view.status.match_state),
+                entity_needs_identity(entity, view.status.match_state, &ambiguous_labels),
             )
         }));
     }
@@ -1237,28 +1247,12 @@ pub struct AgentTextPageCursor {
     pub prefix_digest: String,
 }
 
-/// Wire form of one continuation cursor.
-///
-/// The cursor is re-printed at the end of every page, so its spelling must not
-/// dominate the page budget: the compact key names and 64-bit digest prefixes
-/// keep it to roughly a fifth of the previous size. The prefix digest guards
-/// that a continuation reproduces the same reviewed ledger, and the payload
-/// checksum still covers the whole token.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AgentTextPageCursorWire {
-    v: u8,
-    o: String,
-    g: String,
-    p: u32,
-    c: usize,
-    d: String,
-}
-
 /// Cursor wire version. Older encodings fail with an explicit version error.
-const AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION: u8 = 1;
+const AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION: u8 = 2;
 /// Hex characters stored for each digest the cursor binds.
 const AGENT_TEXT_PAGE_CURSOR_DIGEST_CHARS: usize = 16;
+/// Fields this cursor carries behind its wire version.
+const AGENT_TEXT_PAGE_CURSOR_FIELDS: usize = 5;
 
 fn cursor_digest_prefix(value: &str) -> String {
     value
@@ -1267,36 +1261,79 @@ fn cursor_digest_prefix(value: &str) -> String {
         .collect()
 }
 
-impl From<&AgentTextPageCursor> for AgentTextPageCursorWire {
-    fn from(cursor: &AgentTextPageCursor) -> Self {
-        Self {
-            v: AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION,
-            o: cursor.operation.clone(),
-            g: cursor_digest_prefix(&cursor.graph_identity),
-            p: cursor.page,
-            c: cursor.prefix_count,
-            d: cursor_digest_prefix(&cursor.prefix_digest),
-        }
-    }
+/// Encode one cursor as the versioned field list plus its payload checksum.
+fn encode_cursor_fields(cursor: &AgentTextPageCursor) -> String {
+    encode_cursor_token(
+        AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION,
+        &[
+            &cursor.operation,
+            &cursor_digest_prefix(&cursor.graph_identity),
+            &cursor.page.to_string(),
+            &cursor.prefix_count.to_string(),
+            &cursor_digest_prefix(&cursor.prefix_digest),
+        ],
+    )
 }
 
-impl AgentTextPageCursorWire {
-    fn into_cursor(self) -> Result<AgentTextPageCursor, OutputError> {
-        if self.v != AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION {
-            return Err(OutputError::InvalidAgentTextPage(format!(
-                "unsupported page cursor version {}",
-                self.v
-            )));
-        }
-        Ok(AgentTextPageCursor {
-            version: AGENT_TEXT_PAGE_VERSION.to_owned(),
-            operation: self.o,
-            graph_identity: self.g,
-            page: self.p,
-            prefix_count: self.c,
-            prefix_digest: self.d,
-        })
+/// Decode the field list back into a continuation cursor.
+///
+/// Every field is re-validated here - the operation label, the hex digests, and
+/// the bounded integers - so a cursor that was not produced by
+/// [`encode_cursor_fields`] fails as an unreadable cursor rather than as a
+/// silently reinterpreted field.
+fn decode_cursor_fields(payload: &str) -> Result<AgentTextPageCursor, OutputError> {
+    let fields = decode_cursor_token(
+        payload,
+        AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION,
+        AGENT_TEXT_PAGE_CURSOR_FIELDS,
+    )
+    .map_err(|error| match error {
+        CursorTokenError::UnsupportedVersion => OutputError::InvalidAgentTextPage(
+            "unsupported page cursor version; reissue the page query".to_owned(),
+        ),
+        CursorTokenError::MissingChecksum
+        | CursorTokenError::ChecksumMismatch
+        | CursorTokenError::Malformed => unreadable_cursor(),
+    })?;
+    let [operation, graph_identity, page, prefix_count, prefix_digest] =
+        <[String; AGENT_TEXT_PAGE_CURSOR_FIELDS]>::try_from(fields)
+            .map_err(|_| unreadable_cursor())?;
+    let operation = operation
+        .chars()
+        .all(|character| character.is_ascii_lowercase() || character == '_')
+        .then_some(operation)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(unreadable_cursor)?;
+    let page = page.parse::<u32>().map_err(|_| unreadable_cursor())?;
+    let prefix_count = prefix_count
+        .parse::<usize>()
+        .map_err(|_| unreadable_cursor())?;
+    if page == 0 {
+        return Err(OutputError::InvalidAgentTextPage(
+            "cursor page must be greater than zero".to_owned(),
+        ));
     }
+    if !is_digest_prefix(&prefix_digest) {
+        return Err(unreadable_cursor());
+    }
+    Ok(AgentTextPageCursor {
+        version: AGENT_TEXT_PAGE_VERSION.to_owned(),
+        operation,
+        graph_identity,
+        page,
+        prefix_count,
+        prefix_digest,
+    })
+}
+
+fn is_digest_prefix(value: &str) -> bool {
+    compass_query::is_cursor_digest(value, AGENT_TEXT_PAGE_CURSOR_DIGEST_CHARS)
+}
+
+fn unreadable_cursor() -> OutputError {
+    OutputError::InvalidAgentTextPage(
+        "unsupported page cursor version; reissue the page query".to_owned(),
+    )
 }
 
 /// Options for one paged agent text response.
@@ -1363,36 +1400,7 @@ pub fn decode_agent_text_page_cursor(value: &str) -> Result<AgentTextPageCursor,
             "cursor exceeds the supported size".to_owned(),
         ));
     }
-    let (payload, checksum) = value.split_once('.').ok_or_else(|| {
-        OutputError::InvalidAgentTextPage("cursor encoding is incomplete".to_owned())
-    })?;
-    if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(OutputError::InvalidAgentTextPage(
-            "cursor checksum is invalid".to_owned(),
-        ));
-    }
-    if hex_digest(payload.as_bytes()) != checksum {
-        return Err(OutputError::InvalidAgentTextPage(
-            "cursor checksum does not match its payload".to_owned(),
-        ));
-    }
-    let bytes = URL_SAFE_NO_PAD.decode(payload).map_err(|_| {
-        OutputError::InvalidAgentTextPage("cursor payload is not valid base64url".to_owned())
-    })?;
-    // The checksum already proved the payload is intact, so a payload that does
-    // not parse as this wire form belongs to another cursor version.
-    let wire: AgentTextPageCursorWire = serde_json::from_slice(&bytes).map_err(|_| {
-        OutputError::InvalidAgentTextPage(
-            "unsupported page cursor version; reissue the page query".to_owned(),
-        )
-    })?;
-    let cursor = wire.into_cursor()?;
-    if cursor.page == 0 {
-        return Err(OutputError::InvalidAgentTextPage(
-            "cursor page must be greater than zero".to_owned(),
-        ));
-    }
-    Ok(cursor)
+    decode_cursor_fields(value)
 }
 
 /// Render one bounded page of agent text and its continuation cursor.
@@ -1418,7 +1426,7 @@ pub fn render_code_query_text_page(
         response,
         view.request.operation,
         &view.request.operands,
-        page_keeps_entity_ids(view.request.operation, view.status.match_state),
+        view.status.match_state,
     );
     let (page, start) = match options.cursor {
         None => (1_u32, 0_usize),
@@ -1613,7 +1621,7 @@ fn text_page_entries(
     response: &CodeQueryResponse,
     operation: AgentOperation,
     operands: &[AgentOperand],
-    include_entity_ids: bool,
+    match_state: AgentMatch,
 ) -> Vec<(TextPageSection, String)> {
     let nodes = response
         .nodes
@@ -1623,18 +1631,22 @@ fn text_page_entries(
     let ordered_edges = ordered_relationship_edges(response);
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
-    entries.extend(
-        primary_node_ids(operation, operands, response, &nodes, &ordered_edges)
-            .iter()
-            .filter(|id| seen.insert((*id).clone()))
-            .filter_map(|id| nodes.get(id).copied())
-            .map(|node| {
-                (
-                    TextPageSection::PrimaryResults,
-                    render_entity(&agent_entity(node), include_entity_ids),
-                )
-            }),
-    );
+    let primary_entities = primary_node_ids(operation, operands, response, &nodes, &ordered_edges)
+        .iter()
+        .filter(|id| seen.insert((*id).clone()))
+        .filter_map(|id| nodes.get(id).copied())
+        .map(agent_entity)
+        .collect::<Vec<_>>();
+    let ambiguous_labels = duplicated_entity_labels(&primary_entities);
+    entries.extend(primary_entities.iter().map(|entity| {
+        (
+            TextPageSection::PrimaryResults,
+            render_entity(
+                entity,
+                entity_needs_identity(entity, match_state, &ambiguous_labels),
+            ),
+        )
+    }));
     let mut paths = response
         .paths
         .iter()
@@ -1798,23 +1810,44 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 fn encode_agent_text_page_cursor(cursor: &AgentTextPageCursor) -> Result<String, OutputError> {
-    let payload =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&AgentTextPageCursorWire::from(cursor))?);
-    let checksum = hex_digest(payload.as_bytes());
-    Ok(format!("{payload}.{checksum}"))
+    Ok(encode_cursor_fields(cursor))
 }
 
 fn render_result_lines(view: &AgentQueryView) -> Vec<String> {
-    // One line: the five state words carry the page's entire envelope, and a
+    // One line: the state words carry the page's entire envelope, and a
     // six-line block costs every page - including the pages whose answer is a
-    // single no-match sentence - the same budget.
+    // single no-match sentence - the same budget. `match=exact`, `evidence=exact`
+    // and `execution=complete` are the resolved answer; printing them on every
+    // page spends budget on the state a caller already assumes and would only
+    // read as a caveat. The exceptions are what a caller weighs, so only they
+    // are printed, after the coverage that qualifies the whole answer.
+    let mut states = Vec::new();
+    if view.status.match_state != AgentMatch::Exact {
+        states.push(format!(
+            "match={}",
+            match_state_name(view.status.match_state)
+        ));
+    }
+    if view.status.evidence_state != AgentEvidence::Exact {
+        states.push(format!(
+            "evidence={}",
+            evidence_state_name(view.status.evidence_state)
+        ));
+    }
+    if view.status.source_execution != AgentExecution::Complete {
+        states.push(format!(
+            "execution={}",
+            execution_state_name(view.status.source_execution)
+        ));
+    }
+    states.push(format!(
+        "coverage={}",
+        coverage_state_name(view.status.coverage)
+    ));
     vec![format!(
-        "RESULT {} · match={} · evidence={} · execution={} · coverage={}",
+        "RESULT {} · {}",
         result_state_name(view.status.result_state),
-        match_state_name(view.status.match_state),
-        evidence_state_name(view.status.evidence_state),
-        execution_state_name(view.status.source_execution),
-        coverage_state_name(view.status.coverage),
+        states.join(" · ")
     )]
 }
 
@@ -1912,15 +1945,38 @@ fn render_entity(entity: &AgentEntity, include_id: bool) -> String {
     }
 }
 
-/// Whether a page must print stable entity identifiers.
+/// Labels that more than one retained entity carries.
 ///
-/// A page needs the identifier only when the name it printed is not unique
-/// enough to address the row, so identifiers appear when the answer's match
-/// state is not exact and stay out of the resolved answers and exact-name pick
-/// lists, where the qualified name and source anchor address every row. The
+/// A label is the address a caller repeats back to the tool, so a row needs its
+/// stable identifier exactly when that address does not pick the row out of the
+/// answer it was read from.
+fn duplicated_entity_labels(entities: &[AgentEntity]) -> HashSet<&str> {
+    let mut counts = HashMap::<&str, usize>::new();
+    for entity in entities {
+        *counts.entry(entity.label.as_str()).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter_map(|(label, count)| (count > 1).then_some(label))
+        .collect()
+}
+
+/// Whether a page must print the stable identifier of one entity.
+///
+/// A page needs the identifier only where the page is resolving a name and the
+/// name it printed is not unique enough to address the row, which is when two
+/// retained rows share that label. A row that a caller can name - the resolved
+/// answers, and every distinct label in a candidate list - stays addressed by
+/// the qualified name and source anchor it already prints, which keeps the
+/// answer's evidence per token high; a duplicated label cannot be repeated back
+/// to the tool alone, so those rows carry the identity that separates them. The
 /// candidate list, its order, and every identifier stay in `--format json`.
-fn page_keeps_entity_ids(_operation: AgentOperation, match_state: AgentMatch) -> bool {
-    !matches!(match_state, AgentMatch::Exact)
+fn entity_needs_identity(
+    entity: &AgentEntity,
+    match_state: AgentMatch,
+    duplicated_labels: &HashSet<&str>,
+) -> bool {
+    !matches!(match_state, AgentMatch::Exact) && duplicated_labels.contains(entity.label.as_str())
 }
 
 fn render_relationship(relationship: &AgentRelationship) -> String {

@@ -12,7 +12,8 @@ commit `3fd246dc` plus the fixes in this change, and Graphify `0.9.36`.
 | Source-reviewed answers passed | 47/47 | 22/47 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 86% |
-| Median tokens per answered question | 575 | 277 |
+| Median tokens per answered question | 397 | 278 |
+| Median tokens, questions both tools answered | 392 | 278 |
 | Broad natural questions answered | 5/5 | 5/5 |
 | Paged caller questions answered | 2/2 | 0/2 |
 | Compact caller questions answered | 2/2 | 0/2 |
@@ -249,8 +250,8 @@ projection rows. It contributes ten questions per repository.
 | Questions only that tool answered | 6 | 0 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 91% |
-| Median tokens, own passing rows | 327 | 98 |
-| Median tokens, the 44 paired answers | 304 | 98 |
+| Median tokens, own passing rows | 294 | 98 |
+| Median tokens, the 44 paired answers | 280 | 98 |
 
 Paired tokens matter more than the per-tool medians: the first number prices
 different rows for each tool, while the paired number compares only the 44
@@ -259,21 +260,24 @@ reports both, and `run.json` carries the per-kind split.
 
 | Kind | Compass | Graphify | Paired median tokens (Compass/Graphify) |
 | --- | ---: | ---: | ---: |
-| `explain` | 5/5 | 5/5 | 288 / 210 |
+| `explain` | 5/5 | 5/5 | 256 / 210 |
 | `explain_source` | 5/5 | 0/5 | - |
-| `callers` | 5/5 | 5/5 | 222 / 67 |
-| `callees` | 5/5 | 5/5 | 305 / 249 |
-| `impact` | 5/5 | 5/5 | 428 / 112 |
+| `callers` | 5/5 | 5/5 | 209 / 67 |
+| `callees` | 5/5 | 5/5 | 292 / 249 |
+| `impact` | 5/5 | 5/5 | 420 / 112 |
 | `path` | 5/5 | 5/5 | 44 / 22 |
-| `file_path` | 5/5 | 4/5 | 51 / 32 |
-| `ambiguity` | 5/5 | 5/5 | 628 / 165 |
-| `negative` | 5/5 | 5/5 | 91 / 13 |
-| `broad` | 5/5 | 5/5 | 596 / 566 |
+| `file_path` | 5/5 | 4/5 | 54 / 32 |
+| `ambiguity` | 5/5 | 5/5 | 362 / 165 |
+| `negative` | 5/5 | 5/5 | 86 / 13 |
+| `broad` | 5/5 | 5/5 | 601 / 566 |
 
 The token columns in this table are the post-optimization medians from the
 "Token efficiency" section below; the earlier passes measured 1,992 for
 `callers`, 1,967 for `impact` and `ambiguity`, 595 for `callees`, 82/90 for
-`path`/`file_path` and 112 for `negative`.
+`path`/`file_path` and 112 for `negative`. The `broad` median is three tokens
+above the previous pass for a measured reason: a shorter page footer leaves
+room for two more ledger entries inside the same 600-token budget, so the page
+answers more of the question for the same page price.
 
 ### Closing the broad-question gap
 
@@ -332,17 +336,18 @@ verification:
   source-text rows it cannot answer by construction and one Axum file-path row.
   Graphify's remaining edge is cost, not coverage.
 - **Tokens.** Graphify answers the median paired question with 98 tokens
-  against Compass's 560, but the two sides of that number are different
+  against Compass's 392, but the two sides of that number are different
   problems. On the rows where both tools return the same content the gap is the
-  fixed agent-view envelope: a `negative` answer costs Compass 112 tokens and
-  Graphify 13, and a `path` answer 82 against 22. On the rows where Compass
-  fills its 2,000-token page - `callers` (1,992 versus 67) and `impact` (1,967
+  fixed agent-view envelope: a `negative` answer costs Compass 86 tokens and
+  Graphify 13, and a `path` answer 44 against 22. On the rows where Compass
+  fills its 2,000-token page - `callers` (209 versus 67) and `impact` (420
   versus 112) - Graphify is not answering the same question: its graph records
   a handful of edges for the same symbol where Compass resolves forty-three, so
   part of that ratio is how much less it reports rather than how much more
-  Compass spends. The comparable rows are `broad` (597 versus 566), where both
-  tools answer in full. Reducing the envelope on small answers and raising
-  information per token on large ones are the two separate follow-ups.
+  Compass spends. The comparable rows are the `broad` question class (601
+  versus 566), where both tools answer in full. Reducing the envelope on small
+  answers and raising information per token on large ones remain the two
+  separate follow-ups.
 - **Latency.** Compass's bounded pages cost wall-clock time: the Cobra impact
   row took 31 seconds, the Zod impact and caller rows 48-51 seconds, and the
   Gson caller row 20 seconds, against 130-360 ms for every Graphify call. The
@@ -457,6 +462,64 @@ declaration body (302-2,177 tokens depending on the symbol), discovery pages
 list the reviewed seed and node ledger, and `search` pick lists keep the
 identifiers an agent needs to disambiguate.
 
+### Fourth pass: the envelope a page prints about itself
+
+The envelope was re-measured the same way - every line of all fifty Compass
+answers classified by what it is - and the next four costs were all text the
+page prints about itself rather than evidence:
+
+- **The `RESULT` line restated the answer's own defaults.** `match=exact`,
+  `evidence=exact` and `execution=complete` are what a resolved answer means;
+  printing them on every page spent budget on the state a caller assumes and
+  read as a caveat. Only the states that qualify the answer are printed now, in
+  the same field order, so an ordinary page opens
+  `RESULT answered · coverage=incomplete`.
+- **A repeated caveat was stated twice.** The same warning can be retained
+  under one code more than once; identical rendered caveat lines are collapsed,
+  so a page states the warning once instead of paying for its copy.
+- **Pick lists paid 71 characters per candidate for an identifier they could
+  already address.** `id: sha256:…` is 13% of an ambiguity answer. The
+  identifier now appears where the page is resolving a name *and* the printed
+  label cannot pick the row out of the answer - two retained rows under one
+  label - which is exactly the case where the label cannot be repeated back to
+  the tool. Distinct labels, resolved answers, and `--format json` are
+  unchanged.
+- **Both text pagers wrote JSON in base64 with a 256-bit hex checksum.** The
+  cursor closes every page, so it is now one shared field form -
+  `<version>~<fields>.<32 hex chars>` (`compass_query::text_cursor`) - with a
+  128-bit checksum prefix. The discovery cursor falls from 225 to ~110
+  characters and the typed-page cursor from 157 to 85, and because the footer
+  is smaller, a 600-token page carries more of its ledger: the Cobra broad row
+  covers 1-27 of 196 entries where it covered 1-25.
+
+`compass explain` connections got the same treatment: `[EXTRACTED]` is what the
+graph does by default, so the provenance tag prints only where an edge is
+something else and the header states the default once
+(`Connections (31, extracted unless marked):`), which removes 13 characters
+from each of a thirty-row connection list.
+
+Measured on the same 44 rows both tools answer
+(`agent-query-v2-token3/runs/20260923T223256Z` against
+`agent-query-v2-fast3/runs/20260923T215256Z`):
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Paired median answer tokens (Compass) | 304 | **280** |
+| Total Compass output over the suite | 21,123 | **19,061** |
+| `ambiguity` median | 628 | **362** |
+| `explain` median | 280 | **256** |
+| `callers` median | 222 | **209** |
+| `callees` median | 305 | **292** |
+| `impact` median | 428 | **420** |
+| `negative` median | 91 | **86** |
+| Answers passed | 50/50 | **50/50** |
+
+The first suite re-ran at 47/47 against Graphify's 22/47 with its own median at
+397 tokens (392 on the rows both tools answer). The paired ratio is now 2.9×,
+and the remaining gap is answer content: the declaration-source rows (which
+Graphify cannot answer at all), the discovery seed and node ledger, and the
+pick lists that must still separate colliding labels.
+
 ## Latency
 
 Correctness and tokens were only part of the gap: `impact` and `callers` were
@@ -480,10 +543,12 @@ module-level and alias-target edges. Re-verified on the same 50-question suite
 | `callers` median wall time | 7,779 ms | **233 ms** |
 | `impact` median wall time | 30,863 ms | **664 ms** |
 | Total Compass wall time over the suite | 247,494 ms | **16,180 ms** |
-| Paired median answer tokens | 362 | **304** |
+| Paired median answer tokens | 362 | **280** |
 | Answers passed | 50/50 | **50/50** |
 
-The first suite is unchanged at 47/47 versus Graphify's 22/47. Graphify answers
+The paired token figure follows the fourth pass in "Token efficiency" above;
+the same run measured 16,180 ms of Compass wall time over the suite. The first
+suite is unchanged at 47/47 versus Graphify's 22/47. Graphify answers
 the same rows in 130-360 ms, so its latency advantage on relationship questions
 narrows from ~200x to ~6x on `callers` and ~10x on `impact`; the remaining cost
 is the snapshot reads the query still needs to publish evidence rather than
