@@ -43,6 +43,7 @@ _SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
 _CURSOR = re.compile(r"next=([^\s]+)")
 _GRAPHIFY_NODE = re.compile(r"^NODE (.+?) \[src=(\S+) loc=L(\d+)", re.MULTILINE)
 _GRAPHIFY_CANDIDATE = re.compile(r"^\s+id: (\S+)", re.MULTILINE)
+_COMPASS_ENTITY = re.compile(r"^- (\S+) \[[a-z_]+\] \S+:\d", re.MULTILINE)
 
 KINDS = {
     "explain",
@@ -367,7 +368,13 @@ def run_bounded(
 
 def _candidate_count(tool: str, text: str) -> int:
     if tool == "compass":
-        return len(set(_SHA256.findall(text)))
+        # A pick list is the rendered entity lines: the stable identifier is
+        # printed beside each candidate, and a page that lists candidates
+        # without identifiers is still a pick list.
+        identities = set(_SHA256.findall(text))
+        if identities:
+            return len(identities)
+        return len(set(_COMPASS_ENTITY.findall(text)))
     labels = {match.group(1) for match in _GRAPHIFY_NODE.finditer(text)}
     if labels:
         return len(labels)

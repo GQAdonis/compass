@@ -120,6 +120,73 @@ struct CursorEnvelope {
     offset: usize,
 }
 
+/// Wire form of one continuation cursor.
+///
+/// The key names and the stored digest prefixes are the compact representation:
+/// a cursor is re-printed at the end of every page, so its wording must not
+/// dominate the page budget. Each digest is bound at 64 bits - ample for
+/// detecting that a continuation no longer reproduces the same request, graph
+/// and result - and the payload checksum still covers the whole token.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CursorWire {
+    v: u8,
+    r: String,
+    g: String,
+    d: String,
+    s: String,
+    e: bool,
+    c: String,
+    i: usize,
+    o: usize,
+}
+
+/// Cursor wire version. Older encodings fail with an explicit version error.
+const CURSOR_WIRE_VERSION: u8 = 1;
+/// Hex characters stored for each digest the cursor binds.
+const CURSOR_DIGEST_CHARS: usize = 16;
+
+fn cursor_digest_prefix(value: &str) -> String {
+    value.chars().take(CURSOR_DIGEST_CHARS).collect()
+}
+
+fn cursor_digest_matches(stored: &str, current: &str) -> bool {
+    current.starts_with(stored)
+}
+
+impl CursorEnvelope {
+    fn to_wire(&self) -> CursorWire {
+        CursorWire {
+            v: CURSOR_WIRE_VERSION,
+            r: cursor_digest_prefix(&self.request_digest),
+            g: cursor_digest_prefix(&self.graph_identity),
+            d: cursor_digest_prefix(&self.graph_digest),
+            s: cursor_digest_prefix(&self.semantic_result_digest),
+            e: self.include_evidence,
+            c: self.section.clone(),
+            i: self.item,
+            o: self.offset,
+        }
+    }
+
+    fn from_wire(wire: CursorWire) -> Result<Self, DiscoveryTextPageError> {
+        if wire.v != CURSOR_WIRE_VERSION {
+            return Err(DiscoveryTextPageError::UnsupportedCursorVersion);
+        }
+        Ok(Self {
+            version: DISCOVERY_TEXT_PAGE_VERSION.to_owned(),
+            request_digest: wire.r,
+            graph_identity: wire.g,
+            graph_digest: wire.d,
+            semantic_result_digest: wire.s,
+            include_evidence: wire.e,
+            section: wire.c,
+            item: wire.i,
+            offset: wire.o,
+        })
+    }
+}
+
 pub fn render_discovery_text_page(
     response: &DiscoveryQueryResponse,
     options: DiscoveryTextPageOptions<'_>,
@@ -393,22 +460,9 @@ fn footer(
     include_evidence: bool,
 ) -> Vec<String> {
     let mut lines = vec![
+        completeness_line(response),
         format!(
-            "Completeness: {} (candidates={}, alternatives={}, nodes={}, edges={}, expandedRelationships={})",
-            if response.truncated {
-                "partial"
-            } else {
-                "complete"
-            },
-            omission(response.omissions.candidates),
-            omission(response.omissions.alternatives),
-            omission(response.omissions.nodes),
-            omission(response.omissions.edges),
-            omission(response.omissions.expanded_relationships),
-        ),
-        format!(
-            "Pagination: version={}{} range={}-{} of {} next={}",
-            DISCOVERY_TEXT_PAGE_VERSION,
+            "Pagination:{} range={}-{} of {} next={}",
             if include_evidence {
                 format!(" digest=sha256:{semantic_result_digest}")
             } else {
@@ -435,11 +489,46 @@ fn footer(
             );
         if hidden > 0 {
             lines.push(format!(
-                "({hidden} provenance record(s) hidden — pass --evidence for full detail)"
+                "({hidden} provenance record(s) hidden; --evidence)"
             ));
         }
     }
     lines
+}
+
+/// One compact completeness line.
+///
+/// Only bounds that actually withheld records are printed: "partial" already
+/// states that a bound applied, so repeating `candidates=0 alternatives=0` on
+/// every page spends the page budget on zeroes. `--format json` keeps every
+/// omission counter.
+fn completeness_line(response: &DiscoveryQueryResponse) -> String {
+    let mut counts = Vec::new();
+    for (name, value) in [
+        ("candidates", response.omissions.candidates),
+        ("alternatives", response.omissions.alternatives),
+        ("nodes", response.omissions.nodes),
+        ("edges", response.omissions.edges),
+        (
+            "expandedRelationships",
+            response.omissions.expanded_relationships,
+        ),
+    ] {
+        match value {
+            Some(0) | None => {}
+            Some(count) => counts.push(format!("{name}={count}")),
+        }
+    }
+    let state = if response.truncated {
+        "partial"
+    } else {
+        "complete"
+    };
+    if counts.is_empty() {
+        format!("Completeness: {state}")
+    } else {
+        format!("Completeness: {state} ({})", counts.join(", "))
+    }
 }
 
 fn entries(response: &DiscoveryQueryResponse, include_evidence: bool) -> Vec<Entry> {
@@ -712,13 +801,15 @@ fn validate_cursor(
     if cursor.version != DISCOVERY_TEXT_PAGE_VERSION {
         return Err(DiscoveryTextPageError::UnsupportedCursorVersion);
     }
-    if cursor.request_digest != request_digest {
+    if !cursor_digest_matches(&cursor.request_digest, request_digest) {
         return Err(DiscoveryTextPageError::RequestChanged);
     }
-    if cursor.graph_identity != graph_identity || cursor.graph_digest != graph_digest {
+    if !cursor_digest_matches(&cursor.graph_identity, graph_identity)
+        || !cursor_digest_matches(&cursor.graph_digest, graph_digest)
+    {
         return Err(DiscoveryTextPageError::GraphChanged);
     }
-    if cursor.semantic_result_digest != result_digest {
+    if !cursor_digest_matches(&cursor.semantic_result_digest, result_digest) {
         return Err(DiscoveryTextPageError::ResultChanged);
     }
     if cursor.include_evidence != include_evidence {
@@ -734,7 +825,7 @@ fn validate_cursor(
 }
 
 fn encode_cursor(cursor: &CursorEnvelope) -> Result<String, DiscoveryTextPageError> {
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?);
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&cursor.to_wire())?);
     let checksum = digest(payload.as_bytes());
     Ok(format!("{payload}.{checksum}"))
 }
@@ -752,7 +843,11 @@ fn decode_cursor(value: &str) -> Result<CursorEnvelope, DiscoveryTextPageError> 
     let bytes = URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)?;
-    serde_json::from_slice(&bytes).map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)
+    // The checksum already proved the payload is intact, so a payload that does
+    // not parse as this wire form belongs to another cursor version.
+    let wire: CursorWire = serde_json::from_slice(&bytes)
+        .map_err(|_| DiscoveryTextPageError::UnsupportedCursorVersion)?;
+    CursorEnvelope::from_wire(wire)
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -927,9 +1022,6 @@ fn rendered_evidence(
         candidates,
     )
 }
-fn omission(value: Option<u64>) -> String {
-    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
-}
 fn direction_name(value: DiscoveryDirection) -> &'static str {
     match value {
         DiscoveryDirection::Auto => "auto",
@@ -1071,7 +1163,10 @@ mod tests {
         let page = render_discovery_text_page(
             &response,
             DiscoveryTextPageOptions {
-                token_budget: 320,
+                // The minimum budget: the page's fixed lines plus one capped
+                // entry exceed it, so the oversized entry must be shortened
+                // instead of failing the page.
+                token_budget: MIN_TEXT_BUDGET,
                 cursor: None,
                 request_digest: &"a".repeat(64),
                 graph_identity: "generation-1",
@@ -1105,7 +1200,9 @@ mod tests {
         let first = render_discovery_text_page(
             &response,
             DiscoveryTextPageOptions {
-                token_budget: 512,
+                // Two entries cannot share one page at this budget, so the
+                // first page always ends with a continuation cursor.
+                token_budget: MIN_TEXT_BUDGET,
                 cursor: None,
                 request_digest: &"a".repeat(64),
                 graph_identity: "generation-1",

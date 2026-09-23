@@ -249,8 +249,8 @@ projection rows. It contributes ten questions per repository.
 | Questions only that tool answered | 6 | 0 |
 | Reviewed graph anchors present | 15/15 | 13/15 |
 | Source-backed nodes | 100% | 91% |
-| Median tokens, own passing rows | 550 | 98 |
-| Median tokens, the 44 paired answers | 560 | 98 |
+| Median tokens, own passing rows | 380 | 98 |
+| Median tokens, the 44 paired answers | 366 | 98 |
 
 Paired tokens matter more than the per-tool medians: the first number prices
 different rows for each tool, while the paired number compares only the 44
@@ -261,14 +261,19 @@ reports both, and `run.json` carries the per-kind split.
 | --- | ---: | ---: | ---: |
 | `explain` | 5/5 | 5/5 | 288 / 210 |
 | `explain_source` | 5/5 | 0/5 | - |
-| `callers` | 5/5 | 5/5 | 1992 / 67 |
-| `callees` | 5/5 | 5/5 | 595 / 249 |
-| `impact` | 5/5 | 5/5 | 1967 / 112 |
-| `path` | 5/5 | 5/5 | 82 / 22 |
-| `file_path` | 5/5 | 4/5 | 92 / 32 |
-| `ambiguity` | 5/5 | 5/5 | 1967 / 165 |
-| `negative` | 5/5 | 5/5 | 112 / 13 |
-| `broad` | 5/5 | 5/5 | 597 / 566 |
+| `callers` | 5/5 | 5/5 | 382 / 67 |
+| `callees` | 5/5 | 5/5 | 322 / 249 |
+| `impact` | 5/5 | 5/5 | 632 / 112 |
+| `path` | 5/5 | 5/5 | 44 / 22 |
+| `file_path` | 5/5 | 4/5 | 51 / 32 |
+| `ambiguity` | 5/5 | 5/5 | 628 / 165 |
+| `negative` | 5/5 | 5/5 | 91 / 13 |
+| `broad` | 5/5 | 5/5 | 596 / 566 |
+
+The token columns in this table are the post-optimization medians from the
+"Token efficiency" section below; the earlier passes measured 1,992 for
+`callers`, 1,967 for `impact` and `ambiguity`, 595 for `callees`, 82/90 for
+`path`/`file_path` and 112 for `negative`.
 
 ### Closing the broad-question gap
 
@@ -409,6 +414,48 @@ its first page. The judgment records that reasoning.
   (`command_test.go:54`, `completions_test.go:4109`), which is what the first
   suite's `ExecuteC` caller row measures.
 
+## Token efficiency
+
+The suite's paired token medians were the goal's headline gap, so the third
+pass measured where the bytes actually went before changing anything. On the
+50-question suite at that point: 8,000-token caller pages of which 39% was
+per-entity `id: sha256:…` lines, 4-page discovery answers of which 32% was the
+repeated pagination cursor, a six-line `RESULT` block on every page, warning
+caveats whose prose was longer than the evidence they qualified, and `path`
+answers whose two endpoint identifiers cost more than the path.
+
+The changes, in `crates/compass-output` and `crates/compass-query`:
+
+| Change | Why |
+| --- | --- |
+| One page renders at most 12 primary results, 24 relationships and 5 paths, reporting the ledger's true total and continuing with `next=` | the text page now keeps the profile the Agent View already documented instead of filling 2,000 tokens with the tail of a relation list |
+| Entity identifiers print only where the page resolves a name (a `search` pick list, or a non-exact match) | qualified names and source anchors already address the row; `--format json` keeps every identifier |
+| One-line `RESULT`, pagination line without the version/budget echo, `Bound:`/`Completeness:` lines that print only the bounds which withheld records | fixed envelope on every page, including pages whose whole answer is one sentence |
+| Warning caveats print their actionable sentence; blocking caveats keep the full statement | the explanatory remainder is audit prose, not answer |
+| Continuation cursors use a compact wire encoding with 64-bit digest prefixes | the cursor is re-printed on every page; older cursors fail with an explicit version error |
+| `path` endpoints print labels; the identifiers stay in the JSON view | two `sha256:` strings cost more text than the path |
+
+Measured on the same 44 rows both tools answer (`agent-query-v2-lean4/runs/20260923T191411Z`
+against `agent-query-v2-actors/runs/20260923T180127Z`):
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Paired median answer tokens (Compass) | 560 | 366 |
+| Total Compass output over the suite | 40,082 | 21,650 |
+| `callers` median | 1,992 | 382 |
+| `impact` median | 1,967 | 632 |
+| `ambiguity` median | 1,967 | 628 |
+| `callees` median | 595 | 322 |
+| `path` / `file_path` median | 82 / 90 | 44 / 51 |
+| Answers passed | 50/50 | 50/50 |
+
+Graphify's own medians are unchanged (98 paired, 22 for `path`), so the paired
+ratio moves from 5.7× to 3.7×. The remaining Compass cost is answer content
+rather than envelope: the five declaration-source rows return the reviewed
+declaration body (302-2,177 tokens depending on the symbol), discovery pages
+list the reviewed seed and node ledger, and `search` pick lists keep the
+identifiers an agent needs to disambiguate.
+
 ## Reproduction boundary
 
 The run used Apple silicon macOS with the release Compass binary at
@@ -419,7 +466,7 @@ differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final8/runs/20260923T120351Z/`.
 The second suite's evidence lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-actors/runs/20260923T180127Z/`
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-v2-lean4/runs/20260923T191411Z/`
 and uses the same checkouts, pinned separately in
 `benchmarks/agent_query/suite_v2.toml`.
 

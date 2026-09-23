@@ -413,9 +413,15 @@ and by the page budget; a truncated file read is labeled, and a stale digest
 leaves that anchor out of the source section instead of presenting unverified
 text.
 
-`text` is the answer-first Agent View projection. It starts with `RESULT`,
-`ANSWER`, and any blocking `CAVEATS`, then shows source-located entities,
-paths, relationships, and bounded next actions. `agent-json` emits the strict
+`text` is the answer-first Agent View projection. It starts with one `RESULT`
+line carrying the result, match, evidence, execution, and coverage states,
+then `ANSWER` and any blocking `CAVEATS`, then the source-located entities,
+paths, relationships, and bounded next actions. Warning caveats print their
+actionable sentence and leave the explanatory remainder to `agent-json`/`json`.
+An entity prints its stable identifier only where the page has to resolve a
+name - a `search` pick list, or any answer whose match state is not exact;
+every other row is addressed by the qualified name and source anchor it prints.
+`agent-json` emits the strict
 `compass.query.agent-view/1` object. `json` remains the unchanged raw
 `compass.query/1` response and is the right choice when an audit consumer needs
 every evidence record. The natural `query` command accepts the same
@@ -424,7 +430,12 @@ existing discovery entry ledger and v2 cursor remain unchanged.
 
 Text output is paged. `--text-budget <N>` sets the approximate token budget of
 one page (default 2000) and the closing `Pagination:` line carries a
-`compass.query.agent-text-page/1` cursor in `next=`. Passing that token back as
+`compass.query.agent-text-page/1` cursor in `next=` (a compact, checksummed
+envelope; cursors from an earlier release are rejected with an explicit
+version error). One page renders at most the Agent View's profile - 12 primary
+results, 24 relationships, 5 paths - and reports the ledger's true total, so
+the page stops at the strongest evidence instead of filling the budget with the
+tail of a long relation list. Passing that token back as
 `--cursor` continues the same deterministic ledger at the same page budget, so
 a capped result set is read page by page instead of re-run with a guessed
 larger limit. Each continuation re-runs the same query with wider internal
@@ -434,10 +445,11 @@ or stale cursor fails explicitly. The ledger is derived from the raw
 View bounds omit; when the underlying query bound itself is reached, the page
 reports it and asks for wider `--max-nodes`/`--max-edges` limits.
 
-Page one states the result state, answer, and every caveat in full. Continuation
-pages keep the state and answer and replace the caveat block with a single
+Page one states the result state, answer, and every caveat. Continuation pages
+keep the state and answer and replace the caveat block with a single
 `CAVEATS: N unchanged from page 1 (code×count)` line, so the same budget is
-spent on result entries rather than repeated prose.
+spent on result entries rather than repeated prose. Blocking caveats are always
+stated in full; warning caveats state their actionable sentence.
 
 `agent-json` and `json` are incompatible with text-only `--cursor`,
 `--text-budget`, `--evidence`, and `--result-envelope` controls. Agent View JSON contains

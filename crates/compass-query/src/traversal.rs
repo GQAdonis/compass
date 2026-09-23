@@ -372,13 +372,17 @@ pub fn render_shortest_path_with_limit(
     Ok(lines.join("\n"))
 }
 
+/// One resolved path endpoint.
+///
+/// The label and any resolution note address the endpoint for a follow-up
+/// query, so the stable identifier is not repeated here: a path answer prints
+/// two of these lines, and on a small answer the identifiers cost more of the
+/// text than the path itself. `--format json` keeps every identifier.
 fn rendered_path_endpoint(graph: &Graph, index: NodeIndex, note: Option<&str>) -> String {
     let node = graph.node(index);
     match note {
-        Some(note) if !note.is_empty() => {
-            format!("{} ({note}) [id={}]", node.label(), node.id)
-        }
-        _ => format!("{} [id={}]", node.label(), node.id),
+        Some(note) if !note.is_empty() => format!("{} ({note})", node.label()),
+        _ => node.label().to_owned(),
     }
 }
 

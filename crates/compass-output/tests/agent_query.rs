@@ -368,7 +368,7 @@ fn exact_relationship_view_is_answer_first_and_round_trips() -> Result<(), Box<d
     assert_eq!(view.relationships[0].source.label, "Fixture.Caller");
     assert_eq!(view.relationships[0].target.label, "Fixture.Target");
     let text = render_agent_query_text(&view)?;
-    assert!(text.starts_with("RESULT\n"));
+    assert!(text.starts_with("RESULT answered · match=exact"));
     assert!(
         text.find("ANSWER").ok_or("missing answer")?
             < text

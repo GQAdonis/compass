@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Spend the text page budget on evidence instead of envelope. The default
+  `text` projection now renders at most the Agent View's profile per page (12
+  primary results, 24 relationships, 5 paths) and reports the ledger's true
+  total with a continuation cursor, prints one `RESULT` line instead of six,
+  omits the pagination version/budget echo, prints only the bounds that withheld
+  records, states warnings in one sentence while blocking caveats keep their
+  full statement, drops the repeated endpoint identifiers from `path` answers,
+  and prints entity identifiers only where the page resolves a name. Cursors
+  use a compact wire encoding with 64-bit digest prefixes. On the 50-question
+  agent-query suite the same 44 answers Compass and Graphify both pass cost a
+  median of 366 tokens instead of 560, and the suite's total Compass output
+  falls from 40,082 to 21,650 tokens with the same 50/50 result.
+
 - Read the operation verb's direction when a question names no preposition.
   "how does gson read json into an object" spells the entry point `fromJson`
   even though the question never writes "from json", and "convert a json schema

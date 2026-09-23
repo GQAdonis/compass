@@ -237,6 +237,29 @@ direct caller is reported before a symbol that only touches the containing
 owner. `compass.query/1` keeps its schema, and the raw response now records the
 direct evidence in `paths` where it previously held owner-level trails.
 
+### Agent text page budget
+
+The paged text projection (`--format text`, and the `text` views of `search`,
+`query`, `callers`, `callees`, `impact`, `explore`, and `node`) now spends its
+budget on evidence instead of envelope. One page renders at most the profile the
+Agent View already documents - 12 primary results, 24 relationships, 5 paths -
+and reports the ledger's true total in `range=A-B of T`, so `next=` continues
+the rest. The `RESULT` block is one line
+(`RESULT <state> · match=… · evidence=… · execution=… · coverage=…`); the
+pagination line drops the version and budget echo; the `Bound:` and
+`Completeness:` lines print only the bounds that withheld records; blocking
+caveats keep their full statement while warnings print their actionable
+sentence, with the remainder in `agent-json`/`json`; and a `path` answer prints
+its endpoints as labels without repeating their identifiers. Stable entity
+identifiers are printed only where the page resolves a name (a `search` pick
+list, or a non-exact match); the raw `compass.query/1` response and the
+`agent-json` view still carry every identifier, anchor, and omission counter.
+Continuation cursors use a compact wire encoding that stores 64-bit digest
+prefixes and a version byte; cursors issued by an earlier release are rejected
+with an explicit version error instead of being reinterpreted. Consumers that
+parsed the previous multi-line `State:`/`Match:` block or the version prefix of
+the pagination line must read the new single-line form.
+
 ### Discovery agent-noun expansion
 
 Natural discovery now adds graph-verified agent-noun spellings of behavior

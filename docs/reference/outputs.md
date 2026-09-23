@@ -537,12 +537,19 @@ instead of issuing a broad search. Primary results are deduplicated by node ID,
 including when a real self-edge names the same node twice.
 
 Typed text output is paged. Each page carries a
-`Pagination: version=compass.query.agent-text-page/1 … next=<CURSOR>` footer;
-`--cursor` continues the same ledger at the same `--text-budget`. The cursor is
-a checksummed base64url envelope that binds the operation, graph identity, page
-number, and a digest of the reviewed entry prefix. A cursor from another graph,
-another operation, or a changed result fails closed rather than restarting the
-page.
+`Pagination: page=N range=A-B of T next=<CURSOR>` footer; `--cursor` continues
+the same ledger at the same `--text-budget`. The cursor is a checksummed
+base64url envelope with a compact wire form that binds the operation, graph
+identity, page number, and a digest of the reviewed entry prefix at 64 bits
+each; cursors from an earlier release are rejected with an explicit version
+error. A cursor from another graph, another operation, or a changed result
+fails closed rather than restarting the page. One page renders at most 12
+primary results, 24 relationships, and 5 paths while reporting the ledger's
+true total, so a page carries the strongest evidence and `next=` continues the
+rest. Stable identifiers are printed where the answer resolves a name - a
+`search` pick list or a non-exact match - and omitted where the qualified name
+and source anchor already address the row; the raw `compass.query/1` response
+still carries every identifier.
 
 `--format agent-json --brief` emits `compass.query.agent-view.brief/1`: the same
 status, headline, caveats, source-located entities, relationships, paths, and

@@ -508,7 +508,7 @@ mod tests {
         )?;
 
         let output = render_shortest_path(&graph, "source", "target")?;
-        assert!(output.contains("Target resolved: Target [id=target]"));
+        assert!(output.contains("Target resolved: Target"));
         assert!(output.contains("Best path (weighted, 3 hops, weight 3)"));
         assert!(output.contains("Source --calls [EXTRACTED]--> StrongOne"));
         assert!(output.contains("StrongTwo --depends_on [EXTRACTED]--> Target"));

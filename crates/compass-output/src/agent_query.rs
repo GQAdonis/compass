@@ -1014,7 +1014,12 @@ pub fn render_agent_query_text(view: &AgentQueryView) -> Result<String, OutputEr
     if view.primary_results.is_empty() {
         lines.push("- None retained.".to_owned());
     } else {
-        lines.extend(view.primary_results.iter().map(render_entity));
+        lines.extend(view.primary_results.iter().map(|entity| {
+            render_entity(
+                entity,
+                page_keeps_entity_ids(view.request.operation, view.status.match_state),
+            )
+        }));
     }
     lines.push(String::new());
     lines.push("PATHS".to_owned());
@@ -1232,6 +1237,68 @@ pub struct AgentTextPageCursor {
     pub prefix_digest: String,
 }
 
+/// Wire form of one continuation cursor.
+///
+/// The cursor is re-printed at the end of every page, so its spelling must not
+/// dominate the page budget: the compact key names and 64-bit digest prefixes
+/// keep it to roughly a fifth of the previous size. The prefix digest guards
+/// that a continuation reproduces the same reviewed ledger, and the payload
+/// checksum still covers the whole token.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentTextPageCursorWire {
+    v: u8,
+    o: String,
+    g: String,
+    p: u32,
+    c: usize,
+    d: String,
+}
+
+/// Cursor wire version. Older encodings fail with an explicit version error.
+const AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION: u8 = 1;
+/// Hex characters stored for each digest the cursor binds.
+const AGENT_TEXT_PAGE_CURSOR_DIGEST_CHARS: usize = 16;
+
+fn cursor_digest_prefix(value: &str) -> String {
+    value
+        .chars()
+        .take(AGENT_TEXT_PAGE_CURSOR_DIGEST_CHARS)
+        .collect()
+}
+
+impl From<&AgentTextPageCursor> for AgentTextPageCursorWire {
+    fn from(cursor: &AgentTextPageCursor) -> Self {
+        Self {
+            v: AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION,
+            o: cursor.operation.clone(),
+            g: cursor_digest_prefix(&cursor.graph_identity),
+            p: cursor.page,
+            c: cursor.prefix_count,
+            d: cursor_digest_prefix(&cursor.prefix_digest),
+        }
+    }
+}
+
+impl AgentTextPageCursorWire {
+    fn into_cursor(self) -> Result<AgentTextPageCursor, OutputError> {
+        if self.v != AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION {
+            return Err(OutputError::InvalidAgentTextPage(format!(
+                "unsupported page cursor version {}",
+                self.v
+            )));
+        }
+        Ok(AgentTextPageCursor {
+            version: AGENT_TEXT_PAGE_VERSION.to_owned(),
+            operation: self.o,
+            graph_identity: self.g,
+            page: self.p,
+            prefix_count: self.c,
+            prefix_digest: self.d,
+        })
+    }
+}
+
 /// Options for one paged agent text response.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentTextPageOptions<'a> {
@@ -1250,7 +1317,7 @@ pub struct AgentTextPage {
     pub entry_total: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum TextPageSection {
     PrimaryResults,
     Paths,
@@ -1265,6 +1332,22 @@ impl TextPageSection {
             Self::Paths => "PATHS",
             Self::Relationships => "RELATIONSHIPS",
             Self::Source => "SOURCE",
+        }
+    }
+
+    /// Most entries of this section one text page renders.
+    ///
+    /// The text page keeps the same profile the Agent View documents, so a page
+    /// stops at the answer's strongest evidence instead of spending the whole
+    /// token budget on the tail of a long relation list. The pagination line
+    /// still reports the ledger's true total and `next=` continues it.
+    fn max_per_page(self) -> usize {
+        match self {
+            Self::PrimaryResults => AGENT_VIEW_MAX_PRIMARY_RESULTS,
+            Self::Paths => AGENT_VIEW_MAX_PATHS,
+            Self::Relationships => AGENT_VIEW_MAX_RELATIONSHIPS,
+            // Source blocks are already bounded per anchor and by the budget.
+            Self::Source => usize::MAX,
         }
     }
 }
@@ -1296,15 +1379,12 @@ pub fn decode_agent_text_page_cursor(value: &str) -> Result<AgentTextPageCursor,
     let bytes = URL_SAFE_NO_PAD.decode(payload).map_err(|_| {
         OutputError::InvalidAgentTextPage("cursor payload is not valid base64url".to_owned())
     })?;
-    let cursor: AgentTextPageCursor = serde_json::from_slice(&bytes).map_err(|_| {
-        OutputError::InvalidAgentTextPage("cursor payload is not a valid page cursor".to_owned())
+    // The checksum already proved the payload is intact, so a payload that does
+    // not parse as this wire form belongs to another cursor version.
+    let wire: AgentTextPageCursorWire = serde_json::from_slice(&bytes).map_err(|_| {
+        OutputError::InvalidAgentTextPage("unsupported page cursor encoding".to_owned())
     })?;
-    if cursor.version != AGENT_TEXT_PAGE_VERSION {
-        return Err(OutputError::InvalidAgentTextPage(format!(
-            "cursor version {} is not {AGENT_TEXT_PAGE_VERSION}",
-            cursor.version
-        )));
-    }
+    let cursor = wire.into_cursor()?;
     if cursor.page == 0 {
         return Err(OutputError::InvalidAgentTextPage(
             "cursor page must be greater than zero".to_owned(),
@@ -1330,9 +1410,14 @@ pub fn render_code_query_text_page(
             "token budget must be greater than zero".to_owned(),
         ));
     }
-    let entries = text_page_entries(response, &context);
     let view = build_code_query_view(response, context)?;
     view.validate()?;
+    let entries = text_page_entries(
+        response,
+        view.request.operation,
+        &view.request.operands,
+        page_keeps_entity_ids(view.request.operation, view.status.match_state),
+    );
     let (page, start) = match options.cursor {
         None => (1_u32, 0_usize),
         Some(cursor) => {
@@ -1344,7 +1429,11 @@ pub fn render_code_query_text_page(
                     view.request.operation.label()
                 )));
             }
-            if envelope.graph_identity != view.identity.graph_identity {
+            if !view
+                .identity
+                .graph_identity
+                .starts_with(&envelope.graph_identity)
+            {
                 return Err(OutputError::InvalidAgentTextPage(
                     "cursor belongs to a different graph identity".to_owned(),
                 ));
@@ -1354,7 +1443,9 @@ pub fn render_code_query_text_page(
                     "cursor prefix is longer than the retained ledger".to_owned(),
                 ));
             }
-            if prefix_digest(&entries[..envelope.prefix_count]) != envelope.prefix_digest {
+            if !prefix_digest(&entries[..envelope.prefix_count])
+                .starts_with(&envelope.prefix_digest)
+            {
                 return Err(OutputError::InvalidAgentTextPage(
                     "cursor prefix does not match the current response".to_owned(),
                 ));
@@ -1367,8 +1458,12 @@ pub fn render_code_query_text_page(
     let header_chars = rendered_chars(&header);
     let mut end = start;
     let mut used = header_chars.saturating_add(AGENT_TEXT_PAGE_FOOTER_RESERVE_CHARS);
+    let mut rendered_per_section: BTreeMap<TextPageSection, usize> = BTreeMap::new();
     while end < entries.len() {
         let (section, text) = &entries[end];
+        if rendered_per_section.get(section).copied().unwrap_or(0) >= section.max_per_page() {
+            break;
+        }
         let mut cost = text.chars().count().saturating_add(1);
         if end == start || Some(*section) != entries.get(end.saturating_sub(1)).map(|entry| entry.0)
         {
@@ -1378,6 +1473,7 @@ pub fn render_code_query_text_page(
             break;
         }
         used = used.saturating_add(cost);
+        *rendered_per_section.entry(*section).or_default() += 1;
         end += 1;
     }
     loop {
@@ -1401,7 +1497,6 @@ pub fn render_code_query_text_page(
             start,
             end,
             page,
-            options.token_budget,
             next_cursor.as_deref(),
         );
         if text.chars().count() <= max_chars || end <= start.saturating_add(1) {
@@ -1427,7 +1522,6 @@ fn render_agent_text_page_body(
     start: usize,
     end: usize,
     page: u32,
-    token_budget: usize,
     next_cursor: Option<&str>,
 ) -> String {
     let mut lines = if page > 1 {
@@ -1446,22 +1540,21 @@ fn render_agent_text_page_body(
     }
     lines.push(String::new());
     lines.push(format!(
-        "Pagination: version={AGENT_TEXT_PAGE_VERSION} page={page} range={}-{} of {} budget_tokens=~{} next={}",
+        "Pagination: page={page} range={}-{} of {} next={}",
         if end > start { start + 1 } else { 0 },
         end,
         entries.len(),
-        token_budget,
         next_cursor.unwrap_or("none")
     ));
     if view.omissions.total > 0 || response.truncated {
         lines.push(if response.truncated {
             format!(
-                "Bound: query retained a bounded slice ({} record(s) beyond the compact view); continue with next=, then raise --max-nodes/--max-edges for a wider query bound.",
+                "Bound: {} record(s) beyond this page; next= continues, --max-nodes/--max-edges widens the query bound.",
                 view.omissions.total
             )
         } else {
             format!(
-                "Bound: {} record(s) are beyond the compact view limits; continue with next= to page through the complete result.",
+                "Bound: {} record(s) beyond this page; next= continues.",
                 view.omissions.total
             )
         });
@@ -1516,7 +1609,9 @@ pub fn render_agent_query_continuation_header(
 
 fn text_page_entries(
     response: &CodeQueryResponse,
-    context: &AgentQueryContext,
+    operation: AgentOperation,
+    operands: &[AgentOperand],
+    include_entity_ids: bool,
 ) -> Vec<(TextPageSection, String)> {
     let nodes = response
         .nodes
@@ -1527,22 +1622,16 @@ fn text_page_entries(
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
     entries.extend(
-        primary_node_ids(
-            context.operation,
-            &context.operands,
-            response,
-            &nodes,
-            &ordered_edges,
-        )
-        .iter()
-        .filter(|id| seen.insert((*id).clone()))
-        .filter_map(|id| nodes.get(id).copied())
-        .map(|node| {
-            (
-                TextPageSection::PrimaryResults,
-                render_entity(&agent_entity(node)),
-            )
-        }),
+        primary_node_ids(operation, operands, response, &nodes, &ordered_edges)
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .filter_map(|id| nodes.get(id).copied())
+            .map(|node| {
+                (
+                    TextPageSection::PrimaryResults,
+                    render_entity(&agent_entity(node), include_entity_ids),
+                )
+            }),
     );
     let mut paths = response
         .paths
@@ -1707,26 +1796,24 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 fn encode_agent_text_page_cursor(cursor: &AgentTextPageCursor) -> Result<String, OutputError> {
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?);
+    let payload =
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&AgentTextPageCursorWire::from(cursor))?);
     let checksum = hex_digest(payload.as_bytes());
     Ok(format!("{payload}.{checksum}"))
 }
 
 fn render_result_lines(view: &AgentQueryView) -> Vec<String> {
-    vec![
-        "RESULT".to_owned(),
-        format!("State: {}", result_state_name(view.status.result_state)),
-        format!("Match: {}", match_state_name(view.status.match_state)),
-        format!(
-            "Evidence: {}",
-            evidence_state_name(view.status.evidence_state)
-        ),
-        format!(
-            "Execution: {} within requested bounds",
-            execution_state_name(view.status.source_execution)
-        ),
-        format!("Coverage: {}", coverage_state_name(view.status.coverage)),
-    ]
+    // One line: the five state words carry the page's entire envelope, and a
+    // six-line block costs every page - including the pages whose answer is a
+    // single no-match sentence - the same budget.
+    vec![format!(
+        "RESULT {} · match={} · evidence={} · execution={} · coverage={}",
+        result_state_name(view.status.result_state),
+        match_state_name(view.status.match_state),
+        evidence_state_name(view.status.evidence_state),
+        execution_state_name(view.status.source_execution),
+        coverage_state_name(view.status.coverage),
+    )]
 }
 
 fn result_state_name(value: AgentResultState) -> &'static str {
@@ -1798,19 +1885,40 @@ fn render_path_summary(path: &AgentPath) -> String {
     segments.join(" ")
 }
 
-fn render_entity(entity: &AgentEntity) -> String {
+/// Render one entity line.
+///
+/// The stable identifier is printed only where a page has to resolve a name
+/// that is not unique; every other row stays addressable by the qualified name
+/// and source anchor it prints, which keeps the answer's evidence per token
+/// high. `--format json` carries every identifier unchanged.
+fn render_entity(entity: &AgentEntity, include_id: bool) -> String {
     let source = entity
         .source
         .as_ref()
         .map(render_source)
         .unwrap_or_else(|| "source unavailable".to_owned());
-    format!(
-        "- {} [{}] {}\n  id: {}",
+    let line = format!(
+        "- {} [{}] {}",
         escape_scalar(&entity.label),
         escape_scalar(&entity.kind),
         escape_scalar(&source),
-        escape_scalar(&entity.id)
-    )
+    );
+    if include_id {
+        format!("{line}\n  id: {}", escape_scalar(&entity.id))
+    } else {
+        line
+    }
+}
+
+/// Whether a page must print stable entity identifiers.
+///
+/// `search` exists to offer the candidates for a name, and a pick list that
+/// cannot be addressed exactly is not actionable. The same is true of any
+/// answer whose match state is not exact. Answers that list already-resolved
+/// nodes print the qualified name and source anchor instead, which keeps their
+/// evidence per token high.
+fn page_keeps_entity_ids(operation: AgentOperation, match_state: AgentMatch) -> bool {
+    matches!(operation, AgentOperation::Search) || !matches!(match_state, AgentMatch::Exact)
 }
 
 fn render_relationship(relationship: &AgentRelationship) -> String {
@@ -1840,12 +1948,30 @@ fn render_path(path: &AgentPath) -> String {
 }
 
 fn render_caveat(caveat: &AgentCaveat) -> String {
-    format!(
+    let line = format!(
         "- [{}] {}: {}",
         severity_name(caveat.severity),
         escape_scalar(&caveat.code),
-        escape_scalar(&caveat.statement)
-    )
+        escape_scalar(&caveat_statement(caveat))
+    );
+    line
+}
+
+/// Statement to print for one caveat.
+///
+/// A blocker changes how the answer must be read, so it is stated in full. A
+/// warning states its actionable sentence and leaves the explanatory remainder
+/// to `--format json`: the six caveat paragraphs that accompany a large
+/// relation answer otherwise cost more of the page budget than the evidence
+/// they qualify.
+fn caveat_statement(caveat: &AgentCaveat) -> String {
+    if caveat.severity != AgentSeverity::Warning {
+        return caveat.statement.clone();
+    }
+    match caveat.statement.split_once(". ") {
+        Some((first, _)) if !first.is_empty() => format!("{first}."),
+        _ => caveat.statement.clone(),
+    }
 }
 
 fn render_action(action: &AgentNextAction) -> String {

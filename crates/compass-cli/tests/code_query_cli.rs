@@ -225,7 +225,7 @@ fn natural_query_defaults_to_discovery_and_preserves_explicit_legacy_traversal()
             ],
         );
         assert_eq!(outcome.code, 0, "{question}: {}", outcome.stderr);
-        assert!(outcome.stdout.starts_with("RESULT\n"), "{question}");
+        assert!(outcome.stdout.starts_with("RESULT "), "{question}");
         assert!(outcome.stdout.contains("ANSWER\n"), "{question}");
         assert!(
             outcome.stdout.contains(expected_node),
@@ -252,7 +252,7 @@ fn natural_query_defaults_to_discovery_and_preserves_explicit_legacy_traversal()
             ],
         );
         assert_eq!(generic.code, 0, "{}", generic.stderr);
-        assert!(generic.stdout.starts_with("RESULT\n"), "{question}");
+        assert!(generic.stdout.starts_with("RESULT "), "{question}");
         assert!(generic.stdout.contains("ANSWER\n"), "{question}");
         assert!(generic.stdout.contains("Completeness:"), "{question}");
     }
@@ -346,11 +346,11 @@ fn discovery_cursor_survives_budget_alias_and_scope_order_but_rejects_graph_chan
         ],
     );
     assert_eq!(continued.code, 0, "{}", continued.stderr);
-    assert!(continued.stdout.starts_with("RESULT\n"));
+    assert!(continued.stdout.starts_with("RESULT "));
     assert!(
-        continued
-            .stdout
-            .contains("Pagination: version=compass.query.discovery-text-page/2")
+        continued.stdout.contains("Pagination:"),
+        "{}",
+        continued.stdout
     );
 
     document.nodes[0].qualified_name.push_str(".changed");
@@ -701,7 +701,7 @@ fn typed_query_text_is_a_projection_of_the_same_response() -> Result<(), Box<dyn
         ],
     );
     assert_eq!(outcome.code, 0, "{}", outcome.stderr);
-    assert!(outcome.stdout.starts_with("RESULT\n"));
+    assert!(outcome.stdout.starts_with("RESULT "));
     assert!(outcome.stdout.contains("ANSWER\n"));
     assert!(outcome.stdout.contains("Fixture.Target"));
     Ok(())
@@ -848,9 +848,11 @@ fn natural_query_is_concise_by_default_and_evidence_is_opt_in() -> Result<(), Bo
 
     let concise = run(Frontend::Compass, base.clone());
     assert_eq!(concise.code, 0, "{}", concise.stderr);
-    assert!(concise.stdout.starts_with("RESULT\n"));
+    assert!(concise.stdout.starts_with("RESULT "));
     assert!(
-        concise.stdout.contains("State: candidates") || concise.stdout.contains("State: answered")
+        concise.stdout.contains("RESULT candidates") || concise.stdout.contains("RESULT answered"),
+        "{}",
+        concise.stdout
     );
     assert!(concise.stdout.contains("NODE Fixture.Target [function]"));
     assert!(concise.stdout.contains("provenance record(s) hidden"));
@@ -883,7 +885,7 @@ fn natural_and_typed_queries_signal_missing_exact_matches_before_fallbacks()
         );
         assert_eq!(outcome.code, 0, "{command}: {}", outcome.stderr);
         assert!(
-            outcome.stdout.starts_with("RESULT\nState: no_match"),
+            outcome.stdout.starts_with("RESULT no_match"),
             "{command}: {}",
             outcome.stdout
         );
@@ -956,10 +958,7 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
         ],
     );
     assert_eq!(path.code, 0, "{}", path.stderr);
-    assert!(
-        path.stdout
-            .contains("Target resolved: Target [id=n:target]")
-    );
+    assert!(path.stdout.contains("Target resolved: Target"));
     assert!(
         path.stdout
             .contains("Best path (weighted, 3 hops, weight 3)")
