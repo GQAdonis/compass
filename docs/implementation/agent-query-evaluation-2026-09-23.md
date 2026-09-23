@@ -152,6 +152,21 @@ digest before it is printed; a rewritten file fails closed with
    project-name and partial-token awareness, and possibly deeper expansion from
    the specific verb rather than seed reordering. The reverted state keeps the
    verified behavior, and the 500-query relevance qualification still passes.
+
+   A second attempt isolated the actual deciding key and was also reverted.
+   Instrumenting seed selection showed every relevant candidate already at the
+   same `channel_rank`, with `operation_root = true`, and the ranked order
+   decided by the operation-root tuple before relation evidence or score:
+   `JsonObject::get`, `JsonObject::add`, `JsonObject`,
+   `JsonSerializationContext::serialize`, then `Gson::toJson` sixth. Giving
+   declared-name concept matches priority inside relation evidence - even ahead
+   of total concept count - did not move the order, because an
+   operation-root/type alignment for the question's generic noun ("object",
+   "request") dominates both keys. Any further attempt must change how the
+   operation-root rank treats a type-shaped subject noun against a
+   behavior-shaped declared name, and must be qualified against the 500-query
+   corpus; simple specificity or name-priority tie-breaks cannot reach these
+   three rows.
 2. **Verified answers cost more tokens than unverified ones on the
    single-shot paths.** Compass spends 3.6x Graphify's median tokens per
    answered question across the whole suite, driven by `callers` (6.3k median
