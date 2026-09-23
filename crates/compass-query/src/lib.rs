@@ -68,8 +68,9 @@ pub use telemetry::{
 };
 pub use text::{normalize_context_filters, query_terms, sanitize_label, search_tokens};
 pub use traversal::{
-    DEFAULT_PATH_DEPTH_LIMIT, DEFAULT_TEXT_TOKEN_BUDGET, ProfiledTextPageOptions, TextPageOptions,
-    TextPaginationError, TraversalMode, query_graph_text, query_graph_text_page,
+    DEFAULT_PATH_DEPTH_LIMIT, DEFAULT_TEXT_TOKEN_BUDGET, ExplainedSource, ExplanationSourceError,
+    ProfiledTextPageOptions, TextPageOptions, TextPaginationError, TraversalMode,
+    explanation_source, query_graph_text, query_graph_text_page,
     query_graph_text_page_with_profile, render_explanation, render_explanation_page,
     render_shortest_path, render_shortest_path_with_limit,
 };

@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path};
 
 use sha2::{Digest, Sha256};
@@ -14,6 +14,163 @@ pub(crate) fn verified_source(
     expected_digest: &str,
     max_bytes: u64,
 ) -> Result<VerifiedSource, QueryError> {
+    let mut file = open_contained(root, relative)?;
+    let opened_size = file.metadata().map_err(|error| {
+        QueryError::new(
+            QueryErrorKind::Internal,
+            "source_read_failed",
+            format!("{relative}: {error}"),
+        )
+    })?;
+    if opened_size.len() > MAX_VERIFIED_SOURCE_FILE_BYTES {
+        return Err(source_too_large(relative, opened_size.len()));
+    }
+    let limit = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+    let retained_capacity = limit.min(1024 * 1024);
+    let mut selected = Vec::with_capacity(retained_capacity);
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    loop {
+        let remaining_hard = MAX_VERIFIED_SOURCE_FILE_BYTES
+            .saturating_sub(total)
+            .saturating_add(1);
+        let read_limit = usize::try_from(remaining_hard)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = file.read(&mut buffer[..read_limit]).map_err(|error| {
+            QueryError::new(
+                QueryErrorKind::Internal,
+                "source_read_failed",
+                format!("{relative}: {error}"),
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        total = total.saturating_add(read as u64);
+        if total > MAX_VERIFIED_SOURCE_FILE_BYTES {
+            return Err(source_too_large(relative, total));
+        }
+        digest.update(&buffer[..read]);
+        let remaining = limit.saturating_sub(selected.len());
+        selected.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+    let digest = format!("sha256:{:x}", digest.finalize());
+    if digest != expected_digest {
+        return Ok(VerifiedSource::Stale { actual: digest });
+    }
+    Ok(VerifiedSource::Fresh {
+        source: String::from_utf8_lossy(&selected).into_owned(),
+        truncated: total > max_bytes,
+    })
+}
+
+/// A bounded source excerpt read from one recorded byte range.
+pub(crate) struct SourceSpan {
+    pub text: String,
+    pub truncated: bool,
+}
+
+/// Read one recorded source span, optionally verifying its recorded digest.
+///
+/// The span itself is bounded by the same file cap as verified source reads.
+/// `max_bytes` limits only what is retained for rendering; the digest is always
+/// computed over the complete recorded span so a verified excerpt cannot hide
+/// a stale or rewritten range.
+pub(crate) fn bounded_source_span(
+    root: &Path,
+    relative: &str,
+    start_byte: u64,
+    end_byte: u64,
+    expected_digest: Option<&str>,
+    max_bytes: u64,
+) -> Result<SourceSpan, QueryError> {
+    if end_byte < start_byte {
+        return Err(QueryError::new(
+            QueryErrorKind::Internal,
+            "source_span_invalid",
+            format!("{relative}: source span {start_byte}..{end_byte} is inverted"),
+        ));
+    }
+    let span_bytes = end_byte.saturating_sub(start_byte);
+    if span_bytes > MAX_VERIFIED_SOURCE_FILE_BYTES {
+        return Err(source_too_large(relative, span_bytes));
+    }
+    let mut file = open_contained(root, relative)?;
+    let opened_size = file.metadata().map_err(|error| {
+        QueryError::new(
+            QueryErrorKind::Internal,
+            "source_read_failed",
+            format!("{relative}: {error}"),
+        )
+    })?;
+    if opened_size.len() > MAX_VERIFIED_SOURCE_FILE_BYTES {
+        return Err(source_too_large(relative, opened_size.len()));
+    }
+    file.seek(SeekFrom::Start(start_byte)).map_err(|error| {
+        QueryError::new(
+            QueryErrorKind::Internal,
+            "source_read_failed",
+            format!("{relative}: {error}"),
+        )
+    })?;
+    let limit = usize::try_from(max_bytes).unwrap_or(usize::MAX);
+    let mut selected = Vec::with_capacity(limit.min(1024 * 1024));
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut total = 0_u64;
+    while total < span_bytes {
+        let remaining_span = span_bytes.saturating_sub(total);
+        let read_limit = usize::try_from(remaining_span)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = file.read(&mut buffer[..read_limit]).map_err(|error| {
+            QueryError::new(
+                QueryErrorKind::Internal,
+                "source_read_failed",
+                format!("{relative}: {error}"),
+            )
+        })?;
+        if read == 0 {
+            return Err(QueryError::new(
+                QueryErrorKind::Internal,
+                "source_span_missing",
+                format!(
+                    "{relative}: recorded source span {start_byte}..{end_byte} exceeds the current file"
+                ),
+            ));
+        }
+        total = total.saturating_add(read as u64);
+        digest.update(&buffer[..read]);
+        let remaining = limit.saturating_sub(selected.len());
+        selected.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+    let digest = format!("sha256:{:x}", digest.finalize());
+    if let Some(expected) = expected_digest {
+        let expected = if expected.starts_with("sha256:") {
+            expected.to_owned()
+        } else {
+            format!("sha256:{expected}")
+        };
+        if digest != expected {
+            return Err(QueryError::new(
+                QueryErrorKind::Internal,
+                "source_stale",
+                format!(
+                    "{relative}: recorded source digest {expected} does not match the current file range; rebuild the graph"
+                ),
+            ));
+        }
+    }
+    Ok(SourceSpan {
+        text: String::from_utf8_lossy(&selected).into_owned(),
+        truncated: span_bytes > max_bytes,
+    })
+}
+
+/// Open one repository-relative file with containment and symlink checks.
+fn open_contained(root: &Path, relative: &str) -> Result<File, QueryError> {
     let relative_path = Path::new(relative);
     if relative_path.is_absolute()
         || relative.contains('\\')
@@ -67,7 +224,7 @@ pub(crate) fn verified_source(
             format!("source path escapes the repository: {relative}"),
         ));
     }
-    let mut file = open_beneath(&canonical_root, relative_path).map_err(|error| {
+    let file = open_beneath(&canonical_root, relative_path).map_err(|error| {
         let unsupported = error.kind() == std::io::ErrorKind::Unsupported;
         let unsafe_path = unsupported || is_unsafe_open_error(&error);
         QueryError::new(
@@ -88,55 +245,7 @@ pub(crate) fn verified_source(
             format!("{relative}: {error}"),
         )
     })?;
-    let opened_size = file.metadata().map_err(|error| {
-        QueryError::new(
-            QueryErrorKind::Internal,
-            "source_read_failed",
-            format!("{relative}: {error}"),
-        )
-    })?;
-    if opened_size.len() > MAX_VERIFIED_SOURCE_FILE_BYTES {
-        return Err(source_too_large(relative, opened_size.len()));
-    }
-    let limit = usize::try_from(max_bytes).unwrap_or(usize::MAX);
-    let retained_capacity = limit.min(1024 * 1024);
-    let mut selected = Vec::with_capacity(retained_capacity);
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut total = 0_u64;
-    loop {
-        let remaining_hard = MAX_VERIFIED_SOURCE_FILE_BYTES
-            .saturating_sub(total)
-            .saturating_add(1);
-        let read_limit = usize::try_from(remaining_hard)
-            .unwrap_or(usize::MAX)
-            .min(buffer.len());
-        let read = file.read(&mut buffer[..read_limit]).map_err(|error| {
-            QueryError::new(
-                QueryErrorKind::Internal,
-                "source_read_failed",
-                format!("{relative}: {error}"),
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        total = total.saturating_add(read as u64);
-        if total > MAX_VERIFIED_SOURCE_FILE_BYTES {
-            return Err(source_too_large(relative, total));
-        }
-        digest.update(&buffer[..read]);
-        let remaining = limit.saturating_sub(selected.len());
-        selected.extend_from_slice(&buffer[..read.min(remaining)]);
-    }
-    let digest = format!("sha256:{:x}", digest.finalize());
-    if digest != expected_digest {
-        return Ok(VerifiedSource::Stale { actual: digest });
-    }
-    Ok(VerifiedSource::Fresh {
-        source: String::from_utf8_lossy(&selected).into_owned(),
-        truncated: total > max_bytes,
-    })
+    Ok(file)
 }
 
 fn source_too_large(relative: &str, size: u64) -> QueryError {

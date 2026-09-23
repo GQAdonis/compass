@@ -106,3 +106,71 @@ pub fn write_typed_graph(root: &Path) -> Result<PathBuf, Box<dyn std::error::Err
     fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
     Ok(graph_path)
 }
+
+/// Write a typed graph whose two nodes share one exact name.
+pub fn write_typed_ambiguous_graph(root: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let graph_path = root.join("graph.json");
+    let mut graph = GraphDocument::empty_v1(BuildMetadata {
+        builder_version: "test".to_owned(),
+        schema_fingerprint: "sha256:test".to_owned(),
+        source_tree_digest: "sha256:test".to_owned(),
+        configuration_digest: "sha256:test".to_owned(),
+        generation_id: "sha256:test".to_owned(),
+        source_commit: None,
+    });
+    for (id, file, qualified_name) in [
+        ("n:alpha-run", "src/a.rs", "Alpha.run"),
+        ("n:beta-run", "src/b.rs", "Beta.run"),
+    ] {
+        let source_path = root.join(file);
+        fs::create_dir_all(source_path.parent().unwrap_or(root))?;
+        fs::write(&source_path, b"code")?;
+        let anchor = SourceAnchor {
+            file: file.to_owned(),
+            start_byte: 0,
+            end_byte: 4,
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 4,
+        };
+        graph.graph.files.push(FileRecord {
+            id: file_id(file),
+            path: file.to_owned(),
+            language: Some("rust".to_owned()),
+            content_digest: format!("sha256:{:x}", Sha256::digest(b"code")),
+            byte_size: 4,
+            generated: false,
+            extraction_status: ExtractionStatus::Extracted,
+            extractor_versions: vec!["cli-test".to_owned()],
+            coverage: Vec::new(),
+            diagnostics: Vec::new(),
+        });
+        graph.nodes.push(NodeRecord {
+            id: id.to_owned(),
+            kind: NodeKind::Function,
+            roles: Vec::new(),
+            name: "run".to_owned(),
+            qualified_name: qualified_name.to_owned(),
+            language: Some("rust".to_owned()),
+            framework: None,
+            source: Some(anchor.clone()),
+            details: None,
+            evidence: vec![Provenance {
+                origin: EvidenceOrigin::Ast,
+                extractor: "cli-test".to_owned(),
+                confidence: EvidenceConfidence::Exact,
+                rule: None,
+                anchors: vec![anchor],
+                wiring_site: None,
+                score: None,
+                candidates: Vec::new(),
+            }],
+            coverage: Vec::new(),
+            diagnostics: Vec::new(),
+            community: None,
+        });
+    }
+    fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
+    Ok(graph_path)
+}

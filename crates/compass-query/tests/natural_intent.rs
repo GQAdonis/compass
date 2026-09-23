@@ -120,13 +120,18 @@ fn contradictory_and_ambiguous_questions_never_invent_direction()
 
     let ambiguous = engine.query_natural(request("who calls list?"))?;
     assert_eq!(ambiguous.operation, CodeQueryOperation::Callers);
-    assert!(ambiguous.nodes.is_empty());
     assert!(
         ambiguous
             .diagnostics
             .iter()
             .any(|diagnostic| { diagnostic.code == QueryDiagnosticCode::AmbiguousMatch })
     );
+    // Ambiguity retains the exact-name candidates so the next request can
+    // disambiguate in one step, and still invents no usage relationship.
+    assert_eq!(ambiguous.nodes.len(), 2);
+    assert_eq!(ambiguous.results.len(), 2);
+    assert!(ambiguous.edges.is_empty());
+    assert!(ambiguous.paths.is_empty());
     Ok(())
 }
 

@@ -420,6 +420,7 @@ pub fn build_code_query_view(
         .filter_map(|id| nodes.get(id).copied())
         .map(agent_entity)
         .collect::<Vec<_>>();
+    deduplicate_entities(&mut primary_results);
     let before_primary = primary_results.len();
     primary_results.truncate(AGENT_VIEW_MAX_PRIMARY_RESULTS);
     let primary_omitted = before_primary.saturating_sub(primary_results.len());

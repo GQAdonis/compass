@@ -3062,8 +3062,8 @@ impl CodeQueryEngine {
             .candidates_read
             .saturating_add(u64::try_from(exact_nodes.len()).unwrap_or(u64::MAX));
         let exact = exact_nodes
-            .into_iter()
-            .map(|node| node.id)
+            .iter()
+            .map(|node| node.id.clone())
             .collect::<Vec<_>>();
         response.truncated |= exact_truncated;
         match exact.as_slice() {
@@ -3083,6 +3083,7 @@ impl CodeQueryEngine {
                     node_id: None,
                     path: None,
                 });
+                self.publish_exact_ambiguity(response, &exact_nodes, candidate_limit)?;
                 return Ok(None);
             }
         }
@@ -3204,6 +3205,40 @@ impl CodeQueryEngine {
             path: None,
         });
         Ok(None)
+    }
+
+    /// Publish the exact-name candidates of an ambiguous lookup so callers can
+    /// disambiguate with one follow-up instead of guessing.
+    ///
+    /// The candidates are ordered by exact node ID, bounded by the response's
+    /// own candidate and node limits, and never duplicate a node that the
+    /// response already carried.
+    fn publish_exact_ambiguity(
+        &self,
+        response: &mut CodeQueryResponse,
+        candidates: &[NodeRecord],
+        candidate_limit: usize,
+    ) -> Result<(), QueryError> {
+        let node_limit = usize::try_from(response.limits.max_nodes).unwrap_or(usize::MAX);
+        let bound = candidate_limit.min(node_limit);
+        let mut ordered = candidates.iter().collect::<Vec<_>>();
+        ordered.sort_by(|left, right| left.id.cmp(&right.id));
+        let total = ordered.len();
+        for node in ordered.into_iter().take(bound) {
+            if response.nodes.iter().any(|existing| existing.id == node.id) {
+                continue;
+            }
+            response.results.push(SearchHit {
+                node_id: node.id.clone(),
+                score: 1.0,
+                matched_fields: vec!["name".to_owned()],
+            });
+            response.nodes.push(query_node(node));
+        }
+        if total > bound {
+            response.truncated = true;
+        }
+        Ok(())
     }
 
     fn add_nodes(

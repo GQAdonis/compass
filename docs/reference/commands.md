@@ -469,6 +469,9 @@ choice visible rather than rewriting the graph.
 compass explain "<node>"
   [--budget N]
   [--page N]
+  [--source]
+  [--root PATH]
+  [--max-source-bytes N]
   [--format text|json|agent-json]
   [--graph PATH | --at REV]
 ```
@@ -481,6 +484,13 @@ Connection lines include the stored relationship site.
 Connections and ambiguous candidates use the same bounded, deterministic
 pagination contract as natural-language queries instead of silently cutting off
 after the first group.
+
+`--source` appends the declaration text for a uniquely resolved, source-backed
+node. The excerpt is read below `--root` (default: the current directory),
+limited to `--max-source-bytes` (default: 4096), and verified against the
+symbol digest recorded in the graph before it is printed. A rewritten file
+fails closed with `SOURCE unavailable: ... does not match ...`; an ambiguous or
+unsourced target keeps the candidate list instead of guessing.
 
 ### `affected`
 

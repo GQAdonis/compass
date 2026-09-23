@@ -1002,6 +1002,134 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
 }
 
 #[test]
+fn ambiguous_typed_lookup_returns_a_pick_list_instead_of_an_empty_result()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_ambiguous_graph(directory.path())?;
+
+    let outcome = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("run"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("agent-json"),
+        ],
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    let view: Value = serde_json::from_str(&outcome.stdout)?;
+    assert_eq!(view["status"]["resultState"], "needs_resolution");
+    assert_eq!(view["status"]["matchState"], "ambiguous");
+    let results = view["primaryResults"]
+        .as_array()
+        .ok_or("primaryResults must be an array")?;
+    assert_eq!(results.len(), 2, "{}", outcome.stdout);
+    assert_eq!(results[0]["source"]["file"], "src/a.rs");
+    assert_eq!(results[1]["source"]["file"], "src/b.rs");
+    assert!(view["relationships"].as_array().is_some_and(Vec::is_empty));
+    assert!(
+        view["nextActions"]
+            .as_array()
+            .is_some_and(|actions| actions.iter().any(|action| {
+                action["kind"] == "retry_with_exact_id" && action["cli"]["argv"][2] == "n:alpha-run"
+            })),
+        "{}",
+        outcome.stdout
+    );
+    Ok(())
+}
+
+#[test]
+fn explain_source_returns_digest_verified_declaration_text() -> Result<(), Box<dyn Error>> {
+    use sha2::{Digest, Sha256};
+
+    let directory = tempfile::tempdir()?;
+    let source_dir = directory.path().join("src");
+    std::fs::create_dir_all(&source_dir)?;
+    let source = "fn run() {\n    body();\n}\n";
+    let source_path = source_dir.join("lib.rs");
+    std::fs::write(&source_path, source)?;
+    let digest = format!("{:x}", Sha256::digest(source.as_bytes()));
+    let node_id = format!("sha256:{}", "a".repeat(64));
+    let graph = directory.path().join("graph.json");
+    std::fs::write(
+        &graph,
+        serde_json::json!({
+            "directed": true,
+            "multigraph": true,
+            "nodes": [{
+                "id": node_id,
+                "kind": "function",
+                "name": "run",
+                "qualifiedName": "sample::run",
+                "source": {
+                    "file": "src/lib.rs",
+                    "startByte": 0,
+                    "endByte": source.len(),
+                    "startLine": 1,
+                    "startColumn": 0,
+                    "endLine": 3,
+                    "endColumn": 1
+                },
+                "details": {"type": "symbol", "data": {"sourceDigest": digest}}
+            }],
+            "links": []
+        })
+        .to_string(),
+    )?;
+
+    let explained = run(
+        Frontend::Compass,
+        [
+            OsString::from("explain"),
+            OsString::from("run"),
+            OsString::from("--source"),
+            OsString::from("--root"),
+            directory.path().as_os_str().to_owned(),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+        ],
+    );
+    assert_eq!(explained.code, 0, "{}", explained.stderr);
+    assert!(
+        explained
+            .stdout
+            .contains("SOURCE src/lib.rs L1-L3 (digest-verified)"),
+        "{}",
+        explained.stdout
+    );
+    assert!(
+        explained.stdout.contains("1: fn run() {"),
+        "{}",
+        explained.stdout
+    );
+    assert!(explained.stdout.contains("3: }"), "{}", explained.stdout);
+
+    std::fs::write(&source_path, "fn run() {\n    other();\n}\n")?;
+    let stale = run(
+        Frontend::Compass,
+        [
+            OsString::from("explain"),
+            OsString::from("run"),
+            OsString::from("--source"),
+            OsString::from("--root"),
+            directory.path().as_os_str().to_owned(),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+        ],
+    );
+    assert_eq!(stale.code, 0, "{}", stale.stderr);
+    assert!(
+        stale.stdout.contains("SOURCE unavailable") && stale.stdout.contains("does not match"),
+        "{}",
+        stale.stdout
+    );
+    Ok(())
+}
+
+#[test]
 fn explain_requires_an_exact_id_for_ambiguous_typed_nodes() -> Result<(), Box<dyn Error>> {
     let directory = tempfile::tempdir()?;
     let graph = directory.path().join("graph.json");

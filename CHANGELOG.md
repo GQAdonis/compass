@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Make agent-facing lookups recoverable and self-checking: `callers`,
+  `callees`, and `impact` now return the candidate pick list when a name is
+  ambiguous, ambiguous `path` endpoints list each candidate's label, source
+  location, and ID, and typed agent views deduplicate repeated primary
+  results. Bounded discovery pages truncate a single oversized entry with an
+  explicit marker instead of failing with an empty response.
+
+- Add `compass explain --source` with `--root` and `--max-source-bytes`: the
+  declaration text is read below the repository root, bounded, and verified
+  against the recorded symbol digest, so an explain answer no longer requires
+  a separate file read. Also add the developer-side
+  `benchmarks/agent_query` evaluation suite that compares Compass with
+  Graphify across five repositories and languages.
+
 - Improve agent-facing query correctness and recovery: callers, impact, and
   affected include source-backed alias/import/export usage evidence; CompassQL
   exposes live node degree and supports ordering by pre-projection bindings;

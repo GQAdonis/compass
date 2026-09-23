@@ -186,6 +186,7 @@ fn render_discovery_text_page_internal(
         .sum::<usize>();
     let mut end = start;
     let mut entries_chars = 0_usize;
+    let mut truncated_entry: Option<String> = None;
     while let Some(entry) = entries.get(end) {
         let candidate_end = end + 1;
         let candidate_cursor =
@@ -211,7 +212,14 @@ fn render_discovery_text_page_internal(
             > max_chars
         {
             if end == start {
-                return Err(DiscoveryTextPageError::EntryTooLarge);
+                let remaining = max_chars
+                    .saturating_sub(fixed_chars)
+                    .saturating_sub(footer_chars);
+                let Some(text) = truncated_entry_text(&entry.text, remaining) else {
+                    return Err(DiscoveryTextPageError::EntryTooLarge);
+                };
+                truncated_entry = Some(text);
+                end = candidate_end;
             }
             break;
         }
@@ -220,7 +228,15 @@ fn render_discovery_text_page_internal(
     }
     let next_cursor = continuation_cursor(&entries, end, &options, &semantic_result_digest)?;
     let mut lines = fixed;
-    lines.extend(entries[start..end].iter().map(|entry| entry.text.clone()));
+    lines.extend(
+        entries[start..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, entry)| match (offset, truncated_entry.as_ref()) {
+                (0, Some(text)) => text.clone(),
+                _ => entry.text.clone(),
+            }),
+    );
     let page_footer = footer(
         response,
         &semantic_result_digest,
@@ -249,6 +265,27 @@ fn render_discovery_text_page_internal(
         entry_end: end,
         entry_total: entries.len(),
     })
+}
+
+/// Mark a discovery entry that could not fit the requested text budget.
+const ENTRY_TRUNCATION_MARKER: &str = " …[truncated: entry exceeds --text-budget]";
+/// Short marker used when the full marker does not fit the page budget.
+const SHORT_ENTRY_TRUNCATION_MARKER: &str = " …[truncated]";
+
+/// Shorten one oversized entry so a bounded page can still advance.
+///
+/// Returns `None` when not even the marker fits, which keeps the explicit
+/// `EntryTooLarge` failure for budgets smaller than the page metadata.
+fn truncated_entry_text(text: &str, remaining_chars: usize) -> Option<String> {
+    // The paginator counts one extra character for the entry's line break.
+    let budget = remaining_chars.saturating_sub(1);
+    let marker = [ENTRY_TRUNCATION_MARKER, SHORT_ENTRY_TRUNCATION_MARKER]
+        .into_iter()
+        .find(|marker| budget > marker.chars().count() + 1)?;
+    let keep = budget - marker.chars().count();
+    let mut rendered = text.chars().take(keep).collect::<String>();
+    rendered.push_str(marker);
+    Some(rendered)
 }
 
 fn default_fixed_lines(
@@ -1022,6 +1059,37 @@ mod tests {
             discovery_response_digest(&left)?,
             discovery_response_digest(&right)?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_oversized_entry_is_truncated_instead_of_failing_the_page()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut response = response()?;
+        response.diagnostics[0].message = "x".repeat(4_000);
+        response.diagnostics[1].message = "second".to_owned();
+        let page = render_discovery_text_page(
+            &response,
+            DiscoveryTextPageOptions {
+                token_budget: 320,
+                cursor: None,
+                request_digest: &"a".repeat(64),
+                graph_identity: "generation-1",
+                graph_digest: &"b".repeat(64),
+                include_evidence: false,
+            },
+        )?;
+        assert!(
+            page.text
+                .contains("[truncated: entry exceeds --text-budget]"),
+            "entries {}..{} of {}: {}",
+            page.entry_start,
+            page.entry_end,
+            page.entry_total,
+            page.text.chars().take(400).collect::<String>()
+        );
+        assert!(page.entry_end > page.entry_start);
+        assert!(page.next_cursor.is_some());
         Ok(())
     }
 

@@ -1,16 +1,18 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::path::Path;
 
 use compass_model::query_contract::{
     DiscoveryLimits, MAX_DISCOVERY_EDGES, MAX_DISCOVERY_EXPANDED_RELATIONSHIPS, MAX_DISCOVERY_NODES,
 };
-use compass_model::{EdgeIndex, Graph, NodeIndex};
+use compass_model::{EdgeIndex, Graph, NodeIndex, NodeRecord};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::score::{
     TextRankProfile, find_exact_nodes, find_node, pick_seeds, score_nodes_with_profile,
 };
+use crate::source::bounded_source_span;
 use crate::text::{infer_context_filters, normalize_context_filters, query_terms, sanitize_label};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -363,18 +365,39 @@ fn resolve_exact_path_endpoint(graph: &Graph, query: &str) -> Result<NodeIndex, 
         [node] => Ok(*node),
         [] => Err(format!("NO EXACT MATCH for {query:?}")),
         _ => {
-            let mut ids = matches
+            let mut candidates = matches
                 .iter()
-                .map(|node| graph.node(*node).id.clone())
+                .map(|index| graph.node(*index))
                 .collect::<Vec<_>>();
-            ids.sort();
-            Err(format!(
-                "AMBIGUOUS EXACT MATCH for {query:?}: {}. Pass an exact node ID.",
-                ids.join(", ")
-            ))
+            candidates.sort_by(|left, right| left.id.cmp(&right.id));
+            let mut lines = vec![format!(
+                "AMBIGUOUS EXACT MATCH for {query:?}: {} candidates. Pass an exact node ID:",
+                candidates.len()
+            )];
+            for node in candidates.iter().take(MAX_PATH_AMBIGUITY_CANDIDATES) {
+                let file = node.string("source_file");
+                let location = node.string("source_location");
+                lines.push(format!(
+                    "  {} {} {} id={}",
+                    node.label(),
+                    if file.is_empty() { "-" } else { &file },
+                    if location.is_empty() { "-" } else { &location },
+                    node.id
+                ));
+            }
+            if candidates.len() > MAX_PATH_AMBIGUITY_CANDIDATES {
+                lines.push(format!(
+                    "  ... and {} more candidate(s)",
+                    candidates.len() - MAX_PATH_AMBIGUITY_CANDIDATES
+                ));
+            }
+            Err(lines.join("\n"))
         }
     }
 }
+
+/// Bound for listing ambiguous path endpoints in one error message.
+const MAX_PATH_AMBIGUITY_CANDIDATES: usize = 8;
 
 #[derive(Clone, Copy)]
 enum PathRanking {
@@ -566,6 +589,133 @@ pub fn render_explanation(
         Ok(output) => output,
         Err(error) => format!("Explanation output error: {error}."),
     }
+}
+
+/// A digest-verified source excerpt for one uniquely resolved graph node.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExplainedSource {
+    pub file: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub source: String,
+    pub truncated: bool,
+}
+
+/// Reasons an explain source excerpt could not be produced.
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
+pub enum ExplanationSourceError {
+    #[error("no node matching {label:?} was found")]
+    Missing { label: String },
+    #[error("{label:?} matches {matches} nodes; pass an exact node ID")]
+    Ambiguous { label: String, matches: usize },
+    #[error("{label:?} has no recorded source anchor")]
+    Unsourced { label: String },
+    #[error("{0}")]
+    Read(String),
+}
+
+/// Read the recorded source span of one explain target below `root`.
+///
+/// Resolution follows the same rules as the explanation renderer: exact
+/// matches win, source-backed nodes are preferred, and an ambiguous or
+/// unsourced target is reported instead of guessed. The excerpt is bounded by
+/// `max_bytes`, and the recorded symbol digest is verified before the text is
+/// returned.
+pub fn explanation_source(
+    graph: &Graph,
+    label: &str,
+    root: &Path,
+    max_bytes: u64,
+) -> Result<ExplainedSource, ExplanationSourceError> {
+    let exact_matches = find_exact_nodes(graph, label);
+    let mut matches = if exact_matches.is_empty() {
+        find_node(graph, label)
+    } else {
+        exact_matches
+    };
+    let source_backed = matches
+        .iter()
+        .copied()
+        .filter(|index| node_source_anchor(graph.node(*index)).is_some())
+        .collect::<Vec<_>>();
+    if !source_backed.is_empty() {
+        matches = source_backed;
+    }
+    let node_index = match matches.as_slice() {
+        [] => {
+            return Err(ExplanationSourceError::Missing {
+                label: label.to_owned(),
+            });
+        }
+        [index] => *index,
+        _ => {
+            return Err(ExplanationSourceError::Ambiguous {
+                label: label.to_owned(),
+                matches: matches.len(),
+            });
+        }
+    };
+    let node = graph.node(node_index);
+    let anchor = node_source_anchor(node).ok_or_else(|| ExplanationSourceError::Unsourced {
+        label: label.to_owned(),
+    })?;
+    let digest = node_source_digest(node);
+    let span = bounded_source_span(
+        root,
+        &anchor.file,
+        anchor.start_byte,
+        anchor.end_byte,
+        digest.as_deref(),
+        max_bytes,
+    )
+    .map_err(|error| ExplanationSourceError::Read(error.to_string()))?;
+    Ok(ExplainedSource {
+        file: anchor.file,
+        start_line: anchor.start_line,
+        end_line: anchor.end_line,
+        source: span.text,
+        truncated: span.truncated,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct NodeSourceAnchor {
+    file: String,
+    start_byte: u64,
+    end_byte: u64,
+    start_line: u32,
+    end_line: u32,
+}
+
+fn node_source_anchor(node: &NodeRecord) -> Option<NodeSourceAnchor> {
+    let anchor = node.attributes.get("source")?.as_object()?;
+    let file = anchor.get("file")?.as_str()?.to_owned();
+    let start_byte = anchor.get("startByte")?.as_u64()?;
+    let end_byte = anchor.get("endByte")?.as_u64()?;
+    let start_line = u32::try_from(anchor.get("startLine")?.as_u64()?).ok()?;
+    let end_line = anchor
+        .get("endLine")
+        .and_then(Value::as_u64)
+        .and_then(|line| u32::try_from(line).ok())
+        .unwrap_or(start_line);
+    Some(NodeSourceAnchor {
+        file,
+        start_byte,
+        end_byte,
+        start_line,
+        end_line,
+    })
+}
+
+fn node_source_digest(node: &NodeRecord) -> Option<String> {
+    node.attributes
+        .get("details")?
+        .as_object()?
+        .get("data")?
+        .as_object()?
+        .get("sourceDigest")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 pub fn render_explanation_page(

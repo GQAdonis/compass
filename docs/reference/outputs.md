@@ -529,6 +529,13 @@ execution states, explicit caveats, full stable IDs, source locations, and
 ambiguous response is never presented as a positive answer. `coverage` is
 `incomplete` only when the raw query says so; otherwise it is `unknown`.
 
+When a typed lookup cannot resolve one exact target, the projection retains the
+exact-name candidates in `primaryResults` with their IDs, kinds, and source
+anchors, reports `status.matchState = ambiguous`, and emits
+`retry_with_exact_id` actions. Callers therefore disambiguate in one follow-up
+instead of issuing a broad search. Primary results are deduplicated by node ID,
+including when a real self-edge names the same node twice.
+
 The fixed presentation profile retains at most 12 primary results, 24
 relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is
 limited to 256 KiB and text to 64 KiB. `omissions` and
