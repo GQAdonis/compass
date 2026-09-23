@@ -457,6 +457,38 @@ declaration body (302-2,177 tokens depending on the symbol), discovery pages
 list the reviewed seed and node ledger, and `search` pick lists keep the
 identifiers an agent needs to disambiguate.
 
+## Latency
+
+Correctness and tokens were only part of the gap: `impact` and `callers` were
+also the slowest questions in the suite, taking 30.9 s and 7.8 s at the median.
+Profiling a `callers` query with `sample` and phase instrumentation showed where
+it went: the direct adjacency for a two-edge answer took 100 ms, the containment
+walk 42 ms, the term probe that collects candidate importer sources 156 ms, and
+the loop that *verifies* those candidates 58 s in a debug build - one snapshot
+read per candidate, ~1,000 of them, because the loop only stopped once the
+answer was full to `--max-edges` (1,000) and at least eight importers were
+verified.
+
+The probe now verifies at most 64 candidate sources per query and reports that
+it stopped early, while the owner-scoped adjacency keeps publishing the direct,
+module-level and alias-target edges. Re-verified on the same 50-question suite
+(`agent-query-v2-fast2/runs/20260923T203416Z` against
+`agent-query-v2-lean6/runs/20260923T195442Z`):
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| `callers` median wall time | 7,779 ms | **661 ms** |
+| `impact` median wall time | 30,863 ms | **3,868 ms** |
+| Total Compass wall time over the suite | 247,494 ms | **29,108 ms** |
+| Paired median answer tokens | 362 | **338** |
+| Answers passed | 50/50 | **50/50** |
+
+The first suite is unchanged at 47/47 versus Graphify's 22/47. Graphify answers
+the same rows in 130-360 ms, so its latency advantage on relationship questions
+narrows from ~200x to ~6x on `callers` and ~10x on `impact`; the remaining cost
+is the snapshot reads the query still needs to publish evidence rather than
+speculative candidate verification.
+
 ## Reproduction boundary
 
 The run used Apple silicon macOS with the release Compass binary at

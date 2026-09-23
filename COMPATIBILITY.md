@@ -237,6 +237,22 @@ direct caller is reported before a symbol that only touches the containing
 owner. `compass.query/1` keeps its schema, and the raw response now records the
 direct evidence in `paths` where it previously held owner-level trails.
 
+### Owner-level importer probe bound
+
+`compass callers`, `compass callees` and `compass impact` recover evidence that
+targets a containing owner (a module, file or alias target) through a
+term-posting probe. Each candidate the probe verified cost one snapshot read,
+so a symbol whose owner carries a common identifier could turn a two-edge
+answer into ~1,000 reads: 7.7 s per `callers` query on the Axum corpus and 50 s
+per `impact` query on Zod and Gson. The probe now verifies at most 64 candidate
+sources per query and, when candidates remain, keeps `relationshipInconsistency`
+reporting that the observed importer count is a lower bound ("at least N"). The
+owner-scoped adjacency still publishes every direct, module-level and
+alias-target edge it resolves, so an answer that was complete at the caller's
+`--max-edges` bound stays complete; an answer whose owner-level importer set is
+wider than 64 verified candidates is bounded rather than unbounded work. The
+`compass.query/1` schema, limits and diagnostics are unchanged.
+
 ### Agent text page budget
 
 The paged text projection (`--format text`, and the `text` views of `search`,

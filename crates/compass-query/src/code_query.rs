@@ -41,6 +41,17 @@ const MIN_RECALL_CANDIDATES_BEFORE_FUZZY: usize = 4;
 const SEARCH_QUERY_CACHE_CAPACITY: usize = 64;
 const FUZZY_LOOKUP_CACHE_CAPACITY: usize = 512;
 const RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS: usize = 8;
+/// Most candidate importer sources one query verifies in the owner-level probe.
+///
+/// The probe recovers importer evidence that the containment walk cannot see.
+/// Its candidates come from term postings, so a symbol whose owner carries a
+/// common term - a file named `path_router.rs`, a type named `Router` - can
+/// produce hundreds of them, and each verification is an independent snapshot
+/// read. On the Axum corpus that loop was about 7.7 s of an 8 s `callers`
+/// query for a two-edge answer; the owner-scoped adjacency had already
+/// published the direct and module-level evidence. The probe stays, bounded,
+/// and reports that it stopped early.
+const RELATIONSHIP_IMPORTER_VERIFY_LIMIT: usize = 64;
 const RELATIONSHIP_OWNER_SCOPE_LIMIT: usize = 32;
 const RELATIONSHIP_TERM_LIMIT: usize = 128;
 const RELATIONSHIP_SOURCE_EDGE_SCAN_LIMIT: usize = 256;
@@ -2505,7 +2516,11 @@ impl CodeQueryEngine {
             .values()
             .map(|edge| edge.source.clone())
             .collect::<BTreeSet<_>>();
-        for source_id in importer_ids {
+        for (verified_candidates, source_id) in importer_ids.into_iter().enumerate() {
+            if verified_candidates >= RELATIONSHIP_IMPORTER_VERIFY_LIMIT {
+                importer_probe_truncated = true;
+                break;
+            }
             let (source_edges, source_truncated) = self.backend.matching_bounded(
                 &source_id,
                 false,
@@ -4556,9 +4571,21 @@ mod adjacency_tests {
 mod fuzzy_term_variant_tests {
     use super::{
         FuzzyLookupCache, MAX_RECALL_FUZZY_VARIANTS_PER_TERM, MAX_RECALL_FUZZY_VARIANTS_TOTAL,
-        PreparedSearchQuery, SearchQueryCache, phrase_compound_variants,
+        PreparedSearchQuery, RELATIONSHIP_IMPORTER_VERIFY_LIMIT,
+        RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS, SearchQueryCache, phrase_compound_variants,
         recall_fuzzy_term_variants,
     };
+
+    #[test]
+    fn importer_verification_stays_bounded() {
+        // The owner-level importer probe stays bounded: on the Axum corpus it
+        // verified ~1,000 term-posting candidates per query, which was ~7.7 s
+        // of an 8 s `callers` answer. It must still exceed the threshold that
+        // lets a thin answer raise the consistency diagnostic, and stay far
+        // below the default edge bound (1,000).
+        assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS);
+        assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT * 8 < 1_000);
+    }
 
     #[test]
     fn recall_fuzzy_term_variants_is_deterministic_and_bounded() {

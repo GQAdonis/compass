@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Bound the owner-level importer probe. `callers`, `callees` and `impact`
+  recover evidence that targets a containing owner through a term-posting
+  probe, and every candidate it verified cost one snapshot read: on the Axum
+  corpus ~1,000 candidates made a two-edge `callers` answer take 7.7 s, and the
+  Zod and Gson graphs spent 50 s per impact query the same way. The probe now
+  verifies at most 64 candidate sources per query and reports that it stopped
+  early; the owner-scoped adjacency still publishes the direct and
+  module-level evidence. Median `callers` latency falls from 7.8 s to 0.7 s
+  and median `impact` latency from 30.9 s to 3.9 s on the 50-question suite,
+  which now costs 29 s of query wall time in total instead of 247 s, with the
+  same 50/50 result.
+
 - Spend the text page budget on evidence instead of envelope. The default
   `text` projection now renders at most the Agent View's profile per page (12
   primary results, 24 relationships, 5 paths) and reports the ledger's true
