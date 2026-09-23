@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Make the agent view answer "who calls this" with the real call sites first.
+  Relationship ordering now ranks direct usage (calls, instantiates, routes,
+  handlers, registrations) ahead of imports/exports and owner-level references,
+  so a bounded callers answer can no longer be crowded out by hundreds of
+  references to the containing type. The callers and callees headlines report
+  the source response's edge count instead of the capped projection count. On
+  the evaluation corpus the Cobra answer now leads with all five real
+  `ExecuteC` call sites (`completions_test.go:4109`, `command.go:1080`,
+  `command.go:1071`, `command_test.go:54`, and the recursive call) before any
+  reference, and the Axum answer's twenty-four shown relationships are all
+  calls with exact sites.
+
 - Add the compact `compass.query.agent-view.brief/1` projection. Typed
   commands accept `--brief` with `--format agent-json` and receive the same
   status, answer, caveats, source-located entities, relationships, paths, and

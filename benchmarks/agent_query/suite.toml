@@ -43,8 +43,8 @@ subject = "cobra.Command::ExecuteC"
 compass = ["callers", "cobra.Command::ExecuteC", "--format", "agent-json"]
 graphify = ["affected", ".ExecuteC()", "--depth", "1"]
 expect = "answer"
-required = ["command.go", "command_test.go"]
-judgment = "ExecuteC is called from command.go:1071/1080, command_test.go:54 and completions_test.go:4109."
+required = ["calls", "command.go", "command_test.go", "4109"]
+judgment = "ExecuteC is called from command.go:1071/1080, command_test.go:54 and completions_test.go:4109; the answer must lead with those call edges rather than owner-level references."
 
 [[repository.question]]
 id = "cobra-path-executec-execute"
@@ -108,8 +108,8 @@ subject = "cobra.Command::ExecuteC"
 compass = ["callers", "cobra.Command::ExecuteC", "--format", "agent-json", "--brief"]
 graphify = ["affected", ".ExecuteC()", "--depth", "1"]
 expect = "answer"
-required = ["command.go", "command_test.go"]
-judgment = "The compact projection must still name the reviewed caller files without audit-only detail."
+required = ["calls", "command.go", "command_test.go"]
+judgment = "The compact projection must still lead with the reviewed call sites without audit-only detail."
 
 [[repository.question]]
 id = "cobra-negative"
@@ -173,8 +173,8 @@ subject = "Flask.dispatch_request"
 compass = ["callers", "src.flask.app.Flask::dispatch_request", "--format", "agent-json"]
 graphify = ["affected", ".dispatch_request()", "--depth", "1"]
 expect = "answer"
-required = ["app.py", "1019"]
-judgment = "full_dispatch_request calls self.dispatch_request(ctx) at src/flask/app.py:1019."
+required = ["calls", "app.py", "1019"]
+judgment = "full_dispatch_request calls self.dispatch_request(ctx) at src/flask/app.py:1019; the answer must include that call edge."
 
 [[repository.question]]
 id = "flask-path-wsgi-dispatch"
@@ -491,8 +491,8 @@ subject = "Router::route"
 compass = ["callers", "axum::routing::Router::route", "--format", "agent-json"]
 graphify = ["affected", ".route()", "--depth", "1"]
 expect = "answer"
-required = ["routing"]
-judgment = "Router::route is called from tests and routing internals such as path_router.rs."
+required = ["calls", "routing/tests"]
+judgment = "Router::route is called from the routing tests and internals; the answer must include those call edges."
 
 [[repository.question]]
 id = "axum-path-route-call"
@@ -577,8 +577,8 @@ subject = "axum::routing::Router::route"
 compass = ["callers", "axum::routing::Router::route", "--format", "agent-json", "--brief"]
 graphify = ["affected", ".route()", "--depth", "1"]
 expect = "answer"
-required = ["routing/mod.rs", "routing/tests"]
-judgment = "The compact projection must still name the reviewed caller files without audit-only detail."
+required = ["calls", "routing/mod.rs", "routing/tests"]
+judgment = "The compact projection must still lead with the reviewed call sites without audit-only detail."
 
 [[repository.anchor]]
 file = "src/routing/mod.rs"

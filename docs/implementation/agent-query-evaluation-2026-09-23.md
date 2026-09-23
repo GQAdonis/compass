@@ -122,6 +122,16 @@ Four defects surfaced by the suite were fixed in this change:
   expired deadline fails with `code_query_timeout` and an actionable hint; the
   focused replay shows no row hitting the default, and the engine-level test
   proves an expired deadline fails closed.
+- The callers answer for Cobra still hid the real call sites: the raw response
+  carried all five `ExecuteC` calls plus 346 owner-level references to
+  `cobra.Command`, but the bounded agent view sorted relationships by ID and
+  kept twenty-four references, reporting "Found 24 incoming usage
+  relationship(s)" while the response had 351. The view now orders by relation
+  strength (direct usage before references) and the headline reports the source
+  response count, so the answer leads with `completions_test.go:4109`,
+  `command.go:1080`, `command.go:1071`, `command_test.go:54`, and the recursive
+  call. The callers oracles were strengthened to require a `calls` edge and an
+  exact call-site line, which the earlier file-name-only anchors had missed.
 
 `compass explain --source` was added so the explain path can return the
 declaration text itself. The excerpt is read below `--root`, bounded by
@@ -196,7 +206,7 @@ Graphify `0.9.36` from `~/.local/bin/graphify`. Corpus revisions are pinned in
 `benchmarks/agent_query/suite.toml`; the runner refuses a checkout whose HEAD
 differs. Raw evidence - per-question stdout/stderr, run metadata, graph
 digests, and the generated `REPORT.md` - lives under
-`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final2/runs/20260923T102255Z/`.
+`/Volumes/Workspace/CrabData/compass-evaluations/agent-query-final3/runs/20260923T105013Z/`.
 
 The store self-check was verified against the historical Zod artifact at
 `/Volumes/Workspace/CrabData/compass-evaluations/agent-query-5repo-20260923/zod/compass/compass-out`,

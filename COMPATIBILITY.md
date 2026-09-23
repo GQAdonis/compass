@@ -205,6 +205,18 @@ digests, or evidence read `--format json` (the unchanged raw
 other format, and the existing `agent-json` output is byte-identical to the
 previous release.
 
+### Agent View relationship ordering
+
+`compass.query.agent-view/1` and `compass.query.agent-view.brief/1` now order
+`relationships` by relation strength - direct usage first (calls, instantiation,
+routing, handlers, registration), then imports/exports, then references and
+documents, then everything else - with the exact relationship ID as the
+deterministic tie-break. `primaryResults` for callers and callees follow the
+same order, and the callers/callees headlines report the source response's edge
+count rather than the capped projection count. The fields, schemas, digests,
+and raw `compass.query/1` response are unchanged; consumers that relied on the
+previous ID-sorted presentation must treat the new order as the contract.
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

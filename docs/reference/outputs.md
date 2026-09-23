@@ -551,6 +551,15 @@ next-action argv as `compass.query.agent-view/1`, without `identity`,
 layers. The brief projection is presentation-only; exact record identity and
 digests remain in the raw `compass.query/1` response.
 
+Agent View relationships are ordered by relation strength so a bounded answer
+keeps the direct usage an agent asked for: calls, instantiations, routes,
+handlers, and registrations first; then imports and exports; then references
+and documents; then remaining relations, with the exact relationship ID as the
+deterministic tie-break. Callers and callees primary results follow the same
+order, and their headline reports the source response's edge count, so
+`omissions.relationships` shows how many of them the bounded projection left
+out.
+
 The fixed presentation profile retains at most 12 primary results, 24
 relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is
 limited to 256 KiB and text to 64 KiB. `omissions` and

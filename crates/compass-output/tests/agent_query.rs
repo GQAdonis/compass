@@ -64,6 +64,63 @@ fn context(operation: AgentOperation) -> AgentQueryContext {
 }
 
 #[test]
+fn direct_usage_survives_the_projection_bound_ahead_of_owner_references()
+-> Result<(), Box<dyn Error>> {
+    let target_anchor = anchor("src/target.rs", 20);
+    let mut response = response(CodeQueryOperation::Callers);
+    response
+        .nodes
+        .push(node("n:target", "Target", &target_anchor));
+    let caller_anchor = anchor("src/caller.rs", 10);
+    response
+        .nodes
+        .push(node("n:caller", "Caller", &caller_anchor));
+    response.edges.push(QueryEdge {
+        id: "e:caller-target".to_owned(),
+        source: "n:caller".to_owned(),
+        target: "n:target".to_owned(),
+        kind: EdgeKind::Calls,
+        relationship_site: Some(caller_anchor.clone()),
+        details: None,
+        evidence: vec![evidence(&caller_anchor)],
+    });
+    // Owner-level references outnumber the direct call and sort earlier by ID,
+    // which is exactly the shape that used to hide real call sites.
+    for index in 0..30 {
+        let id = format!("a:reference-{index:02}");
+        let anchor = anchor("src/owner.rs", 30 + index);
+        response
+            .nodes
+            .push(node(&id, &format!("Owner{index:02}"), &anchor));
+        response.edges.push(QueryEdge {
+            id: format!("e:reference-{index:02}"),
+            source: id,
+            target: "n:target".to_owned(),
+            kind: EdgeKind::References,
+            relationship_site: Some(anchor.clone()),
+            details: None,
+            evidence: vec![evidence(&anchor)],
+        });
+    }
+    let mut query_context = context(AgentOperation::Callers);
+    query_context = query_context.with_operand(compass_output::AgentOperandRole::Symbol, "Target");
+
+    let view = build_code_query_view(&response, query_context)?;
+    assert_eq!(view.relationships[0].relation, "calls");
+    assert_eq!(
+        view.relationships[0].source.label,
+        view.primary_results[1].label
+    );
+    assert!(
+        view.answer.headline.contains("31"),
+        "headline must count the source response: {}",
+        view.answer.headline
+    );
+    assert!(view.omissions.relationships > 0);
+    Ok(())
+}
+
+#[test]
 fn brief_projection_keeps_answer_semantics_and_drops_audit_detail() -> Result<(), Box<dyn Error>> {
     let caller_anchor = anchor("src/caller.rs", 10);
     let target_anchor = anchor("src/target.rs", 20);

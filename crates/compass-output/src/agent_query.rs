@@ -396,6 +396,47 @@ fn invalid(reason: impl Into<String>) -> OutputError {
     OutputError::InvalidAgentQuery(reason.into())
 }
 
+/// Order response edges so direct usage survives the bounded projection.
+///
+/// A resolved callers or callees response may carry hundreds of owner-level
+/// references beside a handful of exact call or route edges. The projection
+/// cap must never drop the direct usage evidence an agent asked for, so edges
+/// are ordered by relation strength first and by exact ID only as the
+/// deterministic tie-break.
+fn ordered_relationship_edges(response: &CodeQueryResponse) -> Vec<(usize, &QueryEdge)> {
+    let mut edges = response
+        .edges
+        .iter()
+        .enumerate()
+        .collect::<Vec<(usize, &QueryEdge)>>();
+    edges.sort_by(|(_, left), (_, right)| {
+        relationship_priority(left)
+            .cmp(&relationship_priority(right))
+            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    edges
+}
+
+/// Lower ranks are stronger evidence of a direct dependency.
+fn relationship_priority(edge: &QueryEdge) -> u8 {
+    match edge.kind {
+        compass_model::code_graph::EdgeKind::Calls
+        | compass_model::code_graph::EdgeKind::Instantiates
+        | compass_model::code_graph::EdgeKind::RoutesTo
+        | compass_model::code_graph::EdgeKind::Handles
+        | compass_model::code_graph::EdgeKind::Registers => 0,
+        compass_model::code_graph::EdgeKind::Imports
+        | compass_model::code_graph::EdgeKind::Exports
+        | compass_model::code_graph::EdgeKind::Aliases
+        | compass_model::code_graph::EdgeKind::DependsOn => 1,
+        compass_model::code_graph::EdgeKind::References
+        | compass_model::code_graph::EdgeKind::Documents => 2,
+        _ => 3,
+    }
+}
+
 pub fn build_code_query_view(
     response: &CodeQueryResponse,
     context: AgentQueryContext,
@@ -418,7 +459,14 @@ pub fn build_code_query_view(
         .iter()
         .map(|node| (node.id.clone(), node))
         .collect::<BTreeMap<_, _>>();
-    let primary_ids = primary_node_ids(context.operation, &context.operands, response, &nodes);
+    let ordered_edges = ordered_relationship_edges(response);
+    let primary_ids = primary_node_ids(
+        context.operation,
+        &context.operands,
+        response,
+        &nodes,
+        &ordered_edges,
+    );
     let mut primary_results = primary_ids
         .iter()
         .filter_map(|id| nodes.get(id).copied())
@@ -429,18 +477,10 @@ pub fn build_code_query_view(
     primary_results.truncate(AGENT_VIEW_MAX_PRIMARY_RESULTS);
     let primary_omitted = before_primary.saturating_sub(primary_results.len());
 
-    let mut all_relationships = response
-        .edges
+    let all_relationships = ordered_edges
         .iter()
-        .enumerate()
-        .map(|(index, edge)| agent_relationship(edge, index, &nodes))
+        .map(|(index, edge)| agent_relationship(edge, *index, &nodes))
         .collect::<Vec<_>>();
-    all_relationships.sort_by(|left, right| {
-        left.id
-            .cmp(&right.id)
-            .then_with(|| left.source.id.cmp(&right.source.id))
-            .then_with(|| left.target.id.cmp(&right.target.id))
-    });
     let before_relationships = all_relationships.len();
     let relationships = all_relationships
         .into_iter()
@@ -1434,19 +1474,26 @@ fn text_page_entries(
         .iter()
         .map(|node| (node.id.clone(), node))
         .collect::<BTreeMap<_, _>>();
+    let ordered_edges = ordered_relationship_edges(response);
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
     entries.extend(
-        primary_node_ids(context.operation, &context.operands, response, &nodes)
-            .iter()
-            .filter(|id| seen.insert((*id).clone()))
-            .filter_map(|id| nodes.get(id).copied())
-            .map(|node| {
-                (
-                    TextPageSection::PrimaryResults,
-                    render_entity(&agent_entity(node)),
-                )
-            }),
+        primary_node_ids(
+            context.operation,
+            &context.operands,
+            response,
+            &nodes,
+            &ordered_edges,
+        )
+        .iter()
+        .filter(|id| seen.insert((*id).clone()))
+        .filter_map(|id| nodes.get(id).copied())
+        .map(|node| {
+            (
+                TextPageSection::PrimaryResults,
+                render_entity(&agent_entity(node)),
+            )
+        }),
     );
     let mut paths = response
         .paths
@@ -1459,16 +1506,13 @@ fn text_page_entries(
             .iter()
             .map(|(_, path)| (TextPageSection::Paths, render_path(path))),
     );
-    let mut relationships = response
-        .edges
+    let relationships = ordered_edges
         .iter()
-        .enumerate()
         .map(|(index, edge)| {
-            let relationship = agent_relationship(edge, index, &nodes);
+            let relationship = agent_relationship(edge, *index, &nodes);
             (relationship.id.clone(), relationship)
         })
         .collect::<Vec<_>>();
-    relationships.sort_by(|left, right| left.0.cmp(&right.0));
     entries.extend(relationships.iter().map(|(_, relationship)| {
         (
             TextPageSection::Relationships,
@@ -1704,6 +1748,7 @@ fn primary_node_ids(
     operands: &[AgentOperand],
     response: &CodeQueryResponse,
     nodes: &BTreeMap<String, &QueryNode>,
+    ordered_edges: &[(usize, &QueryEdge)],
 ) -> Vec<String> {
     let mut ordered = Vec::new();
     let requested = operands
@@ -1719,9 +1764,9 @@ fn primary_node_ids(
             if let Some(target) = requested.first() {
                 ordered.push(target.clone());
                 ordered.extend(
-                    response
-                        .edges
+                    ordered_edges
                         .iter()
+                        .map(|(_, edge)| *edge)
                         .filter(|edge| edge.target == *target)
                         .map(|edge| edge.source.clone()),
                 );
@@ -1734,9 +1779,9 @@ fn primary_node_ids(
             if let Some(source) = requested.first() {
                 ordered.push(source.clone());
                 ordered.extend(
-                    response
-                        .edges
+                    ordered_edges
                         .iter()
+                        .map(|(_, edge)| *edge)
                         .filter(|edge| edge.source == *source)
                         .map(|edge| edge.target.clone()),
                 );
@@ -2246,11 +2291,11 @@ fn answer_for_code(
         },
         AgentOperation::Callers => format!(
             "Found {} incoming usage relationship(s) for {subject}.",
-            relationships.len()
+            response.edges.len()
         ),
         AgentOperation::Callees => format!(
             "Found {} direct callee relationship(s) for {subject}.",
-            relationships.len()
+            response.edges.len()
         ),
         AgentOperation::Impact => format!(
             "Found {} potentially affected node(s) within depth {}.",
