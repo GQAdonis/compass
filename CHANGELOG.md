@@ -11,7 +11,8 @@
   full statement, drops the repeated endpoint identifiers from `path` answers,
   renders a trail as its hop count and labelled chain instead of a path
   identity built from every node identifier, and prints entity identifiers only
-  where the page resolves a name. Cursors
+  where the page resolves a name. The shared paged-text footer also stops
+  repeating the caller's own budget and the previous page number. Cursors
   use a compact wire encoding with 64-bit digest prefixes. On the 50-question
   agent-query suite the same 44 answers Compass and Graphify both pass cost a
   median of 366 tokens instead of 560, and the suite's total Compass output

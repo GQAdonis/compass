@@ -1382,7 +1382,9 @@ pub fn decode_agent_text_page_cursor(value: &str) -> Result<AgentTextPageCursor,
     // The checksum already proved the payload is intact, so a payload that does
     // not parse as this wire form belongs to another cursor version.
     let wire: AgentTextPageCursorWire = serde_json::from_slice(&bytes).map_err(|_| {
-        OutputError::InvalidAgentTextPage("unsupported page cursor encoding".to_owned())
+        OutputError::InvalidAgentTextPage(
+            "unsupported page cursor version; reissue the page query".to_owned(),
+        )
     })?;
     let cursor = wire.into_cursor()?;
     if cursor.page == 0 {

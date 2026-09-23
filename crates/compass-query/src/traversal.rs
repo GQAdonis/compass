@@ -1452,17 +1452,16 @@ fn render_paginated_groups(
         .join("\n");
     let first = if range.is_empty() { 0 } else { range.start + 1 };
     let last = range.end;
-    let previous = page
-        .checked_sub(1)
-        .filter(|previous| *previous > 0)
-        .map_or_else(|| "none".to_owned(), |previous| previous.to_string());
     let next = if page < total_pages {
         (page + 1).to_string()
     } else {
         "none".to_owned()
     };
+    // The page budget is the caller's own request and the previous page is
+    // `page - 1`, so neither is reprinted: this line closes every page of every
+    // text answer, and the label, range and continuation are what it must say.
     let pagination = format!(
-        "Pagination: page={page}/{total_pages} {item_label}={first}-{last}/{} budget_tokens=~{token_budget} previous={previous} next={next}",
+        "Pagination: page={page}/{total_pages} {item_label}={first}-{last}/{} next={next}",
         groups.len()
     );
     if body.is_empty() {

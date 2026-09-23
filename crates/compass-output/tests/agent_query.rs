@@ -546,3 +546,189 @@ fn equivalent_collection_order_has_one_view_digest() -> Result<(), Box<dyn Error
     );
     Ok(())
 }
+
+/// A callers response with `count` call sites of one target.
+fn callers_fixture(count: usize) -> CodeQueryResponse {
+    let target_anchor = anchor("src/target.rs", 20);
+    let mut response = response(CodeQueryOperation::Callers);
+    response
+        .nodes
+        .push(node("n:target", "Target", &target_anchor));
+    for index in 0..count {
+        let file = format!("src/caller_{index}.rs");
+        let caller_anchor = anchor(&file, index as u32 + 1);
+        let id = format!("n:caller-{index}");
+        response
+            .nodes
+            .push(node(&id, &format!("Caller{index}"), &caller_anchor));
+        response.edges.push(QueryEdge {
+            id: format!("e:caller-{index}"),
+            source: id,
+            target: "n:target".to_owned(),
+            kind: EdgeKind::Calls,
+            relationship_site: Some(caller_anchor.clone()),
+            details: None,
+            evidence: vec![evidence(&caller_anchor)],
+        });
+    }
+    response
+}
+
+#[test]
+fn text_page_keeps_the_agent_view_profile_and_pages_the_rest() -> Result<(), Box<dyn Error>> {
+    let response = callers_fixture(24);
+    let page = render_code_query_text_page(
+        &response,
+        context(AgentOperation::Callers)
+            .with_operand(compass_output::AgentOperandRole::Symbol, "Target"),
+        AgentTextPageOptions {
+            // A budget large enough that only the profile decides the page.
+            token_budget: 32_000,
+            cursor: None,
+        },
+    )?;
+    let entities = page
+        .text
+        .lines()
+        .filter(|line| line.starts_with("- Fixture.Caller") || line.starts_with("- Fixture.Target"))
+        .count();
+    assert_eq!(
+        entities, 12,
+        "one page renders the Agent View profile: {}",
+        page.text
+    );
+    assert!(
+        page.text.contains("range=1-12 of "),
+        "the page reports the ledger's true total: {}",
+        page.text.lines().last().unwrap_or_default()
+    );
+    assert!(
+        page.next_cursor.is_some(),
+        "the rest of the ledger continues"
+    );
+    assert!(
+        page.entry_total >= 25,
+        "the ledger keeps the target, the callers and their edges: {}",
+        page.entry_total
+    );
+    assert!(
+        page.text.contains(&format!("of {}", page.entry_total)),
+        "the page reports the ledger's true total"
+    );
+    // The machine views keep every record the page defers.
+    assert_eq!(response.nodes.len(), 25);
+    Ok(())
+}
+
+#[test]
+fn text_page_prints_identifiers_only_where_it_resolves_a_name() -> Result<(), Box<dyn Error>> {
+    let response = callers_fixture(3);
+    let resolved = render_code_query_text_page(
+        &response,
+        context(AgentOperation::Callers)
+            .with_operand(compass_output::AgentOperandRole::Symbol, "Target"),
+        AgentTextPageOptions {
+            token_budget: 2_000,
+            cursor: None,
+        },
+    )?;
+    assert!(
+        !resolved.text.contains("  id: "),
+        "a resolved caller row is addressed by name and anchor: {}",
+        resolved.text
+    );
+    let pick_list = render_code_query_text_page(
+        &response,
+        context(AgentOperation::Search)
+            .with_operand(compass_output::AgentOperandRole::Query, "Target"),
+        AgentTextPageOptions {
+            token_budget: 2_000,
+            cursor: None,
+        },
+    )?;
+    assert!(
+        pick_list.text.contains("  id: "),
+        "a pick list keeps the identifiers an agent disambiguates with: {}",
+        pick_list.text
+    );
+    // The JSON projection carries identifiers for both.
+    let view = build_code_query_view(
+        &response,
+        context(AgentOperation::Callers)
+            .with_operand(compass_output::AgentOperandRole::Symbol, "Target"),
+    )?;
+    assert!(
+        view.primary_results
+            .iter()
+            .all(|entity| !entity.id.is_empty())
+    );
+    Ok(())
+}
+
+#[test]
+fn text_page_envelope_stays_compact_and_cursors_stay_short() -> Result<(), Box<dyn Error>> {
+    let response = callers_fixture(24);
+    let page = render_code_query_text_page(
+        &response,
+        context(AgentOperation::Callers)
+            .with_operand(compass_output::AgentOperandRole::Symbol, "Target"),
+        AgentTextPageOptions {
+            token_budget: 32_000,
+            cursor: None,
+        },
+    )?;
+    assert!(
+        page.text.starts_with("RESULT "),
+        "the page opens with one RESULT line: {}",
+        page.text
+    );
+    assert!(
+        !page.text.contains("\nState:"),
+        "the multi-line state block is gone: {}",
+        page.text
+    );
+    let pagination = page
+        .text
+        .lines()
+        .find(|line| line.starts_with("Pagination:"))
+        .ok_or("missing pagination line")?;
+    assert!(!pagination.contains("version="), "{pagination}");
+    assert!(!pagination.contains("budget_tokens"), "{pagination}");
+    let cursor = page.next_cursor.ok_or("expected a continuation")?;
+    assert!(
+        cursor.len() <= 220,
+        "a cursor is re-printed on every page, so it stays compact: {} chars",
+        cursor.len()
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_page_cursor_encoding_is_rejected_with_a_version_error() -> Result<(), Box<dyn Error>> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use sha2::{Digest, Sha256};
+
+    // The previous release wrote long keys with a string version and full
+    // digests. Such a cursor must fail explicitly, not be reinterpreted as the
+    // compact wire form with defaulted fields.
+    let legacy = serde_json::json!({
+        "version": "compass.query.agent-text-page/1",
+        "operation": "callers",
+        "graphIdentity": "a".repeat(64),
+        "page": 2,
+        "prefixCount": 1,
+        "prefixDigest": "b".repeat(64),
+    });
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&legacy)?);
+    let checksum = format!("{:x}", Sha256::digest(payload.as_bytes()));
+    let cursor = format!("{payload}.{checksum}");
+    let error = compass_output::decode_agent_text_page_cursor(&cursor)
+        .expect_err("a legacy cursor must not be reinterpreted");
+    let message = error.to_string();
+    assert!(
+        message.contains("cursor"),
+        "the failure names the cursor: {message}"
+    );
+    Ok(())
+}
