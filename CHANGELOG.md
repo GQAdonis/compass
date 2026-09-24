@@ -2,6 +2,217 @@
 
 ## Unreleased
 
+- Spend a `--source` request on the declaration. `compass explain <symbol>
+  --source` printed the whole neighborhood list before the code the caller
+  asked for, and for a symbol with thirty-one connections that list was half of
+  the answer. The connection slice beside a source request is now bounded to
+  its strongest entries: the `Pagination:` footer still reports the list's true
+  total and `--page 2` continues it, and an explicit `--budget` restores the
+  full list. The reviewed Zod declaration falls from 8,326 to 5,858 bytes and
+  Cobra's `Command::Find` from 2,004 to 1,657, with the explained source and the
+  strongest connections unchanged.
+
+- Repair a partially removed installation instead of refusing to touch it.
+  `compass ensure` already reported a missing or edited managed skill, but the
+  repair command it named failed when the skill file had disappeared: `install`
+  saw a non-empty skill directory it could not verify and stopped. A directory
+  whose only defect is missing managed files is now an incomplete install that
+  `compass install` restores from the package, while a file edited since it was
+  installed still is not overwritten - and now says so
+  (`was modified since Compass installed it and will not be overwritten`)
+  instead of reporting the directory as unmanaged. The build's health note
+  names the two states separately.
+
+- Print only what a caller has to weigh in the text projection. A relationship
+  row now keeps its endpoints, relation and site on one line and spells out the
+  confidence and resolution only when they are not the strongest `exact`, and
+  an exact-name pick list no longer repeats a stable identifier beside every
+  candidate (the qualified name and source anchor address each row, and
+  `--format json` keeps every identifier). On the 50-question suite the paired
+  median answer falls from 337 to 327 tokens, the exact-name pick list drops
+  from 583 to 349 tokens, and the same 50/50 result holds.
+
+- Never answer an unresolved symbol query with another symbol's evidence. A
+  `callers`, `callees` or `impact` query whose symbol has no exact match used to
+  print "Found 27 incoming usage relationship(s) for axum::routing::Router::route_layer."
+  for the question "who calls PathRouter::route?" - the state said `no_match`,
+  but the headline attributed a fallback candidate's relationships to the
+  request. The headline now names the missing subject and says whose evidence
+  the rows are ("the 27 incoming usage relationship(s) below belong to the
+  fallback candidate ..."), leaving the candidate list to the caveats, so no
+  candidate is ever selected silently. Exactly resolved queries keep their
+  previous wording.
+
+- Bound the owner-level importer probe. `callers`, `callees` and `impact`
+  recover evidence that targets a containing owner through a term-posting
+  probe, and every candidate it verified cost one snapshot read: on the Axum
+  corpus ~1,000 candidates made a two-edge `callers` answer take 7.7 s, and the
+  Zod and Gson graphs spent 50 s per impact query the same way. The probe now
+  runs only while an answer is thinner than the self-check threshold, verifies
+  at most 16 candidate sources even then, and reports that it stopped early;
+  the consistency diagnostic that flags a suspiciously empty relationship
+  answer stays reachable, and the owner-scoped adjacency still publishes the
+  direct and module-level evidence. Median `callers` latency falls from 7.8 s
+  to 0.23 s, median `impact` latency from 30.9 s to 0.66 s, and the suite's
+  total query wall time from 247 s to 16 s, with the same 50/50 result and a
+  paired median of 304 tokens.
+
+- Spend the text page budget on evidence instead of envelope. The default
+  `text` projection now renders at most the Agent View's profile per page (12
+  primary results, 24 relationships, 5 paths) and reports the ledger's true
+  total with a continuation cursor, prints one `RESULT` line instead of six,
+  omits the pagination version/budget echo, prints only the bounds that withheld
+  records, states warnings in one sentence while blocking caveats keep their
+  full statement, drops the repeated endpoint identifiers from `path` answers,
+  renders a trail as its hop count and labelled chain instead of a path
+  identity built from every node identifier, and prints entity identifiers only
+  where the page resolves a name. The shared paged-text footer also stops
+  repeating the caller's own budget and the previous page number. Cursors
+  use a compact wire encoding with 64-bit digest prefixes. On the 50-question
+  agent-query suite the same 44 answers Compass and Graphify both pass cost a
+  median of 366 tokens instead of 560, and the suite's total Compass output
+  falls from 40,082 to 21,650 tokens with the same 50/50 result.
+
+- Read the operation verb's direction when a question names no preposition.
+  "how does gson read json into an object" spells the entry point `fromJson`
+  even though the question never writes "from json", and "convert a json schema
+  into a zod schema" names `fromJSONSchema`. Discovery now derives each
+  `from`/`to` compound from the operation verb's conventional direction -
+  reading and loading name their source `from<Object>`, writing and serializing
+  name their destination `to<Object>`, conversions and transformations name both
+  - and only admits a compound the bounded name index declares. A preposition
+  the question already spells is never re-derived, so "serialize an object to
+  json" stays `toJson` alone, and an infinitive "how to parse json" keeps the
+  verb's own direction. Gson now answers the read-JSON evaluation question from
+  `Gson.fromJson` and Zod the JSON-Schema question from `fromJSONSchema`.
+
+- Lead `compass impact` with the dependents that name the symbol. The reverse
+  walk now visits edges that terminate on the expanded node before edges that
+  only reach its containing owner, and ranks the rest by relation strength, so
+  a bounded trail ledger keeps the direct callers of a heavily referenced
+  symbol instead of spending its budget on owner-level references. The agent
+  view orders impacted nodes by trail length and last-hop strength, so
+  `compass impact "cobra.Command::ParseFlags"` now reports
+  `cobra.Command::execute` (command.go:919) first instead of omitting it from
+  every page. Reported by the second agent-query suite.
+
+- Read operation phrases as identifier compounds. A question that phrases an
+  operation with a preposition ("serialize an object to json", "read a payload
+  from json") now also ranks the identifier-shaped `tojson`/`fromjson`
+  compound. The compound is verified against the graph's bounded name index,
+  and when it equals a declared name it is admitted as an exact-name match even
+  in a multi-concept question. The Gson evaluation question now leads with the
+  reviewed entry points (`Gson.toJson` at Gson.java:565/590/612).
+
+- Expand behavior questions to graph-verified agent nouns. A question that asks
+  how code routes a request now also ranks the `router` spelling that the graph
+  actually declares (`Router`, `MethodRouter`, `PathRouter`) instead of
+  matching only `route`-shaped names. The expansion drops a silent trailing
+  `e` and tries `-er`/`-or` (route → router, serialize → serializer,
+  validate → validator), and a variant is added only when the graph's bounded
+  name index contains it, so no vocabulary is invented. The reviewed
+  relevance qualification corpus still passes, and the Axum evaluation question
+  now answers with `Router`, `PathRouter`, and `MethodRouter`.
+
+- Spend continuation-page budgets on results instead of repeated prose. Pages
+  after the first now summarize the unchanged caveat set (`CAVEATS: N unchanged
+  from page 1 (code×count)`) instead of re-printing every caveat paragraph, for
+  both discovery text pages and typed agent text pages. Page one is unchanged,
+  and the freed budget goes to results: the Zod evaluation question now reaches
+  its reviewed answer in two pages and 783 tokens, where the previous repeated
+  headers spent seven pages and 2,807 tokens without surfacing it.
+
+- Render digest-verified source context in paged maps. `compass explore
+  --format text` now ends with a `SOURCE` section containing the recorded line
+  range of each primary anchor, read from the digest-verified file the command
+  already loads; a stale or truncated file is marked or skipped instead of
+  being presented as verified context. The section is part of the bounded page,
+  so it never exceeds the requested `--text-budget`.
+
+- Make the agent view answer "who calls this" with the real call sites first.
+  Relationship ordering now ranks direct usage (calls, instantiates, routes,
+  handlers, registrations) ahead of imports/exports and owner-level references,
+  so a bounded callers answer can no longer be crowded out by hundreds of
+  references to the containing type. The callers and callees headlines report
+  the source response's edge count instead of the capped projection count. On
+  the evaluation corpus the Cobra answer now leads with all five real
+  `ExecuteC` call sites (`completions_test.go:4109`, `command.go:1080`,
+  `command.go:1071`, `command_test.go:54`, and the recursive call) before any
+  reference, and the Axum answer's twenty-four shown relationships are all
+  calls with exact sites.
+
+- Add the compact `compass.query.agent-view.brief/1` projection. Typed
+  commands accept `--brief` with `--format agent-json` and receive the same
+  status, answer, caveats, source-located entities, relationships, paths, and
+  next actions without audit-only graph identities, response digests,
+  per-relationship IDs, or per-edge evidence layers. On the evaluation corpus
+  the same caller answers cost 1,651 (Cobra) and 2,046 (Axum) tokens instead of
+  6,256 and 6,758, and the raw `compass.query/1` response remains unchanged for
+  audit consumers.
+
+- Let `compass review --format markdown` extract one section at a time.
+  `--list-sections` prints the canonical section names (`summary`,
+  `risk-factors`, `merge-checks`, `findings`, `not-included`) without needing a
+  comparison, and `--section NAME` (repeatable or comma-separated) renders only
+  those sections while keeping the title and report reference. `--max-findings`
+  and `--max-output-bytes` still bound the projection and report exact
+  omissions.
+
+- Bound every typed query with a deadline. `ask`, `search`, `callers`,
+  `callees`, `impact`, `explore`, and `node` accept `--timeout-ms <N>`
+  (default 60000, maximum 600000), checked between resolution, candidate,
+  relationship, impact, and path-expansion steps. An expired deadline fails
+  with a typed `code_query_timeout` error and an actionable hint instead of
+  running until it finishes, and one deadline covers a paged or widened
+  command rather than each retry.
+
+- Stop discarding `route`/`routes`/`routing` from natural discovery terms.
+  Those words name the subject in routing questions, so a question such as
+  "how does axum route an incoming request" now seeds route symbols instead of
+  only the generic nouns around them. The reviewed relevance qualification
+  corpus still passes.
+
+- Resolve TypeScript `paths` aliases for a project that other projects
+  `extends`. A shared root `tsconfig.json` that declares its own `files` or
+  `include` is a project for those files again, while a same-directory
+  extending project still takes precedence over its base. On a real
+  `rivet-dev/actors` frontend checkout this restores import and usage edges for
+  its `<root>/tsconfig.json` mappings.
+
+- Let `compass path` accept file-shaped input for languages that publish an
+  isolated file node beside the module that carries the file's contents. An
+  isolated file node resolves to the single module that owns the same source
+  file, and the answer names both the module and the file path.
+
+- Add bounded text pagination to the typed lookups. `ask`, `search`,
+  `callers`, `callees`, `impact`, `explore`, and `node` accept
+  `--text-budget` and `--cursor`; each text page ends with a
+  `compass.query.agent-text-page/1` cursor that continues the same
+  deterministic ledger at the same page budget, so a capped result no longer
+  forces guess-and-repeat with a larger limit. The ledger is derived from the
+  raw query response, so paging reaches records that the compact agent view
+  omits.
+
+- Make `compass store validate` prove graph semantics, not only stored bytes:
+  it re-materializes the selected snapshot, applies the strict
+  `compass.graph/1` validation used by readers, and reports the offending
+  record IDs instead of reporting `valid: true` for an artifact every strict
+  reader rejects. `compass store status` keeps the cheaper integrity check.
+
+- Make agent-facing lookups recoverable and self-checking: `callers`,
+  `callees`, and `impact` now return the candidate pick list when a name is
+  ambiguous, ambiguous `path` endpoints list each candidate's label, source
+  location, and ID, and typed agent views deduplicate repeated primary
+  results. Bounded discovery pages truncate a single oversized entry with an
+  explicit marker instead of failing with an empty response.
+
+- Add `compass explain --source` with `--root` and `--max-source-bytes`: the
+  declaration text is read below the repository root, bounded, and verified
+  against the recorded symbol digest, so an explain answer no longer requires
+  a separate file read. Also add the developer-side
+  `benchmarks/agent_query` evaluation suite that compares Compass with
+  Graphify across five repositories and languages.
+
 - Improve agent-facing query correctness and recovery: callers, impact, and
   affected include source-backed alias/import/export usage evidence; CompassQL
   exposes live node degree and supports ordering by pre-projection bindings;

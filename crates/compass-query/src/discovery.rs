@@ -627,9 +627,12 @@ impl CodeQueryEngine {
             }
         }
 
+        let compound_terms = crate::code_query::phrase_compound_variants(question)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         let reserved_term_capacity = direct_limit / 2;
         let non_term_capacity = direct_limit.saturating_sub(reserved_term_capacity);
-        for concept in &concepts {
+        for (concept_index, concept) in concepts.iter().enumerate() {
             guard.check()?;
             if probes >= candidate_probe_limit || nodes_read >= candidate_read_limit {
                 truncated = true;
@@ -641,13 +644,29 @@ impl CodeQueryEngine {
                 backend.nodes_by_normalized_name(concept, alias_limit.max(1))?;
             nodes_read = nodes_read.saturating_add(nodes.len());
             truncated |= alias_truncated;
+            // Never let one concept's postings consume the slots every later
+            // concept needs to contribute at least one candidate.
+            let reserve_for_later = concepts
+                .len()
+                .saturating_sub(concept_index.saturating_add(1));
             for node in nodes {
-                if pool.len() >= non_term_capacity {
+                if pool.len().saturating_add(reserve_for_later) >= non_term_capacity {
                     break;
                 }
                 if discovery_scope_matches(&node, scope) {
                     let id = node.id.clone();
-                    let _ = pool.add(CandidateSource::Alias, node);
+                    // A derived compound such as "to json" -> "toJson" is a
+                    // name-shaped hint: when it also equals the declared name,
+                    // treat it as an exact-name match. Ordinary question words
+                    // keep their alias rank even when a node shares the name.
+                    let source = if compound_terms.contains(concept)
+                        && crate::ranking::normalize_symbol_name(&node.name) == *concept
+                    {
+                        CandidateSource::ExactName
+                    } else {
+                        CandidateSource::Alias
+                    };
+                    let _ = pool.add(source, node);
                     let _ = pool.add_indexed_matches(&id, [concept.clone()]);
                 }
             }
@@ -2491,6 +2510,7 @@ mod tests {
             build_generation_identity: "generation".to_owned(),
             search_query_cache: std::sync::Mutex::new(SearchQueryCache::default()),
             fuzzy_lookup_cache: std::sync::Mutex::new(FuzzyLookupCache::default()),
+            deadline: None,
         }
     }
 
@@ -2504,6 +2524,36 @@ mod tests {
             include_heuristic: false,
             limits: DiscoveryLimits::default(),
         }
+    }
+
+    #[test]
+    fn behavior_terms_gain_graph_verified_agent_nouns() -> Result<(), Box<dyn std::error::Error>> {
+        let engine = engine(vec![node("n:router", "Router")], Vec::new());
+        let prepared = engine.prepare_discovery_query("how does the code route a request")?;
+        assert!(
+            prepared.ranking_terms.iter().any(|term| term == "router"),
+            "a graph that names Router must expand the behavior term: {:?}",
+            prepared.ranking_terms
+        );
+        assert_eq!(
+            crate::code_query::agent_noun_variants("route"),
+            ["router", "routor"]
+        );
+        assert_eq!(
+            crate::code_query::phrase_compound_variants(
+                "how does gson serialize an object to json"
+            ),
+            ["tojson"]
+        );
+
+        // Vocabulary the graph does not contain is never invented.
+        let prepared = engine.prepare_discovery_query("how does the code florp a widget")?;
+        assert!(
+            !prepared.ranking_terms.iter().any(|term| term == "florper"),
+            "{:?}",
+            prepared.ranking_terms
+        );
+        Ok(())
     }
 
     #[test]

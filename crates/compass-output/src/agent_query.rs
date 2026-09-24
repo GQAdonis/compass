@@ -9,7 +9,10 @@ use compass_model::query_contract::{
     CodeQueryOperation, CodeQueryResponse, DiscoveryEdge, DiscoveryQueryResponse, QueryDiagnostic,
     QueryDiagnosticCode, QueryEdge, QueryEvidence, QueryEvidenceLayer, QueryNode, QueryPath,
 };
-use compass_query::{code_query_response_digest, discovery_response_digest};
+use compass_query::{
+    CursorTokenError, code_query_response_digest, decode_cursor_token, discovery_response_digest,
+    encode_cursor_token,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -17,6 +20,8 @@ use sha2::{Digest, Sha256};
 use crate::OutputError;
 
 pub const AGENT_QUERY_VIEW_SCHEMA: &str = "compass.query.agent-view/1";
+/// Version of the compact agent projection that omits audit-only detail.
+pub const AGENT_BRIEF_VIEW_SCHEMA: &str = "compass.query.agent-view.brief/1";
 pub const AGENT_VIEW_MAX_PRIMARY_RESULTS: usize = 12;
 pub const AGENT_VIEW_MAX_RELATIONSHIPS: usize = 24;
 pub const AGENT_VIEW_MAX_PATHS: usize = 5;
@@ -392,6 +397,45 @@ fn invalid(reason: impl Into<String>) -> OutputError {
     OutputError::InvalidAgentQuery(reason.into())
 }
 
+/// Order response edges so direct usage survives the bounded projection.
+///
+/// A resolved callers or callees response may carry hundreds of owner-level
+/// references beside a handful of exact call or route edges. The projection
+/// cap must never drop the direct usage evidence an agent asked for, so edges
+/// are ordered by relation strength first and by exact ID only as the
+/// deterministic tie-break.
+fn ordered_relationship_edges(response: &CodeQueryResponse) -> Vec<(usize, &QueryEdge)> {
+    let mut edges = response
+        .edges
+        .iter()
+        .enumerate()
+        .collect::<Vec<(usize, &QueryEdge)>>();
+    edges.sort_by(|(_, left), (_, right)| {
+        relationship_priority(left)
+            .cmp(&relationship_priority(right))
+            .then_with(|| left.id.cmp(&right.id))
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| left.target.cmp(&right.target))
+    });
+    edges
+}
+
+/// Lower ranks are stronger evidence of a direct dependency.
+fn relationship_priority(edge: &QueryEdge) -> u8 {
+    edge.kind.dependency_strength()
+}
+
+/// Strength of the last hop of a reverse-impact trail.
+fn trail_strength(
+    path: &compass_model::query_contract::QueryPath,
+    edge_kinds: &BTreeMap<&str, compass_model::code_graph::EdgeKind>,
+) -> u8 {
+    path.edge_ids
+        .last()
+        .and_then(|id| edge_kinds.get(id.as_str()))
+        .map_or(3, |kind| kind.dependency_strength())
+}
+
 pub fn build_code_query_view(
     response: &CodeQueryResponse,
     context: AgentQueryContext,
@@ -414,28 +458,28 @@ pub fn build_code_query_view(
         .iter()
         .map(|node| (node.id.clone(), node))
         .collect::<BTreeMap<_, _>>();
-    let primary_ids = primary_node_ids(context.operation, &context.operands, response, &nodes);
+    let ordered_edges = ordered_relationship_edges(response);
+    let primary_ids = primary_node_ids(
+        context.operation,
+        &context.operands,
+        response,
+        &nodes,
+        &ordered_edges,
+    );
     let mut primary_results = primary_ids
         .iter()
         .filter_map(|id| nodes.get(id).copied())
         .map(agent_entity)
         .collect::<Vec<_>>();
+    deduplicate_entities(&mut primary_results);
     let before_primary = primary_results.len();
     primary_results.truncate(AGENT_VIEW_MAX_PRIMARY_RESULTS);
     let primary_omitted = before_primary.saturating_sub(primary_results.len());
 
-    let mut all_relationships = response
-        .edges
+    let all_relationships = ordered_edges
         .iter()
-        .enumerate()
-        .map(|(index, edge)| agent_relationship(edge, index, &nodes))
+        .map(|(index, edge)| agent_relationship(edge, *index, &nodes))
         .collect::<Vec<_>>();
-    all_relationships.sort_by(|left, right| {
-        left.id
-            .cmp(&right.id)
-            .then_with(|| left.source.id.cmp(&right.source.id))
-            .then_with(|| left.target.id.cmp(&right.target.id))
-    });
     let before_relationships = all_relationships.len();
     let relationships = all_relationships
         .into_iter()
@@ -959,7 +1003,15 @@ pub fn render_agent_query_header_lines(view: &AgentQueryView) -> Result<Vec<Stri
     if !view.caveats.is_empty() {
         lines.push(String::new());
         lines.push("CAVEATS".to_owned());
-        lines.extend(view.caveats.iter().map(render_caveat));
+        // One caveat can be retained twice under the same code - the same
+        // truncated sentence is the same warning, so it is stated once.
+        let mut seen = HashSet::new();
+        lines.extend(
+            view.caveats
+                .iter()
+                .map(render_caveat)
+                .filter(|line| seen.insert(line.clone())),
+        );
     }
     Ok(lines)
 }
@@ -971,7 +1023,13 @@ pub fn render_agent_query_text(view: &AgentQueryView) -> Result<String, OutputEr
     if view.primary_results.is_empty() {
         lines.push("- None retained.".to_owned());
     } else {
-        lines.extend(view.primary_results.iter().map(render_entity));
+        let ambiguous_labels = duplicated_entity_labels(&view.primary_results);
+        lines.extend(view.primary_results.iter().map(|entity| {
+            render_entity(
+                entity,
+                entity_needs_identity(entity, view.status.match_state, &ambiguous_labels),
+            )
+        }));
     }
     lines.push(String::new());
     lines.push("PATHS".to_owned());
@@ -1019,21 +1077,778 @@ pub fn render_agent_query_text(view: &AgentQueryView) -> Result<String, OutputEr
     Ok(text)
 }
 
+/// The compact agent projection.
+///
+/// The brief view keeps the reviewed answer semantics of
+/// `compass.query.agent-view/1` - status, caveats, source-located entities,
+/// relationships, paths, and next actions - while dropping audit-only detail
+/// such as graph identities, response digests, per-record IDs for
+/// relationships, and per-edge evidence layers. Consumers that need exact
+/// provenance read the raw `compass.query/1` response instead.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefView {
+    pub schema: String,
+    pub operation: AgentOperation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    pub operands: Vec<AgentOperand>,
+    pub status: AgentBriefStatus,
+    pub answer: String,
+    pub caveats: Vec<String>,
+    pub primary_results: Vec<AgentBriefEntity>,
+    pub relationships: Vec<AgentBriefRelationship>,
+    pub paths: Vec<AgentBriefPath>,
+    pub next_actions: Vec<AgentBriefAction>,
+}
+
+/// Answer-level state of a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefStatus {
+    pub result_state: String,
+    pub match_state: String,
+    pub coverage: String,
+}
+
+/// One source-located entity in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefEntity {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// One usage or structural relationship in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefRelationship {
+    pub source: String,
+    pub relation: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    pub confidence: String,
+}
+
+/// One connecting path in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefPath {
+    pub id: String,
+    pub hops: usize,
+    pub summary: String,
+}
+
+/// One bounded follow-up action in a brief view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentBriefAction {
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli: Option<Vec<String>>,
+}
+
+/// Build the compact projection from the same bounded agent view.
+pub fn build_code_query_brief(
+    response: &CodeQueryResponse,
+    context: AgentQueryContext,
+) -> Result<AgentBriefView, OutputError> {
+    let view = build_code_query_view(response, context)?;
+    Ok(AgentBriefView {
+        schema: AGENT_BRIEF_VIEW_SCHEMA.to_owned(),
+        operation: view.request.operation,
+        question: view.request.question.clone(),
+        operands: view.request.operands.clone(),
+        status: AgentBriefStatus {
+            result_state: result_state_name(view.status.result_state).to_owned(),
+            match_state: match_state_name(view.status.match_state).to_owned(),
+            coverage: coverage_state_name(view.status.coverage).to_owned(),
+        },
+        answer: view.answer.headline.clone(),
+        caveats: view
+            .caveats
+            .iter()
+            .map(|caveat| {
+                format!(
+                    "[{}] {}: {}",
+                    severity_name(caveat.severity),
+                    caveat.code,
+                    caveat.statement
+                )
+            })
+            .collect(),
+        primary_results: view
+            .primary_results
+            .iter()
+            .map(|entity| AgentBriefEntity {
+                id: entity.id.clone(),
+                label: entity.label.clone(),
+                kind: entity.kind.clone(),
+                source: entity.source.as_ref().map(render_source),
+            })
+            .collect(),
+        relationships: view
+            .relationships
+            .iter()
+            .map(|relationship| AgentBriefRelationship {
+                source: relationship.source.label.clone(),
+                relation: relationship.relation.clone(),
+                target: relationship.target.label.clone(),
+                site: relationship.site.as_ref().map(render_source),
+                confidence: relationship.evidence.confidence.clone(),
+            })
+            .collect(),
+        paths: view
+            .paths
+            .iter()
+            .map(|path| AgentBriefPath {
+                id: path.id.clone(),
+                hops: path.steps.len(),
+                summary: render_path_summary(path),
+            })
+            .collect(),
+        next_actions: view
+            .next_actions
+            .iter()
+            .map(|action| AgentBriefAction {
+                kind: action.kind.clone(),
+                cli: action.cli.as_ref().map(|cli| cli.argv.clone()),
+            })
+            .collect(),
+    })
+}
+
+/// Version of the paged agent text projection.
+pub const AGENT_TEXT_PAGE_VERSION: &str = "compass.query.agent-text-page/1";
+/// Default page budget, in approximate tokens, for paged agent text output.
+pub const DEFAULT_AGENT_TEXT_PAGE_TOKENS: usize = 2_000;
+
+const AGENT_TEXT_PAGE_FOOTER_RESERVE_CHARS: usize = 384;
+const AGENT_TEXT_PAGE_MAX_CURSOR_BYTES: usize = 4_096;
+
+/// Continuation state for one paged agent text response.
+///
+/// The cursor binds the page to the reviewed prefix of the deterministic
+/// agent-view ledger. A later page re-runs the same query with wider internal
+/// bounds, so the decoded cursor carries only the page number and the verified
+/// prefix identity.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentTextPageCursor {
+    pub version: String,
+    pub operation: String,
+    pub graph_identity: String,
+    pub page: u32,
+    pub prefix_count: usize,
+    pub prefix_digest: String,
+}
+
+/// Cursor wire version. Older encodings fail with an explicit version error.
+const AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION: u8 = 2;
+/// Hex characters stored for each digest the cursor binds.
+const AGENT_TEXT_PAGE_CURSOR_DIGEST_CHARS: usize = 16;
+/// Fields this cursor carries behind its wire version.
+const AGENT_TEXT_PAGE_CURSOR_FIELDS: usize = 5;
+
+fn cursor_digest_prefix(value: &str) -> String {
+    value
+        .chars()
+        .take(AGENT_TEXT_PAGE_CURSOR_DIGEST_CHARS)
+        .collect()
+}
+
+/// Encode one cursor as the versioned field list plus its payload checksum.
+fn encode_cursor_fields(cursor: &AgentTextPageCursor) -> String {
+    encode_cursor_token(
+        AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION,
+        &[
+            &cursor.operation,
+            &cursor_digest_prefix(&cursor.graph_identity),
+            &cursor.page.to_string(),
+            &cursor.prefix_count.to_string(),
+            &cursor_digest_prefix(&cursor.prefix_digest),
+        ],
+    )
+}
+
+/// Decode the field list back into a continuation cursor.
+///
+/// Every field is re-validated here - the operation label, the hex digests, and
+/// the bounded integers - so a cursor that was not produced by
+/// [`encode_cursor_fields`] fails as an unreadable cursor rather than as a
+/// silently reinterpreted field.
+fn decode_cursor_fields(payload: &str) -> Result<AgentTextPageCursor, OutputError> {
+    let fields = decode_cursor_token(
+        payload,
+        AGENT_TEXT_PAGE_CURSOR_WIRE_VERSION,
+        AGENT_TEXT_PAGE_CURSOR_FIELDS,
+    )
+    .map_err(|error| match error {
+        CursorTokenError::UnsupportedVersion => OutputError::InvalidAgentTextPage(
+            "unsupported page cursor version; reissue the page query".to_owned(),
+        ),
+        CursorTokenError::MissingChecksum
+        | CursorTokenError::ChecksumMismatch
+        | CursorTokenError::Malformed => unreadable_cursor(),
+    })?;
+    let [operation, graph_identity, page, prefix_count, prefix_digest] =
+        <[String; AGENT_TEXT_PAGE_CURSOR_FIELDS]>::try_from(fields)
+            .map_err(|_| unreadable_cursor())?;
+    let operation = operation
+        .chars()
+        .all(|character| character.is_ascii_lowercase() || character == '_')
+        .then_some(operation)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(unreadable_cursor)?;
+    let page = page.parse::<u32>().map_err(|_| unreadable_cursor())?;
+    let prefix_count = prefix_count
+        .parse::<usize>()
+        .map_err(|_| unreadable_cursor())?;
+    if page == 0 {
+        return Err(OutputError::InvalidAgentTextPage(
+            "cursor page must be greater than zero".to_owned(),
+        ));
+    }
+    if !is_digest_prefix(&prefix_digest) {
+        return Err(unreadable_cursor());
+    }
+    Ok(AgentTextPageCursor {
+        version: AGENT_TEXT_PAGE_VERSION.to_owned(),
+        operation,
+        graph_identity,
+        page,
+        prefix_count,
+        prefix_digest,
+    })
+}
+
+fn is_digest_prefix(value: &str) -> bool {
+    compass_query::is_cursor_digest(value, AGENT_TEXT_PAGE_CURSOR_DIGEST_CHARS)
+}
+
+fn unreadable_cursor() -> OutputError {
+    OutputError::InvalidAgentTextPage(
+        "unsupported page cursor version; reissue the page query".to_owned(),
+    )
+}
+
+/// Options for one paged agent text response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AgentTextPageOptions<'a> {
+    pub token_budget: usize,
+    pub cursor: Option<&'a str>,
+}
+
+/// One bounded page of agent text with an optional continuation cursor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentTextPage {
+    pub text: String,
+    pub next_cursor: Option<String>,
+    pub page: u32,
+    pub entry_start: usize,
+    pub entry_end: usize,
+    pub entry_total: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum TextPageSection {
+    PrimaryResults,
+    Paths,
+    Relationships,
+    Source,
+}
+
+impl TextPageSection {
+    fn heading(self) -> &'static str {
+        match self {
+            Self::PrimaryResults => "PRIMARY RESULTS",
+            Self::Paths => "PATHS",
+            Self::Relationships => "RELATIONSHIPS",
+            Self::Source => "SOURCE",
+        }
+    }
+
+    /// Most entries of this section one text page renders.
+    ///
+    /// The text page keeps the same profile the Agent View documents, so a page
+    /// stops at the answer's strongest evidence instead of spending the whole
+    /// token budget on the tail of a long relation list. The pagination line
+    /// still reports the ledger's true total and `next=` continues it.
+    fn max_per_page(self) -> usize {
+        match self {
+            Self::PrimaryResults => AGENT_VIEW_MAX_PRIMARY_RESULTS,
+            Self::Paths => AGENT_VIEW_MAX_PATHS,
+            Self::Relationships => AGENT_VIEW_MAX_RELATIONSHIPS,
+            // Source blocks are already bounded per anchor and by the budget.
+            Self::Source => usize::MAX,
+        }
+    }
+}
+
+/// Decode and verify the self-contained envelope of one page cursor.
+///
+/// The ledger digest is verified when the page is rendered; this decoder only
+/// proves that the token is intact and readable so a caller can learn which
+/// page the token continues.
+pub fn decode_agent_text_page_cursor(value: &str) -> Result<AgentTextPageCursor, OutputError> {
+    if value.len() > AGENT_TEXT_PAGE_MAX_CURSOR_BYTES {
+        return Err(OutputError::InvalidAgentTextPage(
+            "cursor exceeds the supported size".to_owned(),
+        ));
+    }
+    decode_cursor_fields(value)
+}
+
+/// Render one bounded page of agent text and its continuation cursor.
+///
+/// The ledger is derived from the authoritative query response rather than the
+/// capped agent view, so paging can reach records that the view's own bounds
+/// omit. The page keeps at least one entry so a pathological budget cannot
+/// return an empty page, and a continuation cursor only becomes valid when the
+/// next response reproduces the same reviewed prefix.
+pub fn render_code_query_text_page(
+    response: &CodeQueryResponse,
+    context: AgentQueryContext,
+    options: AgentTextPageOptions<'_>,
+) -> Result<AgentTextPage, OutputError> {
+    if options.token_budget == 0 {
+        return Err(OutputError::InvalidAgentTextPage(
+            "token budget must be greater than zero".to_owned(),
+        ));
+    }
+    let view = build_code_query_view(response, context)?;
+    view.validate()?;
+    let entries = text_page_entries(
+        response,
+        view.request.operation,
+        &view.request.operands,
+        view.status.match_state,
+    );
+    let (page, start) = match options.cursor {
+        None => (1_u32, 0_usize),
+        Some(cursor) => {
+            let envelope = decode_agent_text_page_cursor(cursor)?;
+            if envelope.operation != view.request.operation.label() {
+                return Err(OutputError::InvalidAgentTextPage(format!(
+                    "cursor continues operation {} but this response is {}",
+                    envelope.operation,
+                    view.request.operation.label()
+                )));
+            }
+            if !view
+                .identity
+                .graph_identity
+                .starts_with(&envelope.graph_identity)
+            {
+                return Err(OutputError::InvalidAgentTextPage(
+                    "cursor belongs to a different graph identity".to_owned(),
+                ));
+            }
+            if envelope.prefix_count > entries.len() {
+                return Err(OutputError::InvalidAgentTextPage(
+                    "cursor prefix is longer than the retained ledger".to_owned(),
+                ));
+            }
+            if !prefix_digest(&entries[..envelope.prefix_count])
+                .starts_with(&envelope.prefix_digest)
+            {
+                return Err(OutputError::InvalidAgentTextPage(
+                    "cursor prefix does not match the current response".to_owned(),
+                ));
+            }
+            (envelope.page, envelope.prefix_count)
+        }
+    };
+    let max_chars = options.token_budget.saturating_mul(4);
+    let header = render_agent_query_header_lines(&view)?;
+    let header_chars = rendered_chars(&header);
+    let mut end = start;
+    let mut used = header_chars.saturating_add(AGENT_TEXT_PAGE_FOOTER_RESERVE_CHARS);
+    let mut rendered_per_section: BTreeMap<TextPageSection, usize> = BTreeMap::new();
+    while end < entries.len() {
+        let (section, text) = &entries[end];
+        if rendered_per_section.get(section).copied().unwrap_or(0) >= section.max_per_page() {
+            break;
+        }
+        let mut cost = text.chars().count().saturating_add(1);
+        if end == start || Some(*section) != entries.get(end.saturating_sub(1)).map(|entry| entry.0)
+        {
+            cost = cost.saturating_add(section.heading().chars().count() + 2);
+        }
+        if used.saturating_add(cost) > max_chars && end > start {
+            break;
+        }
+        used = used.saturating_add(cost);
+        *rendered_per_section.entry(*section).or_default() += 1;
+        end += 1;
+    }
+    loop {
+        let next_cursor = if end < entries.len() {
+            Some(encode_agent_text_page_cursor(&AgentTextPageCursor {
+                version: AGENT_TEXT_PAGE_VERSION.to_owned(),
+                operation: view.request.operation.label().to_owned(),
+                graph_identity: view.identity.graph_identity.clone(),
+                page: page.saturating_add(1),
+                prefix_count: end,
+                prefix_digest: prefix_digest(&entries[..end]),
+            })?)
+        } else {
+            None
+        };
+        let text = render_agent_text_page_body(
+            &view,
+            response,
+            &header,
+            &entries,
+            start,
+            end,
+            page,
+            next_cursor.as_deref(),
+        );
+        if text.chars().count() <= max_chars || end <= start.saturating_add(1) {
+            return Ok(AgentTextPage {
+                text,
+                next_cursor,
+                page,
+                entry_start: start,
+                entry_end: end,
+                entry_total: entries.len(),
+            });
+        }
+        end = end.saturating_sub(1);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_agent_text_page_body(
+    view: &AgentQueryView,
+    response: &CodeQueryResponse,
+    header: &[String],
+    entries: &[(TextPageSection, String)],
+    start: usize,
+    end: usize,
+    page: u32,
+    next_cursor: Option<&str>,
+) -> String {
+    let mut lines = if page > 1 {
+        continuation_header(view, header)
+    } else {
+        header.to_vec()
+    };
+    let mut section: Option<TextPageSection> = None;
+    for (entry_section, text) in &entries[start..end] {
+        if section != Some(*entry_section) {
+            lines.push(String::new());
+            lines.push(entry_section.heading().to_owned());
+            section = Some(*entry_section);
+        }
+        lines.push(text.clone());
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Pagination: page={page} range={}-{} of {} next={}",
+        if end > start { start + 1 } else { 0 },
+        end,
+        entries.len(),
+        next_cursor.unwrap_or("none")
+    ));
+    if view.omissions.total > 0 || response.truncated {
+        lines.push(if response.truncated {
+            format!(
+                "Bound: {} record(s) beyond this page; next= continues, --max-nodes/--max-edges widens the query bound.",
+                view.omissions.total
+            )
+        } else {
+            format!(
+                "Bound: {} record(s) beyond this page; next= continues.",
+                view.omissions.total
+            )
+        });
+    }
+    lines.join("\n")
+}
+
+/// Compact follow-up header: keep the state and answer, summarize caveats.
+///
+/// Page one states every caveat in full. A continuation page repeats the same
+/// immutable result, so re-printing paragraphs of caveat text would spend the
+/// page budget without adding information.
+fn continuation_header(view: &AgentQueryView, header: &[String]) -> Vec<String> {
+    let mut kept = Vec::new();
+    for line in header {
+        if line == "CAVEATS" {
+            if view.caveats.is_empty() {
+                continue;
+            }
+            let mut counts = BTreeMap::<&str, usize>::new();
+            for caveat in &view.caveats {
+                *counts.entry(caveat.code.as_str()).or_default() += 1;
+            }
+            let codes = counts
+                .iter()
+                .map(|(code, count)| format!("{code}×{count}"))
+                .collect::<Vec<_>>();
+            kept.push(format!(
+                "CAVEATS: {} unchanged from page 1 ({})",
+                view.caveats.len(),
+                codes.join(", ")
+            ));
+            break;
+        }
+        kept.push(line.clone());
+    }
+    kept
+}
+
+/// Build the compact header for a continuation page.
+///
+/// Callers that pre-render a page prefix (the discovery text pager) use this
+/// instead of [`render_agent_query_header_lines`] whenever a cursor continues
+/// an immutable result, so a page budget is not spent re-printing caveat
+/// paragraphs that page one already stated in full.
+pub fn render_agent_query_continuation_header(
+    view: &AgentQueryView,
+) -> Result<Vec<String>, OutputError> {
+    let header = render_agent_query_header_lines(view)?;
+    Ok(continuation_header(view, &header))
+}
+
+fn text_page_entries(
+    response: &CodeQueryResponse,
+    operation: AgentOperation,
+    operands: &[AgentOperand],
+    match_state: AgentMatch,
+) -> Vec<(TextPageSection, String)> {
+    let nodes = response
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<BTreeMap<_, _>>();
+    let ordered_edges = ordered_relationship_edges(response);
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    let primary_entities = primary_node_ids(operation, operands, response, &nodes, &ordered_edges)
+        .iter()
+        .filter(|id| seen.insert((*id).clone()))
+        .filter_map(|id| nodes.get(id).copied())
+        .map(agent_entity)
+        .collect::<Vec<_>>();
+    let ambiguous_labels = duplicated_entity_labels(&primary_entities);
+    entries.extend(primary_entities.iter().map(|entity| {
+        (
+            TextPageSection::PrimaryResults,
+            render_entity(
+                entity,
+                entity_needs_identity(entity, match_state, &ambiguous_labels),
+            ),
+        )
+    }));
+    let mut paths = response
+        .paths
+        .iter()
+        .map(|path| (path.id.clone(), agent_path(path, &nodes, &response.edges)))
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| left.0.cmp(&right.0));
+    entries.extend(
+        paths
+            .iter()
+            .map(|(_, path)| (TextPageSection::Paths, render_path(path))),
+    );
+    let relationships = ordered_edges
+        .iter()
+        .map(|(index, edge)| {
+            let relationship = agent_relationship(edge, *index, &nodes);
+            (relationship.id.clone(), relationship)
+        })
+        .collect::<Vec<_>>();
+    entries.extend(relationships.iter().map(|(_, relationship)| {
+        (
+            TextPageSection::Relationships,
+            render_relationship(relationship),
+        )
+    }));
+    entries.extend(source_context_entries(response, &nodes, &ordered_edges));
+    entries
+}
+
+/// Bound for one rendered source block in a paged map.
+const MAP_SOURCE_BLOCK_CHARS: usize = 2_000;
+
+/// Render digest-verified source blocks for the map's primary anchors.
+///
+/// `explore` verifies the anchored files into the response; a bounded text map
+/// is only useful when that context is visible, so each primary anchor gets the
+/// recorded line range of its declaring file. Missing or stale source is
+/// skipped here and stays visible through the response's file records.
+fn source_context_entries(
+    response: &CodeQueryResponse,
+    nodes: &BTreeMap<String, &QueryNode>,
+    ordered_edges: &[(usize, &QueryEdge)],
+) -> Vec<(TextPageSection, String)> {
+    if response.files.is_empty() {
+        return Vec::new();
+    }
+    let files = response
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    let operands = response
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.source.as_ref().map(|_| AgentOperand {
+                role: AgentOperandRole::Symbol,
+                value: node.id.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut anchors = primary_node_ids(
+        AgentOperation::Explore,
+        &operands,
+        response,
+        nodes,
+        ordered_edges,
+    );
+    anchors.extend(response.paths.iter().flat_map(|path| {
+        [
+            path.node_ids.first().cloned(),
+            path.node_ids.last().cloned(),
+        ]
+        .into_iter()
+        .flatten()
+    }));
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    for id in anchors {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let Some(node) = nodes.get(&id).copied() else {
+            continue;
+        };
+        let Some(anchor) = node.source.as_ref() else {
+            continue;
+        };
+        let Some(file) = files.get(anchor.file.as_str()).copied() else {
+            continue;
+        };
+        let Some(source) = file.source.as_deref() else {
+            continue;
+        };
+        let block = source_line_range(source, anchor.start_line, anchor.end_line);
+        if block.is_empty() {
+            continue;
+        }
+        entries.push((
+            TextPageSection::Source,
+            format!(
+                "- {} L{}-L{} ({})\n{}",
+                anchor.file,
+                anchor.start_line,
+                anchor.end_line,
+                if file.truncated {
+                    "verified, file read truncated"
+                } else {
+                    "verified"
+                },
+                block
+            ),
+        ));
+    }
+    entries
+}
+
+/// Extract the recorded line range, bounded by `MAP_SOURCE_BLOCK_CHARS`.
+fn source_line_range(source: &str, start_line: u32, end_line: u32) -> String {
+    if start_line == 0 || end_line < start_line {
+        return String::new();
+    }
+    let mut block = String::new();
+    for (offset, line) in source
+        .lines()
+        .skip(usize::try_from(start_line - 1).unwrap_or(usize::MAX))
+        .take(usize::try_from(end_line - start_line).unwrap_or(usize::MAX) + 1)
+        .enumerate()
+    {
+        let number = u64::from(start_line) + u64::try_from(offset).unwrap_or(u64::MAX);
+        let rendered = format!("  {number:>6}: {line}");
+        if block.chars().count() + rendered.chars().count() + 1 > MAP_SOURCE_BLOCK_CHARS {
+            if !block.is_empty() {
+                block.push('\n');
+            }
+            block.push_str("  …[source block truncated]");
+            break;
+        }
+        if !block.is_empty() {
+            block.push('\n');
+        }
+        block.push_str(&rendered);
+    }
+    block
+}
+
+fn prefix_digest(entries: &[(TextPageSection, String)]) -> String {
+    let joined = entries
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    hex_digest(joined.as_bytes())
+}
+
+fn rendered_chars(lines: &[String]) -> usize {
+    lines.iter().map(|line| line.chars().count() + 1).sum()
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn encode_agent_text_page_cursor(cursor: &AgentTextPageCursor) -> Result<String, OutputError> {
+    Ok(encode_cursor_fields(cursor))
+}
+
 fn render_result_lines(view: &AgentQueryView) -> Vec<String> {
-    vec![
-        "RESULT".to_owned(),
-        format!("State: {}", result_state_name(view.status.result_state)),
-        format!("Match: {}", match_state_name(view.status.match_state)),
-        format!(
-            "Evidence: {}",
+    // One line: the state words carry the page's entire envelope, and a
+    // six-line block costs every page - including the pages whose answer is a
+    // single no-match sentence - the same budget. `match=exact`, `evidence=exact`
+    // and `execution=complete` are the resolved answer; printing them on every
+    // page spends budget on the state a caller already assumes and would only
+    // read as a caveat. The exceptions are what a caller weighs, so only they
+    // are printed, after the coverage that qualifies the whole answer.
+    let mut states = Vec::new();
+    if view.status.match_state != AgentMatch::Exact {
+        states.push(format!(
+            "match={}",
+            match_state_name(view.status.match_state)
+        ));
+    }
+    if view.status.evidence_state != AgentEvidence::Exact {
+        states.push(format!(
+            "evidence={}",
             evidence_state_name(view.status.evidence_state)
-        ),
-        format!(
-            "Execution: {} within requested bounds",
+        ));
+    }
+    if view.status.source_execution != AgentExecution::Complete {
+        states.push(format!(
+            "execution={}",
             execution_state_name(view.status.source_execution)
-        ),
-        format!("Coverage: {}", coverage_state_name(view.status.coverage)),
-    ]
+        ));
+    }
+    states.push(format!(
+        "coverage={}",
+        coverage_state_name(view.status.coverage)
+    ));
+    vec![format!(
+        "RESULT {} · {}",
+        result_state_name(view.status.result_state),
+        states.join(" · ")
+    )]
 }
 
 fn result_state_name(value: AgentResultState) -> &'static str {
@@ -1081,39 +1896,15 @@ fn coverage_state_name(value: AgentCoverage) -> &'static str {
     }
 }
 
-fn render_entity(entity: &AgentEntity) -> String {
-    let source = entity
-        .source
-        .as_ref()
-        .map(render_source)
-        .unwrap_or_else(|| "source unavailable".to_owned());
-    format!(
-        "- {} [{}] {}\n  id: {}",
-        escape_scalar(&entity.label),
-        escape_scalar(&entity.kind),
-        escape_scalar(&source),
-        escape_scalar(&entity.id)
-    )
+fn severity_name(value: AgentSeverity) -> &'static str {
+    match value {
+        AgentSeverity::Blocker => "blocker",
+        AgentSeverity::Warning => "warning",
+        AgentSeverity::Info => "info",
+    }
 }
 
-fn render_relationship(relationship: &AgentRelationship) -> String {
-    let site = relationship
-        .site
-        .as_ref()
-        .map(render_source)
-        .unwrap_or_else(|| "site unavailable".to_owned());
-    format!(
-        "- {} --{}--> {}\n  {} · {} · {}",
-        escape_scalar(&relationship.source.label),
-        escape_scalar(&relationship.relation),
-        escape_scalar(&relationship.target.label),
-        escape_scalar(&site),
-        escape_scalar(&relationship.evidence.confidence),
-        escape_scalar(&relationship.evidence.resolution)
-    )
-}
-
-fn render_path(path: &AgentPath) -> String {
+fn render_path_summary(path: &AgentPath) -> String {
     let mut segments = Vec::new();
     if let Some(first) = path.steps.first() {
         segments.push(escape_scalar(&first.from.label));
@@ -1126,28 +1917,129 @@ fn render_path(path: &AgentPath) -> String {
         segments.push(arrow);
         segments.push(escape_scalar(&step.to.label));
     }
+    segments.join(" ")
+}
+
+/// Render one entity line.
+///
+/// The stable identifier is printed only where a page has to resolve a name
+/// that is not unique; every other row stays addressable by the qualified name
+/// and source anchor it prints, which keeps the answer's evidence per token
+/// high. `--format json` carries every identifier unchanged.
+fn render_entity(entity: &AgentEntity, include_id: bool) -> String {
+    let source = entity
+        .source
+        .as_ref()
+        .map(render_source)
+        .unwrap_or_else(|| "source unavailable".to_owned());
+    let line = format!(
+        "- {} [{}] {}",
+        escape_scalar(&entity.label),
+        escape_scalar(&entity.kind),
+        escape_scalar(&source),
+    );
+    if include_id {
+        format!("{line}\n  id: {}", escape_scalar(&entity.id))
+    } else {
+        line
+    }
+}
+
+/// Labels that more than one retained entity carries.
+///
+/// A label is the address a caller repeats back to the tool, so a row needs its
+/// stable identifier exactly when that address does not pick the row out of the
+/// answer it was read from.
+fn duplicated_entity_labels(entities: &[AgentEntity]) -> HashSet<&str> {
+    let mut counts = HashMap::<&str, usize>::new();
+    for entity in entities {
+        *counts.entry(entity.label.as_str()).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter_map(|(label, count)| (count > 1).then_some(label))
+        .collect()
+}
+
+/// Whether a page must print the stable identifier of one entity.
+///
+/// A page needs the identifier only where the page is resolving a name and the
+/// name it printed is not unique enough to address the row, which is when two
+/// retained rows share that label. A row that a caller can name - the resolved
+/// answers, and every distinct label in a candidate list - stays addressed by
+/// the qualified name and source anchor it already prints, which keeps the
+/// answer's evidence per token high; a duplicated label cannot be repeated back
+/// to the tool alone, so those rows carry the identity that separates them. The
+/// candidate list, its order, and every identifier stay in `--format json`.
+fn entity_needs_identity(
+    entity: &AgentEntity,
+    match_state: AgentMatch,
+    duplicated_labels: &HashSet<&str>,
+) -> bool {
+    !matches!(match_state, AgentMatch::Exact) && duplicated_labels.contains(entity.label.as_str())
+}
+
+fn render_relationship(relationship: &AgentRelationship) -> String {
+    let site = relationship
+        .site
+        .as_ref()
+        .map(render_source)
+        .unwrap_or_else(|| "site unavailable".to_owned());
+    let mut line = format!(
+        "- {} --{}--> {} · {}",
+        escape_scalar(&relationship.source.label),
+        escape_scalar(&relationship.relation),
+        escape_scalar(&relationship.target.label),
+        escape_scalar(&site),
+    );
+    // The strongest confidence and resolution are the default; what a caller
+    // has to weigh is the exception, so only that is spelled out.
+    if relationship.evidence.confidence != "exact" || relationship.evidence.resolution != "exact" {
+        line.push_str(&format!(
+            " · {} · {}",
+            escape_scalar(&relationship.evidence.confidence),
+            escape_scalar(&relationship.evidence.resolution)
+        ));
+    }
+    line
+}
+
+fn render_path(path: &AgentPath) -> String {
+    // The path identity is a concatenation of its node identifiers, so a
+    // three-hop trail spends more of the page on `sha256:` text than on the
+    // trail itself. The hop count and the labelled chain are the answer; the
+    // identity stays in `--format json`.
     format!(
-        "- {} ({} hop(s)): {}",
-        escape_scalar(&path.id),
+        "- {} hop(s): {}",
         path.steps.len(),
-        segments.join(" ")
+        render_path_summary(path)
     )
 }
 
 fn render_caveat(caveat: &AgentCaveat) -> String {
-    format!(
+    let line = format!(
         "- [{}] {}: {}",
         severity_name(caveat.severity),
         escape_scalar(&caveat.code),
-        escape_scalar(&caveat.statement)
-    )
+        escape_scalar(&caveat_statement(caveat))
+    );
+    line
 }
 
-fn severity_name(value: AgentSeverity) -> &'static str {
-    match value {
-        AgentSeverity::Blocker => "blocker",
-        AgentSeverity::Warning => "warning",
-        AgentSeverity::Info => "info",
+/// Statement to print for one caveat.
+///
+/// A blocker changes how the answer must be read, so it is stated in full. A
+/// warning states its actionable sentence and leaves the explanatory remainder
+/// to `--format json`: the six caveat paragraphs that accompany a large
+/// relation answer otherwise cost more of the page budget than the evidence
+/// they qualify.
+fn caveat_statement(caveat: &AgentCaveat) -> String {
+    if caveat.severity != AgentSeverity::Warning {
+        return caveat.statement.clone();
+    }
+    match caveat.statement.split_once(". ") {
+        Some((first, _)) if !first.is_empty() => format!("{first}."),
+        _ => caveat.statement.clone(),
     }
 }
 
@@ -1218,6 +2110,7 @@ fn primary_node_ids(
     operands: &[AgentOperand],
     response: &CodeQueryResponse,
     nodes: &BTreeMap<String, &QueryNode>,
+    ordered_edges: &[(usize, &QueryEdge)],
 ) -> Vec<String> {
     let mut ordered = Vec::new();
     let requested = operands
@@ -1233,9 +2126,9 @@ fn primary_node_ids(
             if let Some(target) = requested.first() {
                 ordered.push(target.clone());
                 ordered.extend(
-                    response
-                        .edges
+                    ordered_edges
                         .iter()
+                        .map(|(_, edge)| *edge)
                         .filter(|edge| edge.target == *target)
                         .map(|edge| edge.source.clone()),
                 );
@@ -1248,9 +2141,9 @@ fn primary_node_ids(
             if let Some(source) = requested.first() {
                 ordered.push(source.clone());
                 ordered.extend(
-                    response
-                        .edges
+                    ordered_edges
                         .iter()
+                        .map(|(_, edge)| *edge)
                         .filter(|edge| edge.source == *source)
                         .map(|edge| edge.target.clone()),
                 );
@@ -1261,10 +2154,31 @@ fn primary_node_ids(
         }
         AgentOperation::Impact => {
             ordered.extend(requested);
+            // A reverse walk reaches far more owner-level dependents than
+            // direct ones, and the raw trail ledger is ordered by identity.
+            // Order the impacted nodes by how close and how direct their
+            // evidence is, so the bounded answer names the callers and
+            // dependents that a change actually breaks before it lists the
+            // symbols that only touch a containing owner.
+            let edge_kinds = response
+                .edges
+                .iter()
+                .map(|edge| (edge.id.as_str(), edge.kind))
+                .collect::<BTreeMap<_, _>>();
+            let mut trails = response.paths.iter().collect::<Vec<_>>();
+            trails.sort_by(|left, right| {
+                left.node_ids
+                    .len()
+                    .cmp(&right.node_ids.len())
+                    .then_with(|| {
+                        trail_strength(left, &edge_kinds).cmp(&trail_strength(right, &edge_kinds))
+                    })
+                    .then_with(|| left.node_ids.cmp(&right.node_ids))
+                    .then_with(|| left.id.cmp(&right.id))
+            });
             ordered.extend(
-                response
-                    .paths
-                    .iter()
+                trails
+                    .into_iter()
                     .filter_map(|path| path.node_ids.last().cloned()),
             );
         }
@@ -1726,6 +2640,31 @@ fn code_result_state(
     }
 }
 
+/// Headline for a relationship answer whose evidence belongs to one subject.
+///
+/// When the query resolved exactly, the count describes that subject. When it
+/// did not, the evidence belongs to a fallback candidate, and the headline says
+/// so instead of attributing another symbol's relationships to the requested
+/// one: the Agent View never selects a candidate silently, and `no_match`
+/// answers keep their candidates in the caveats.
+fn relationship_headline(
+    result_state: AgentResultState,
+    requested: &str,
+    subject: &str,
+    count: usize,
+    noun: &str,
+) -> String {
+    if result_state == AgentResultState::Answered {
+        return format!("Found {count} {noun} for {subject}.");
+    }
+    if subject == requested {
+        return format!("No exact match for \"{requested}\"; no {noun} are attributed to it.");
+    }
+    format!(
+        "No exact match for \"{requested}\"; the {count} {noun} below belong to the fallback candidate {subject}."
+    )
+}
+
 fn answer_for_code(
     context: &AgentQueryContext,
     result_state: AgentResultState,
@@ -1758,19 +2697,38 @@ fn answer_for_code(
             }
             _ => format!("No exact answer was proven for \"{requested}\"."),
         },
-        AgentOperation::Callers => format!(
-            "Found {} incoming usage relationship(s) for {subject}.",
-            relationships.len()
+        AgentOperation::Callers => relationship_headline(
+            result_state,
+            &requested,
+            &subject,
+            response.edges.len(),
+            "incoming usage relationship(s)",
         ),
-        AgentOperation::Callees => format!(
-            "Found {} direct callee relationship(s) for {subject}.",
-            relationships.len()
+        AgentOperation::Callees => relationship_headline(
+            result_state,
+            &requested,
+            &subject,
+            response.edges.len(),
+            "direct callee relationship(s)",
         ),
-        AgentOperation::Impact => format!(
-            "Found {} potentially affected node(s) within depth {}.",
-            primary_results.len(),
-            response.limits.max_depth
-        ),
+        AgentOperation::Impact => {
+            if result_state == AgentResultState::Answered {
+                format!(
+                    "Found {} potentially affected node(s) within depth {}.",
+                    primary_results.len(),
+                    response.limits.max_depth
+                )
+            } else if subject == requested {
+                format!(
+                    "No exact match for \"{requested}\"; no potentially affected nodes are attributed to it."
+                )
+            } else {
+                format!(
+                    "No exact match for \"{requested}\"; the {} potentially affected node(s) below belong to the fallback candidate {subject}.",
+                    primary_results.len()
+                )
+            }
+        }
         AgentOperation::Explore => format!(
             "Found {} candidate anchor(s) and {} relationship(s) for the question.",
             primary_results.len(),

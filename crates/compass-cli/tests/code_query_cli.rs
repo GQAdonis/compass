@@ -225,7 +225,7 @@ fn natural_query_defaults_to_discovery_and_preserves_explicit_legacy_traversal()
             ],
         );
         assert_eq!(outcome.code, 0, "{question}: {}", outcome.stderr);
-        assert!(outcome.stdout.starts_with("RESULT\n"), "{question}");
+        assert!(outcome.stdout.starts_with("RESULT "), "{question}");
         assert!(outcome.stdout.contains("ANSWER\n"), "{question}");
         assert!(
             outcome.stdout.contains(expected_node),
@@ -252,7 +252,7 @@ fn natural_query_defaults_to_discovery_and_preserves_explicit_legacy_traversal()
             ],
         );
         assert_eq!(generic.code, 0, "{}", generic.stderr);
-        assert!(generic.stdout.starts_with("RESULT\n"), "{question}");
+        assert!(generic.stdout.starts_with("RESULT "), "{question}");
         assert!(generic.stdout.contains("ANSWER\n"), "{question}");
         assert!(generic.stdout.contains("Completeness:"), "{question}");
     }
@@ -346,11 +346,11 @@ fn discovery_cursor_survives_budget_alias_and_scope_order_but_rejects_graph_chan
         ],
     );
     assert_eq!(continued.code, 0, "{}", continued.stderr);
-    assert!(continued.stdout.starts_with("RESULT\n"));
+    assert!(continued.stdout.starts_with("RESULT "));
     assert!(
-        continued
-            .stdout
-            .contains("Pagination: version=compass.query.discovery-text-page/2")
+        continued.stdout.contains("Pagination:"),
+        "{}",
+        continued.stdout
     );
 
     document.nodes[0].qualified_name.push_str(".changed");
@@ -701,7 +701,7 @@ fn typed_query_text_is_a_projection_of_the_same_response() -> Result<(), Box<dyn
         ],
     );
     assert_eq!(outcome.code, 0, "{}", outcome.stderr);
-    assert!(outcome.stdout.starts_with("RESULT\n"));
+    assert!(outcome.stdout.starts_with("RESULT "));
     assert!(outcome.stdout.contains("ANSWER\n"));
     assert!(outcome.stdout.contains("Fixture.Target"));
     Ok(())
@@ -848,9 +848,11 @@ fn natural_query_is_concise_by_default_and_evidence_is_opt_in() -> Result<(), Bo
 
     let concise = run(Frontend::Compass, base.clone());
     assert_eq!(concise.code, 0, "{}", concise.stderr);
-    assert!(concise.stdout.starts_with("RESULT\n"));
+    assert!(concise.stdout.starts_with("RESULT "));
     assert!(
-        concise.stdout.contains("State: candidates") || concise.stdout.contains("State: answered")
+        concise.stdout.contains("RESULT candidates") || concise.stdout.contains("RESULT answered"),
+        "{}",
+        concise.stdout
     );
     assert!(concise.stdout.contains("NODE Fixture.Target [function]"));
     assert!(concise.stdout.contains("provenance record(s) hidden"));
@@ -883,7 +885,7 @@ fn natural_and_typed_queries_signal_missing_exact_matches_before_fallbacks()
         );
         assert_eq!(outcome.code, 0, "{command}: {}", outcome.stderr);
         assert!(
-            outcome.stdout.starts_with("RESULT\nState: no_match"),
+            outcome.stdout.starts_with("RESULT no_match"),
             "{command}: {}",
             outcome.stdout
         );
@@ -956,10 +958,7 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
         ],
     );
     assert_eq!(path.code, 0, "{}", path.stderr);
-    assert!(
-        path.stdout
-            .contains("Target resolved: Target [id=n:target]")
-    );
+    assert!(path.stdout.contains("Target resolved: Target"));
     assert!(
         path.stdout
             .contains("Best path (weighted, 3 hops, weight 3)")
@@ -998,6 +997,439 @@ fn path_resolves_exact_targets_and_ranks_structural_evidence_end_to_end()
     );
     assert_ne!(missing.code, 0);
     assert!(missing.stderr.contains("NO EXACT MATCH"));
+    Ok(())
+}
+
+#[test]
+fn brief_agent_json_is_compact_and_format_bound() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let brief = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("agent-json"),
+            OsString::from("--brief"),
+        ],
+    );
+    assert_eq!(brief.code, 0, "{}", brief.stderr);
+    let view: Value = serde_json::from_str(&brief.stdout)?;
+    assert_eq!(view["schema"], "compass.query.agent-view.brief/1");
+    assert_eq!(view["status"]["resultState"], "answered");
+    assert!(!brief.stdout.contains("viewDigest"));
+    assert!(!brief.stdout.contains("\"identity\""));
+
+    let rejected = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from("--brief"),
+        ],
+    );
+    assert_ne!(rejected.code, 0);
+    assert!(
+        rejected
+            .stderr
+            .contains("--brief requires --format agent-json")
+    );
+    Ok(())
+}
+
+#[test]
+fn typed_queries_report_an_expired_deadline_and_still_answer_within_one()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let graph_arg = graph.as_os_str().to_owned();
+    let expired = run(
+        Frontend::Compass,
+        [
+            OsString::from("search"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg.clone(),
+            OsString::from("--timeout-ms"),
+            OsString::from("1"),
+        ],
+    );
+    assert_ne!(expired.code, 0);
+    assert!(
+        expired.stderr.contains("exceeded its timeout") && expired.stderr.contains("--timeout-ms"),
+        "{}",
+        expired.stderr
+    );
+
+    let answered = run(
+        Frontend::Compass,
+        [
+            OsString::from("search"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg,
+            OsString::from("--timeout-ms"),
+            OsString::from("60000"),
+        ],
+    );
+    assert_eq!(answered.code, 0, "{}", answered.stderr);
+    assert!(answered.stdout.contains("Target"), "{}", answered.stdout);
+    Ok(())
+}
+
+#[test]
+fn path_accepts_file_shaped_input_when_modules_carry_the_file_content() -> Result<(), Box<dyn Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_module_graph(directory.path())?;
+    let outcome = run(
+        Frontend::Compass,
+        [
+            OsString::from("path"),
+            OsString::from("src/a.ts"),
+            OsString::from("src/b.ts"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+        ],
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(
+        outcome.stdout.contains("Best path"),
+        "file-shaped input must traverse the file's module: {}",
+        outcome.stdout
+    );
+    assert!(
+        !outcome.stdout.contains("NO PATH FOUND"),
+        "{}",
+        outcome.stdout
+    );
+    Ok(())
+}
+
+#[test]
+fn typed_text_paging_continues_the_same_result_with_a_cursor() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_graph(directory.path())?;
+    let graph_arg = graph.as_os_str().to_owned();
+    let first = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg.clone(),
+            OsString::from("--format"),
+            OsString::from("text"),
+            OsString::from("--text-budget"),
+            OsString::from("120"),
+        ],
+    );
+    assert_eq!(first.code, 0, "{}", first.stderr);
+    let cursor = first
+        .stdout
+        .lines()
+        .find_map(|line| line.split("next=").nth(1))
+        .ok_or("expected a continuation cursor")?
+        .to_owned();
+    assert!(first.stdout.contains("range=1-"), "{}", first.stdout);
+
+    let second = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph_arg,
+            OsString::from("--format"),
+            OsString::from("text"),
+            OsString::from("--text-budget"),
+            OsString::from("120"),
+            OsString::from("--cursor"),
+            OsString::from(cursor),
+        ],
+    );
+    assert_eq!(second.code, 0, "{}", second.stderr);
+    assert!(second.stdout.contains("range=2-"), "{}", second.stdout);
+
+    let rejected = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("Target"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("json"),
+            OsString::from("--text-budget"),
+            OsString::from("120"),
+        ],
+    );
+    assert_ne!(rejected.code, 0);
+    assert!(rejected.stderr.contains("text-only"), "{}", rejected.stderr);
+    Ok(())
+}
+
+#[test]
+fn ambiguous_typed_lookup_returns_a_pick_list_instead_of_an_empty_result()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph = support::write_typed_ambiguous_graph(directory.path())?;
+
+    let outcome = run(
+        Frontend::Compass,
+        [
+            OsString::from("callers"),
+            OsString::from("run"),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+            OsString::from("--format"),
+            OsString::from("agent-json"),
+        ],
+    );
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    let view: Value = serde_json::from_str(&outcome.stdout)?;
+    assert_eq!(view["status"]["resultState"], "needs_resolution");
+    assert_eq!(view["status"]["matchState"], "ambiguous");
+    let results = view["primaryResults"]
+        .as_array()
+        .ok_or("primaryResults must be an array")?;
+    assert_eq!(results.len(), 2, "{}", outcome.stdout);
+    assert_eq!(results[0]["source"]["file"], "src/a.rs");
+    assert_eq!(results[1]["source"]["file"], "src/b.rs");
+    assert!(view["relationships"].as_array().is_some_and(Vec::is_empty));
+    assert!(
+        view["nextActions"]
+            .as_array()
+            .is_some_and(|actions| actions.iter().any(|action| {
+                action["kind"] == "retry_with_exact_id" && action["cli"]["argv"][2] == "n:alpha-run"
+            })),
+        "{}",
+        outcome.stdout
+    );
+    Ok(())
+}
+
+#[test]
+fn explain_source_bounds_the_neighbourhood_and_an_explicit_budget_overrides_it()
+-> Result<(), Box<dyn Error>> {
+    use sha2::{Digest, Sha256};
+
+    let directory = tempfile::tempdir()?;
+    let source_dir = directory.path().join("src");
+    std::fs::create_dir_all(&source_dir)?;
+    let source = "fn run() {\n    body();\n}\n";
+    std::fs::write(source_dir.join("lib.rs"), source)?;
+    let digest = format!("{:x}", Sha256::digest(source.as_bytes()));
+    let mut links = Vec::new();
+    let mut nodes = vec![serde_json::json!({
+        "id": "n:run",
+        "kind": "function",
+        "name": "run",
+        "qualifiedName": "sample::run",
+        "source": {
+            "file": "src/lib.rs",
+            "startByte": 0,
+            "endByte": source.len(),
+            "startLine": 1,
+            "startColumn": 0,
+            "endLine": 3,
+            "endColumn": 1
+        },
+        "details": {"type": "symbol", "data": {"sourceDigest": digest}}
+    })];
+    for index in 0..12 {
+        let id = format!("n:caller-{index:02}");
+        nodes.push(serde_json::json!({
+            "id": id,
+            "kind": "function",
+            "name": format!("caller{index:02}"),
+            "source": {
+                "file": format!("src/caller_{index:02}.rs"),
+                "startLine": index + 1,
+                "startColumn": 0,
+                "endLine": index + 1,
+                "endColumn": 4
+            }
+        }));
+        links.push(serde_json::json!({
+            "source": id,
+            "target": "n:run",
+            "relation": "calls",
+            "confidence": "EXTRACTED",
+            "source_file": format!("src/caller_{index:02}.rs"),
+            "source_location": format!("L{}:0-L{}:4", index + 1, index + 1)
+        }));
+    }
+    let graph = directory.path().join("graph.json");
+    std::fs::write(
+        &graph,
+        serde_json::json!({
+            "directed": true,
+            "multigraph": true,
+            "graph": {},
+            "nodes": nodes,
+            "links": links
+        })
+        .to_string(),
+    )?;
+    let run_command = |extra: Vec<OsString>| {
+        let mut arguments = vec![
+            OsString::from("explain"),
+            OsString::from("sample::run"),
+            OsString::from("--source"),
+            OsString::from("--root"),
+            directory.path().as_os_str().to_owned(),
+        ];
+        arguments.extend(extra);
+        arguments.push(OsString::from("--graph"));
+        arguments.push(graph.as_os_str().to_owned());
+        run(Frontend::Compass, arguments)
+    };
+
+    let bounded = run_command(Vec::new());
+    assert_eq!(bounded.code, 0, "{}", bounded.stderr);
+    let rows = bounded
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("  <-- ") || line.starts_with("  --> "))
+        .count();
+    assert!(
+        rows > 0 && rows < 12,
+        "a source request leads with the declaration, not the whole neighbourhood: {}",
+        bounded.stdout
+    );
+    assert!(
+        bounded.stdout.contains("Pagination: page=1/2 connections="),
+        "the slice names the list's true total and its continuation: {}",
+        bounded.stdout
+    );
+    assert!(
+        bounded
+            .stdout
+            .contains("SOURCE src/lib.rs L1-L3 (digest-verified)"),
+        "{}",
+        bounded.stdout
+    );
+    assert!(
+        bounded.stdout.contains("next=2"),
+        "the remainder is reachable: {}",
+        bounded.stdout
+    );
+
+    let explicit = run_command(vec![OsString::from("--budget"), OsString::from("2000")]);
+    assert_eq!(explicit.code, 0, "{}", explicit.stderr);
+    assert_eq!(
+        explicit
+            .stdout
+            .lines()
+            .filter(|line| line.starts_with("  <-- ") || line.starts_with("  --> "))
+            .count(),
+        12,
+        "an explicit budget lists every connection: {}",
+        explicit.stdout
+    );
+    assert!(
+        explicit
+            .stdout
+            .contains("Pagination: page=1/1 connections=1-12/12 next=none"),
+        "{}",
+        explicit.stdout
+    );
+    Ok(())
+}
+
+#[test]
+fn explain_source_returns_digest_verified_declaration_text() -> Result<(), Box<dyn Error>> {
+    use sha2::{Digest, Sha256};
+
+    let directory = tempfile::tempdir()?;
+    let source_dir = directory.path().join("src");
+    std::fs::create_dir_all(&source_dir)?;
+    let source = "fn run() {\n    body();\n}\n";
+    let source_path = source_dir.join("lib.rs");
+    std::fs::write(&source_path, source)?;
+    let digest = format!("{:x}", Sha256::digest(source.as_bytes()));
+    let node_id = format!("sha256:{}", "a".repeat(64));
+    let graph = directory.path().join("graph.json");
+    std::fs::write(
+        &graph,
+        serde_json::json!({
+            "directed": true,
+            "multigraph": true,
+            "nodes": [{
+                "id": node_id,
+                "kind": "function",
+                "name": "run",
+                "qualifiedName": "sample::run",
+                "source": {
+                    "file": "src/lib.rs",
+                    "startByte": 0,
+                    "endByte": source.len(),
+                    "startLine": 1,
+                    "startColumn": 0,
+                    "endLine": 3,
+                    "endColumn": 1
+                },
+                "details": {"type": "symbol", "data": {"sourceDigest": digest}}
+            }],
+            "links": []
+        })
+        .to_string(),
+    )?;
+
+    let explained = run(
+        Frontend::Compass,
+        [
+            OsString::from("explain"),
+            OsString::from("run"),
+            OsString::from("--source"),
+            OsString::from("--root"),
+            directory.path().as_os_str().to_owned(),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+        ],
+    );
+    assert_eq!(explained.code, 0, "{}", explained.stderr);
+    assert!(
+        explained
+            .stdout
+            .contains("SOURCE src/lib.rs L1-L3 (digest-verified)"),
+        "{}",
+        explained.stdout
+    );
+    assert!(
+        explained.stdout.contains("1: fn run() {"),
+        "{}",
+        explained.stdout
+    );
+    assert!(explained.stdout.contains("3: }"), "{}", explained.stdout);
+
+    std::fs::write(&source_path, "fn run() {\n    other();\n}\n")?;
+    let stale = run(
+        Frontend::Compass,
+        [
+            OsString::from("explain"),
+            OsString::from("run"),
+            OsString::from("--source"),
+            OsString::from("--root"),
+            directory.path().as_os_str().to_owned(),
+            OsString::from("--graph"),
+            graph.as_os_str().to_owned(),
+        ],
+    );
+    assert_eq!(stale.code, 0, "{}", stale.stderr);
+    assert!(
+        stale.stdout.contains("SOURCE unavailable") && stale.stdout.contains("does not match"),
+        "{}",
+        stale.stdout
+    );
     Ok(())
 }
 

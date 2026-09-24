@@ -41,6 +41,19 @@ const MIN_RECALL_CANDIDATES_BEFORE_FUZZY: usize = 4;
 const SEARCH_QUERY_CACHE_CAPACITY: usize = 64;
 const FUZZY_LOOKUP_CACHE_CAPACITY: usize = 512;
 const RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS: usize = 8;
+/// Most candidate importer sources one query verifies in the owner-level probe.
+///
+/// The probe recovers importer evidence that the containment walk cannot see.
+/// Its candidates come from term postings, so a symbol whose owner carries a
+/// common term - a file named `path_router.rs`, a type named `Router` - can
+/// produce hundreds of them, and each verification is an independent snapshot
+/// read. On the Axum corpus that loop was about 7.7 s of an 8 s `callers`
+/// query for a two-edge answer; the owner-scoped adjacency had already
+/// published the direct and module-level evidence. The probe runs only while an
+/// answer is thinner than `RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS`, verifies at
+/// most this many candidates even then, and reports that it stopped early, so
+/// the threshold that raises the consistency diagnostic is still reachable.
+const RELATIONSHIP_IMPORTER_VERIFY_LIMIT: usize = 16;
 const RELATIONSHIP_OWNER_SCOPE_LIMIT: usize = 32;
 const RELATIONSHIP_TERM_LIMIT: usize = 128;
 const RELATIONSHIP_SOURCE_EDGE_SCAN_LIMIT: usize = 256;
@@ -303,6 +316,7 @@ pub struct CodeQueryEngine {
     pub(crate) build_generation_identity: String,
     pub(crate) search_query_cache: Mutex<SearchQueryCache>,
     pub(crate) fuzzy_lookup_cache: Mutex<FuzzyLookupCache>,
+    pub(crate) deadline: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1522,7 +1536,32 @@ fn sort_edge_indices(edges: &mut [usize], graph: &GraphDocument) {
 }
 
 impl CodeQueryEngine {
+    /// Bound every following typed query with an absolute deadline.
+    ///
+    /// The CLI arms one deadline per command and reuses it across retries so a
+    /// paged or widened run stays inside the caller's budget.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// Fail with a typed timeout once the armed deadline has passed.
+    pub(crate) fn check_deadline(&self) -> Result<(), QueryError> {
+        if let Some(deadline) = self.deadline
+            && Instant::now() >= deadline
+        {
+            return Err(QueryError::new(
+                QueryErrorKind::Timeout,
+                "code_query_timeout",
+                "code query exceeded its timeout",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn search(&self, request: SearchRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.search_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -1531,6 +1570,7 @@ impl CodeQueryEngine {
         request: SearchRequest,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let recall_started = Instant::now();
         let prepared = self.prepare_search_query(&request.query)?;
@@ -1685,6 +1725,7 @@ impl CodeQueryEngine {
         let mut postings_decoded = 0_u64;
         let mut relation_edges_examined = 0_u64;
 
+        self.check_deadline()?;
         (policy.check)()?;
         if candidate_work.remaining > 0
             && candidate_work.begin_probe()
@@ -1717,6 +1758,7 @@ impl CodeQueryEngine {
         }
 
         for term in terms {
+            self.check_deadline()?;
             (policy.check)()?;
             if term.chars().count() < 3 {
                 continue;
@@ -1942,7 +1984,8 @@ impl CodeQueryEngine {
             .take(compass_model::query_contract::MAX_INDEXED_QUERY_TERMS.saturating_add(1))
             .collect::<Vec<_>>();
         validate_search_term_count(&recall_terms)?;
-        let ranking_terms = discovery_terms.ranking_terms;
+        let mut ranking_terms = discovery_terms.ranking_terms;
+        self.expand_discovery_terms(&mut ranking_terms, query)?;
         let mut terms = recall_terms.clone();
         for term in &ranking_terms {
             if terms.len() >= compass_model::query_contract::MAX_INDEXED_QUERY_TERMS {
@@ -1963,6 +2006,49 @@ impl CodeQueryEngine {
         };
         cache.insert(cache_key, prepared.clone());
         Ok(prepared)
+    }
+
+    /// Add graph-verified spellings of the question's behavior terms.
+    ///
+    /// A question names behavior in plain English ("how does axum route a
+    /// request") while the graph names the implementing type (`Router`), or
+    /// phrases an operation as a preposition ("serialize an object to json")
+    /// while the graph names it `toJson`. Two expansions are tried, and each
+    /// variant is kept only when the graph's bounded name index contains it, so
+    /// the expansion can never invent vocabulary. The bounded query-term budget
+    /// still applies.
+    fn expand_discovery_terms(
+        &self,
+        terms: &mut Vec<String>,
+        question: &str,
+    ) -> Result<(), QueryError> {
+        let mut additions = Vec::new();
+        for term in terms.iter() {
+            for candidate in agent_noun_variants(term) {
+                additions.push(candidate);
+            }
+        }
+        additions.extend(phrase_compound_variants(question));
+        let mut kept = Vec::new();
+        for candidate in additions {
+            if terms.contains(&candidate) || kept.contains(&candidate) {
+                continue;
+            }
+            let (nodes, _) = self.backend.nodes_by_normalized_name(&candidate, 1)?;
+            if !nodes.is_empty() {
+                kept.push(candidate);
+            }
+        }
+        kept.sort();
+        kept.dedup();
+        let cap = compass_model::query_contract::MAX_INDEXED_QUERY_TERMS;
+        for candidate in kept {
+            if terms.len() >= cap {
+                break;
+            }
+            terms.push(candidate);
+        }
+        Ok(())
     }
 
     pub(crate) fn materialized_term_candidates(
@@ -2325,6 +2411,7 @@ impl CodeQueryEngine {
         let mut owner_ids = BTreeSet::from([target.to_owned()]);
         let mut owner_queue = VecDeque::from([target.to_owned()]);
         while let Some(child) = owner_queue.pop_front() {
+            self.check_deadline()?;
             let remaining = RELATIONSHIP_OWNER_SCOPE_LIMIT.saturating_sub(owner_ids.len());
             if remaining == 0 {
                 truncated = true;
@@ -2373,6 +2460,17 @@ impl CodeQueryEngine {
                 observed,
                 probe_truncated,
             ));
+        }
+        // The owner-level importer probe below is a recall fallback for answers
+        // that would otherwise look empty: it is the only path that raises
+        // "usages exist for this symbol but the relationship query returned
+        // almost nothing", and it costs one snapshot read per verified
+        // candidate. Once the containment walk has published the self-check
+        // threshold itself, the answer no longer depends on it, so a
+        // well-connected symbol does not pay for the probe at every hop of an
+        // impact traversal.
+        if edges.len() >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS {
+            return Ok((edges.into_values().collect(), truncated, 0, false));
         }
         let mut terms = BTreeSet::new();
         for owner_id in &owner_ids {
@@ -2431,7 +2529,11 @@ impl CodeQueryEngine {
             .values()
             .map(|edge| edge.source.clone())
             .collect::<BTreeSet<_>>();
-        for source_id in importer_ids {
+        for (verified_candidates, source_id) in importer_ids.into_iter().enumerate() {
+            if verified_candidates >= RELATIONSHIP_IMPORTER_VERIFY_LIMIT {
+                importer_probe_truncated = true;
+                break;
+            }
             let (source_edges, source_truncated) = self.backend.matching_bounded(
                 &source_id,
                 false,
@@ -2565,10 +2667,12 @@ impl CodeQueryEngine {
     }
 
     pub fn callers(&self, request: CallRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.call_neighbors_instrumented(request, true, &mut QueryInstrumentation::default())
     }
 
     pub fn callees(&self, request: CallRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.call_neighbors_instrumented(request, false, &mut QueryInstrumentation::default())
     }
 
@@ -2578,6 +2682,7 @@ impl CodeQueryEngine {
         inbound: bool,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let operation = if inbound {
             CodeQueryOperation::Callers
@@ -2665,6 +2770,7 @@ impl CodeQueryEngine {
     }
 
     pub fn impact(&self, request: ImpactRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.impact_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -2677,6 +2783,7 @@ impl CodeQueryEngine {
         request: ImpactRequest,
         relation_kinds: &[EdgeKind],
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.impact_instrumented_with_kinds(
             request,
             relation_kinds,
@@ -2698,6 +2805,7 @@ impl CodeQueryEngine {
         relationship_kinds: &[EdgeKind],
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let mut response =
             CodeQueryResponse::empty(CodeQueryOperation::Impact, request.limits.clone());
@@ -2727,19 +2835,40 @@ impl CodeQueryEngine {
         let max_edges = usize::try_from(request.limits.max_edges).unwrap_or(usize::MAX);
         let mut selected_edges = BTreeMap::<String, EdgeRecord>::new();
         while let Some((node, path_nodes, path_edges)) = queue.pop_front() {
+            self.check_deadline()?;
             instrumentation.work.nodes_expanded =
                 instrumentation.work.nodes_expanded.saturating_add(1);
             if path_edges.len() >= max_depth {
                 continue;
             }
             let remaining_edges = max_edges.saturating_sub(selected_edges.len());
-            let (incoming, incoming_truncated, observed, observed_truncated) = self
+            let (mut incoming, incoming_truncated, observed, observed_truncated) = self
                 .resolved_incoming_relationships(
                     &node,
                     relationship_kinds,
                     request.include_heuristic,
                     remaining_edges,
                 )?;
+            // Direct evidence must consume the traversal budget first. A
+            // heavily referenced symbol carries hundreds of owner-level edges
+            // beside a handful that name it exactly, and the retained trail
+            // ledger is capped, so visit order decides whether the answer names
+            // the callers that changing the symbol would break. Edges that
+            // terminate on the expanded node come before edges that only reach
+            // its containing owner, then relation strength decides, and the
+            // exact ID keeps the order deterministic.
+            incoming.sort_by(|left, right| {
+                u8::from(left.target != node)
+                    .cmp(&u8::from(right.target != node))
+                    .then_with(|| {
+                        left.kind
+                            .dependency_strength()
+                            .cmp(&right.kind.dependency_strength())
+                    })
+                    .then_with(|| left.id.cmp(&right.id))
+                    .then_with(|| left.source.cmp(&right.source))
+                    .then_with(|| left.target.cmp(&right.target))
+            });
             if node == seed {
                 Self::relationship_consistency_diagnostic(
                     &mut response,
@@ -2836,6 +2965,7 @@ impl CodeQueryEngine {
     }
 
     pub fn explore(&self, request: ExploreRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.explore_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -2844,6 +2974,7 @@ impl CodeQueryEngine {
         request: ExploreRequest,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         if request.symbols.len()
             > usize::try_from(request.limits.max_candidates).unwrap_or(usize::MAX)
@@ -2912,6 +3043,7 @@ impl CodeQueryEngine {
     }
 
     pub fn node_trail(&self, request: NodeTrailRequest) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         self.node_trail_instrumented(request, &mut QueryInstrumentation::default())
     }
 
@@ -2920,6 +3052,7 @@ impl CodeQueryEngine {
         request: NodeTrailRequest,
         instrumentation: &mut QueryInstrumentation,
     ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let mut response =
             CodeQueryResponse::empty(CodeQueryOperation::NodeTrail, request.limits.clone());
@@ -3062,8 +3195,8 @@ impl CodeQueryEngine {
             .candidates_read
             .saturating_add(u64::try_from(exact_nodes.len()).unwrap_or(u64::MAX));
         let exact = exact_nodes
-            .into_iter()
-            .map(|node| node.id)
+            .iter()
+            .map(|node| node.id.clone())
             .collect::<Vec<_>>();
         response.truncated |= exact_truncated;
         match exact.as_slice() {
@@ -3083,6 +3216,7 @@ impl CodeQueryEngine {
                     node_id: None,
                     path: None,
                 });
+                self.publish_exact_ambiguity(response, &exact_nodes, candidate_limit)?;
                 return Ok(None);
             }
         }
@@ -3206,6 +3340,40 @@ impl CodeQueryEngine {
         Ok(None)
     }
 
+    /// Publish the exact-name candidates of an ambiguous lookup so callers can
+    /// disambiguate with one follow-up instead of guessing.
+    ///
+    /// The candidates are ordered by exact node ID, bounded by the response's
+    /// own candidate and node limits, and never duplicate a node that the
+    /// response already carried.
+    fn publish_exact_ambiguity(
+        &self,
+        response: &mut CodeQueryResponse,
+        candidates: &[NodeRecord],
+        candidate_limit: usize,
+    ) -> Result<(), QueryError> {
+        let node_limit = usize::try_from(response.limits.max_nodes).unwrap_or(usize::MAX);
+        let bound = candidate_limit.min(node_limit);
+        let mut ordered = candidates.iter().collect::<Vec<_>>();
+        ordered.sort_by(|left, right| left.id.cmp(&right.id));
+        let total = ordered.len();
+        for node in ordered.into_iter().take(bound) {
+            if response.nodes.iter().any(|existing| existing.id == node.id) {
+                continue;
+            }
+            response.results.push(SearchHit {
+                node_id: node.id.clone(),
+                score: 1.0,
+                matched_fields: vec!["name".to_owned()],
+            });
+            response.nodes.push(query_node(node));
+        }
+        if total > bound {
+            response.truncated = true;
+        }
+        Ok(())
+    }
+
     fn add_nodes(
         &self,
         ids: &HashSet<String>,
@@ -3214,6 +3382,7 @@ impl CodeQueryEngine {
         let max = usize::try_from(response.limits.max_nodes).unwrap_or(usize::MAX);
         let mut nodes = Vec::with_capacity(ids.len().min(max));
         for id in ids {
+            self.check_deadline()?;
             if let Some(node) = self.backend.node_by_id(id)? {
                 nodes.push(node);
             }
@@ -3294,6 +3463,7 @@ impl CodeQueryEngine {
         let mut predecessor = HashMap::<String, (String, String)>::new();
         let mut truncated = false;
         while let Some(Reverse((cost, depth, path_key, node))) = queue.pop() {
+            self.check_deadline()?;
             if best.get(&node).is_none_or(|current| {
                 current.0 != cost || current.1 != depth || current.2 != path_key
             }) {
@@ -3740,6 +3910,246 @@ pub(crate) fn search_query_terms(value: &str) -> Result<Vec<String>, QueryError>
     Ok(terms)
 }
 
+/// Deterministic agent-noun spellings of one behavior term.
+///
+/// English verbs that end in a silent "e" form the agent noun by dropping it:
+/// `route` → `router`, `serialize` → `serializer`, `validate` → `validator`.
+pub(crate) fn agent_noun_variants(term: &str) -> Vec<String> {
+    let mut variants = Vec::new();
+    if term.len() < 4 || !term.is_ascii() {
+        return variants;
+    }
+    if let Some(stem) = term.strip_suffix('e') {
+        variants.push(format!("{stem}er"));
+        variants.push(format!("{stem}or"));
+    }
+    variants
+}
+
+/// Identifier-shaped compounds from a preposition and its object.
+///
+/// "serialize an object to json" spells the operation `toJson` in most
+/// languages; "read a payload from json" spells it `fromJson`. Only the two
+/// conventional prepositions are tried, and the caller verifies each compound
+/// against the graph before ranking it.
+///
+/// A question may also name the operation and its object without the
+/// preposition ("read json into an object", "convert a json schema into a zod
+/// schema"). The operation verb then states which preposition the identifier
+/// conventionally carries: reading names its source `from<Object>`, writing
+/// names its destination `to<Object>`, and a conversion names both ends. A
+/// preposition the question already spelled is never re-derived, so an explicit
+/// "serialize an object to json" stays `toJson` alone. Every derived compound
+/// is still admitted only when the graph declares it.
+pub(crate) fn phrase_compound_variants(question: &str) -> Vec<String> {
+    let words = question
+        .split_whitespace()
+        .map(|word| {
+            word.chars()
+                .filter(|character| character.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let mut variants = Vec::new();
+    let mut spelled = Vec::new();
+    for pair in words.windows(2) {
+        if matches!(pair[0].as_str(), "to" | "from") {
+            variants.push(format!("{}{}", pair[0], pair[1]));
+            if !spelled.contains(&pair[0].as_str()) {
+                spelled.push(pair[0].as_str());
+            }
+        }
+    }
+    let families = compound_families(&words);
+    if !families.is_empty() {
+        match direction_marker(&words) {
+            // "convert a json schema into a zod schema": the objects before the
+            // marker are the source and the objects after it are the
+            // destination, so the derivation cannot invert the operation.
+            Some(marker) => {
+                if families.contains(&"from") && !spelled.contains(&"from") {
+                    for object in question_object_phrases(&words[..marker]) {
+                        variants.push(format!("from{object}"));
+                    }
+                }
+                if families.contains(&"to") && !spelled.contains(&"to") {
+                    for object in question_object_phrases(&words[marker.saturating_add(1)..]) {
+                        variants.push(format!("to{object}"));
+                    }
+                }
+            }
+            None => {
+                for object in question_object_phrases(&words) {
+                    for family in &families {
+                        if spelled.contains(family) {
+                            continue;
+                        }
+                        variants.push(format!("{family}{object}"));
+                    }
+                }
+            }
+        }
+    }
+    variants.sort();
+    variants.dedup();
+    variants
+}
+
+/// Index of the word that introduces a conversion's destination.
+///
+/// "into" always introduces one. "to" only does when an object precedes it -
+/// "serialize an object to json" - rather than an infinitive - "how to parse
+/// json" - which must keep the verb's own direction.
+fn direction_marker(words: &[String]) -> Option<usize> {
+    for (index, word) in words.iter().enumerate() {
+        if word == "into" {
+            return Some(index);
+        }
+        if word == "to" {
+            let Some(previous) = index.checked_sub(1).and_then(|i| words.get(i)) else {
+                continue;
+            };
+            if previous.chars().count() >= 3 && !compound_word_excluded(previous) {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+/// The identifier prefixes the question's operation verbs conventionally carry.
+fn compound_families(words: &[String]) -> Vec<&'static str> {
+    let mut families = Vec::new();
+    for verb in words {
+        let verb = verb.as_str();
+        if COMPOUND_FROM_VERBS.contains(&verb) && !families.contains(&"from") {
+            families.push("from");
+        }
+        if COMPOUND_TO_VERBS.contains(&verb) && !families.contains(&"to") {
+            families.push("to");
+        }
+    }
+    families
+}
+
+/// Operation verbs whose identifiers name their source with a `from` prefix.
+const COMPOUND_FROM_VERBS: &[&str] = &[
+    "read",
+    "reads",
+    "reading",
+    "load",
+    "loads",
+    "loading",
+    "parse",
+    "parses",
+    "parsing",
+    "decode",
+    "decodes",
+    "decoding",
+    "deserialize",
+    "deserializes",
+    "deserializing",
+    "ingest",
+    "ingests",
+    "ingesting",
+    "import",
+    "imports",
+    "importing",
+    "convert",
+    "converts",
+    "converting",
+    "migrate",
+    "migrates",
+    "migrating",
+    "translate",
+    "translates",
+    "translating",
+    "transform",
+    "transforms",
+    "transforming",
+    "turn",
+    "turns",
+    "turning",
+];
+
+/// Operation verbs whose identifiers name their destination with a `to` prefix.
+const COMPOUND_TO_VERBS: &[&str] = &[
+    "write",
+    "writes",
+    "writing",
+    "save",
+    "saves",
+    "saving",
+    "serialize",
+    "serializes",
+    "serializing",
+    "encode",
+    "encodes",
+    "encoding",
+    "export",
+    "exports",
+    "exporting",
+    "emit",
+    "emits",
+    "emitting",
+    "dump",
+    "dumps",
+    "dumping",
+    "convert",
+    "converts",
+    "converting",
+    "migrate",
+    "migrates",
+    "migrating",
+    "translate",
+    "translates",
+    "translating",
+    "transform",
+    "transforms",
+    "transforming",
+    "turn",
+    "turns",
+    "turning",
+];
+
+/// Words that never spell an `<operation><object>` identifier.
+const COMPOUND_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "does", "for", "from", "how", "in", "into",
+    "is", "it", "its", "of", "on", "or", "that", "the", "their", "them", "then", "these", "this",
+    "to", "use", "uses", "using", "what", "when", "where", "which", "who", "why", "with",
+];
+
+/// Single nouns and adjacent noun pairs a compound identifier can be built from.
+fn question_object_phrases(words: &[String]) -> Vec<String> {
+    let mut phrases = Vec::new();
+    for word in words {
+        if word.chars().count() >= 3 && !compound_word_excluded(word) {
+            phrases.push(word.clone());
+        }
+    }
+    for pair in words.windows(2) {
+        if pair
+            .iter()
+            .any(|word| word.chars().count() < 3 || compound_word_excluded(word))
+        {
+            continue;
+        }
+        phrases.push(format!("{}{}", pair[0], pair[1]));
+    }
+    phrases.sort();
+    phrases.dedup();
+    phrases
+}
+
+/// Stop words and operation verbs never spell an object inside a compound.
+fn compound_word_excluded(word: &str) -> bool {
+    COMPOUND_STOP_WORDS.contains(&word)
+        || COMPOUND_FROM_VERBS.contains(&word)
+        || COMPOUND_TO_VERBS.contains(&word)
+}
+
 fn validate_search_term_count(terms: &[String]) -> Result<(), QueryError> {
     if terms.len() > compass_model::query_contract::MAX_INDEXED_QUERY_TERMS {
         return Err(QueryError::new(
@@ -4174,8 +4584,23 @@ mod adjacency_tests {
 mod fuzzy_term_variant_tests {
     use super::{
         FuzzyLookupCache, MAX_RECALL_FUZZY_VARIANTS_PER_TERM, MAX_RECALL_FUZZY_VARIANTS_TOTAL,
-        PreparedSearchQuery, SearchQueryCache, recall_fuzzy_term_variants,
+        PreparedSearchQuery, RELATIONSHIP_IMPORTER_VERIFY_LIMIT,
+        RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS, SearchQueryCache, phrase_compound_variants,
+        recall_fuzzy_term_variants,
     };
+
+    #[test]
+    fn importer_verification_stays_bounded() {
+        // The owner-level importer probe stays bounded: on the Axum corpus it
+        // verified ~1,000 term-posting candidates per query, which was ~7.7 s
+        // of an 8 s `callers` answer. It must still exceed the threshold that
+        // lets a thin answer raise the consistency diagnostic, and stay far
+        // below the default edge bound (1,000).
+        const {
+            assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT >= RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS);
+            assert!(RELATIONSHIP_IMPORTER_VERIFY_LIMIT * 8 < 1_000);
+        }
+    }
 
     #[test]
     fn recall_fuzzy_term_variants_is_deterministic_and_bounded() {
@@ -4230,6 +4655,71 @@ mod fuzzy_term_variant_tests {
             assert!(variants.iter().any(|variant| variant == expected));
             assert!(variants.len() <= MAX_RECALL_FUZZY_VARIANTS_TOTAL);
         }
+    }
+
+    #[test]
+    fn compound_variants_keep_the_verbatim_preposition_pairs() {
+        let variants = phrase_compound_variants("serialize an object to json");
+        assert!(
+            variants.iter().any(|variant| variant == "tojson"),
+            "{variants:?}"
+        );
+        let variants = phrase_compound_variants("read a payload from json");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+    }
+
+    #[test]
+    fn compound_variants_follow_the_operation_verb_without_a_preposition() {
+        // "read json into an object" asks for the reading direction, which the
+        // graph spells `fromJson`.
+        let variants = phrase_compound_variants("how does gson read json into an object");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+        // A conversion names both ends: the JSON Schema side is the source and
+        // `toJSONSchema` the destination of the inverse operation.
+        let variants =
+            phrase_compound_variants("how does zod convert a json schema into a zod schema");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjsonschema"),
+            "{variants:?}"
+        );
+        assert!(
+            !variants.iter().any(|variant| variant == "tojsonschema"),
+            "the object before `into` is the source, not the destination: {variants:?}"
+        );
+        // The inverse question keeps the other direction.
+        let variants =
+            phrase_compound_variants("how does zod turn a zod schema into a json schema");
+        assert!(
+            variants.iter().any(|variant| variant == "tojsonschema"),
+            "{variants:?}"
+        );
+        // An infinitive `to` is not a direction marker.
+        let variants = phrase_compound_variants("how to parse json");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+        // A question without an operation verb adds no compound family.
+        assert!(phrase_compound_variants("how does axum route a request").is_empty());
+    }
+
+    #[test]
+    fn compound_variants_never_use_an_operation_verb_as_its_own_object() {
+        let variants = phrase_compound_variants("how does gson read json");
+        assert!(
+            variants.iter().any(|variant| variant == "fromjson"),
+            "{variants:?}"
+        );
+        assert!(
+            !variants.iter().any(|variant| variant == "fromread"),
+            "{variants:?}"
+        );
     }
 
     fn prepared(term: &str) -> PreparedSearchQuery {

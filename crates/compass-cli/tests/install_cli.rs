@@ -178,6 +178,92 @@ fn project_codex_install_creates_native_compass_skill() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+#[test]
+fn ensure_reports_a_missing_or_drifted_managed_skill() -> Result<(), Box<dyn Error>> {
+    let fixture = InstallFixture::new()?;
+    fs::create_dir_all(fixture.project.join("src"))?;
+    fs::write(
+        fixture.project.join("src/lib.rs"),
+        "pub fn answer() -> u32 {\n    42\n}\n",
+    )?;
+    let installed = fixture.run(&["install", "--platform", "claude", "--project"])?;
+    assert_success("claude project install", &installed);
+
+    let skill = fixture.project.join(".claude/skills/compass/SKILL.md");
+    assert!(skill.is_file(), "the install publishes the managed skill");
+    let managed = fs::read(&skill)?;
+    let healthy = fixture.run(&["ensure"])?;
+    assert_success("ensure on an intact installation", &healthy);
+    assert!(
+        !String::from_utf8_lossy(&healthy.stdout).contains("[compass health]"),
+        "an intact installation reports no repair: {}",
+        String::from_utf8_lossy(&healthy.stdout)
+    );
+
+    fs::remove_file(&skill)?;
+    let repaired = fixture.run(&["ensure"])?;
+    assert_success("ensure after the managed skill disappeared", &repaired);
+    let stdout = String::from_utf8_lossy(&repaired.stdout).into_owned();
+    assert!(
+        stdout.contains("[compass health] Claude managed skill is missing at"),
+        "a missing managed skill is named before the build repairs it: {stdout}"
+    );
+    assert!(
+        stdout.contains("repair with `compass install --platform claude`"),
+        "the note names the repair command: {stdout}"
+    );
+    assert!(
+        !skill.is_file(),
+        "the note reports the install's ownership; the build does not guess at it"
+    );
+    let repair = fixture.run(&["install", "--platform", "claude", "--project"])?;
+    assert_success("the reported repair command", &repair);
+    assert!(
+        skill.is_file() && fs::read(&skill)? == managed,
+        "the named repair command restores the managed skill"
+    );
+
+    // A modified managed skill is drift too: the install manifest no longer
+    // matches the file the operator changed.
+    fs::write(&skill, "---\nname: compass\n---\n\nedited\n")?;
+    let drifted = fixture.run(&["ensure"])?;
+    assert_success("ensure after the managed skill was edited", &drifted);
+    assert!(
+        String::from_utf8_lossy(&drifted.stdout)
+            .contains("[compass health] Claude managed skill at")
+            && String::from_utf8_lossy(&drifted.stdout)
+                .contains("no longer matches its install manifest"),
+        "an edited managed skill is reported, not silently replaced: {}",
+        String::from_utf8_lossy(&drifted.stdout)
+    );
+    // Edited content is never overwritten silently: the install keeps failing
+    // and says so until the operator removes what they changed.
+    let refused = fixture.run(&["install", "--platform", "claude", "--project"])?;
+    assert!(
+        !refused.status.success(),
+        "install must not overwrite edits"
+    );
+    assert!(
+        String::from_utf8_lossy(&refused.stdout)
+            .contains("was modified since Compass installed it and will not be overwritten"),
+        "the refusal explains itself: {}",
+        String::from_utf8_lossy(&refused.stdout)
+    );
+    assert_eq!(
+        fs::read_to_string(&skill)?,
+        "---\nname: compass\n---\n\nedited\n",
+        "the edited file is left exactly as the operator wrote it"
+    );
+    fs::remove_dir_all(fixture.project.join(".claude/skills/compass"))?;
+    let repair = fixture.run(&["install", "--platform", "claude", "--project"])?;
+    assert_success("install after the edited skill was removed", &repair);
+    assert!(
+        fs::read(&skill)? == managed,
+        "reinstalling restores the managed content"
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn project_claude_install_follows_an_in_scope_skills_symlink() -> Result<(), Box<dyn Error>> {

@@ -123,6 +123,213 @@ The additive `relationship_inconsistency` diagnostic extends the strict
 TypeScript consumers and the checked-in manifest must accept the new value
 before interpreting a relationship result that carries it.
 
+### Typed text pages and store self-check
+
+Typed commands (`ask`, `search`, `callers`, `callees`, `impact`, `explore`, and
+`node`) accept `--text-budget` and `--cursor` for `--format text`. Text output
+is now paged with the additive `compass.query.agent-text-page/1` cursor: the
+page carries a `Pagination:` footer, and the cursor continues the same
+deterministic ledger at the same page budget. The ledger is derived from the
+raw `compass.query/1` response, so a page can reach records that the compact
+`compass.query.agent-view/1` bounds omit. The raw `json` and `agent-json`
+shapes are unchanged, and a cursor is rejected for non-text formats. Cursors
+remain valid only for the same operation, graph identity, and reviewed prefix;
+consumers must treat an invalid cursor as an explicit failure rather than
+falling back to the first page.
+
+`compass store validate` now materializes the selected snapshot and applies
+the strict `compass.graph/1` validation used by readers, in addition to the
+existing tree-integrity, manifest, and `store.ref` checks. An artifact that an
+older publisher wrote with records that strict readers reject now reports
+`valid: false` with the offending record IDs; rebuild the graph (or restore a
+validated backup) instead of querying it. `compass store status` intentionally
+keeps the cheaper digest-and-integrity check and does not claim semantic
+validation.
+
+Continuation pages of the discovery text pager (`compass query --cursor`) and
+of the typed agent text pager now replace the repeated caveat block with a
+single `CAVEATS: N unchanged from page 1 (code×count)` line. Page one still
+prints every caveat in full, the cursor contract and pagination footer are
+unchanged, and the same page budget now carries more result entries. Consumers
+that parsed caveat text from continuation pages must read it from page one.
+
+### TypeScript path aliases and file-shaped path input
+
+A TypeScript or JavaScript project that is the `extends` base of another
+project keeps its own `compilerOptions.paths` when it declares `files` or
+`include`. Only a base config without its own file set stays excluded, and a
+same-directory project that extends another config still takes precedence over
+the config it extends. Graphs for such repositories therefore gain import,
+export, reference, and call edges that were previously missing; rebuild the
+graph to publish them. Unchanged behavior is preserved for same-depth configs
+that both own an importer: resolution still fails closed rather than guessing.
+
+`compass path` resolves a file-shaped endpoint to the file's content node when
+the file node itself carries no relationships and exactly one module node owns
+the same source file. The answer names the module and its source file, so the
+endpoint remains identifiable. Languages that already connect their file nodes
+(for example Go, Python, and Rust) keep the existing behavior, and an ambiguous
+or multi-module file still fails closed.
+
+### Typed query deadlines
+
+`ask`, `search`, `callers`, `callees`, `impact`, `explore`, and `node` accept
+`--timeout-ms <N>` with a default of 60000 and a hard maximum of 600000. The
+deadline is armed once per command - a page continuation or bound widening
+shares it - and is checked between resolution, candidate, relationship, impact,
+and path-expansion steps. An expired deadline returns the typed
+`code_query_timeout` failure with a hint to raise `--timeout-ms` or lower the
+record bounds; partial results are not published. Library and MCP callers keep
+the previous unbounded behavior unless they arm a deadline with
+`CodeQueryEngine::with_deadline`, so no existing response shape changes.
+
+### Review Markdown sections
+
+`compass review --format markdown` accepts the additive `--section NAME`
+(repeatable or comma-separated) and `--list-sections` options. Section names
+are `summary`, `risk-factors`, `merge-checks`, `findings`, and `not-included`;
+an unknown name is a usage error. `--list-sections` prints one name per line and
+does not require a comparison. A filtered report always keeps the `## Compass
+PR review` title and the report reference so the extracted text still
+identifies the canonical report, and the unfiltered default output is
+byte-identical to the previous rendering. `--max-findings` and
+`--max-output-bytes` continue to bound the projection and report exact
+omissions; `--section` and `--list-sections` are rejected with `--readiness` and
+with non-Markdown formats.
+
+### Compact Agent View
+
+Typed commands accept the additive `--brief` flag with `--format agent-json`,
+which emits `compass.query.agent-view.brief/1` instead of
+`compass.query.agent-view/1`. The brief projection keeps the answer semantics
+(`status.resultState`, `matchState`, `coverage`, headline, caveats,
+source-located entities, relationships with relation/site/confidence, paths,
+and next-action argv) and drops audit-only detail: graph and build identities,
+result and view digests, omission counters, per-relationship IDs, per-entity
+roles, and per-edge evidence layers. Consumers that need exact identity,
+digests, or evidence read `--format json` (the unchanged raw
+`compass.query/1` response) or omit `--brief`. `--brief` is rejected with any
+other format, and the existing `agent-json` output is byte-identical to the
+previous release.
+
+### Agent View relationship ordering
+
+`compass.query.agent-view/1` and `compass.query.agent-view.brief/1` now order
+`relationships` by relation strength - direct usage first (calls, instantiation,
+routing, handlers, registration), then imports/exports, then references and
+documents, then everything else - with the exact relationship ID as the
+deterministic tie-break. `primaryResults` for callers and callees follow the
+same order, and the callers/callees headlines report the source response's edge
+count rather than the capped projection count. The fields, schemas, digests,
+and raw `compass.query/1` response are unchanged; consumers that relied on the
+previous ID-sorted presentation must treat the new order as the contract.
+
+### Impact traversal and result ordering
+
+`compass impact` (and the compatibility `affected` command that shares the
+reverse walk) visits edges that name the expanded node before edges that only
+reach its containing owner, then orders by relation strength and the exact
+edge ID. The retained trail ledger is capped, so visit order decides which
+dependents survive a bounded response: a symbol with hundreds of owner-level
+references no longer loses its direct callers. The agent view orders the
+impacted nodes by trail length and the strength of the trail's last hop, so a
+direct caller is reported before a symbol that only touches the containing
+owner. `compass.query/1` keeps its schema, and the raw response now records the
+direct evidence in `paths` where it previously held owner-level trails.
+
+### Unresolved relationship headlines
+
+`compass callers`, `compass callees` and `compass impact` answer about the
+symbol the query resolved. When the query has no exact match, the Agent View
+state is `no_match` and the headline now says so and names whose evidence the
+rows are - "No exact match for \"PathRouter::route\"; the 27 incoming usage
+relationship(s) below belong to the fallback candidate
+axum::routing::Router::route_layer." - instead of reporting a count "for" a
+fallback candidate as if it answered the request. The candidate list stays in
+the caveats, exactly resolved queries keep their previous wording, and no
+schema, count, or omission field changes.
+
+### Owner-level importer probe bound
+
+`compass callers`, `compass callees` and `compass impact` recover evidence that
+targets a containing owner (a module, file or alias target) through a
+term-posting probe. Each candidate the probe verified cost one snapshot read,
+so a symbol whose owner carries a common identifier could turn a two-edge
+answer into ~1,000 reads: 7.7 s per `callers` query on the Axum corpus and 50 s
+per `impact` query on Zod and Gson. The probe is now a fallback rather than an
+always-on enrichment: it runs only while the containment walk has published
+fewer than `RELATIONSHIP_SELF_CHECK_MIN_IMPORTERS` (8) edges, verifies at most
+16 candidate sources even then, and keeps reporting the observed importer count
+as a lower bound through `relationshipInconsistency`. The owner-scoped
+adjacency still publishes every direct, module-level and alias-target edge it
+resolves, so an answer that was complete at the caller's `--max-edges` bound
+stays complete; an answer whose owner-level importer set is wider is bounded
+rather than unbounded work, and a well-connected symbol's answer no longer
+carries supplementary owner-level importer edges beyond that. The
+`compass.query/1` schema, limits and diagnostics are unchanged.
+
+### Agent text page budget
+
+The paged text projection (`--format text`, and the `text` views of `search`,
+`query`, `callers`, `callees`, `impact`, `explore`, and `node`) now spends its
+budget on evidence instead of envelope. One page renders at most the profile the
+Agent View already documents - 12 primary results, 24 relationships, 5 paths -
+and reports the ledger's true total in `range=A-B of T`, so `next=` continues
+the rest. The `RESULT` block is one line
+(`RESULT <state> · match=… · evidence=… · execution=… · coverage=…`); the
+pagination line drops the version and budget echo; the `Bound:` and
+`Completeness:` lines print only the bounds that withheld records; blocking
+caveats keep their full statement while warnings print their actionable
+sentence, with the remainder in `agent-json`/`json`; and a `path` answer prints
+its endpoints as labels without repeating their identifiers. A `PATHS` row in
+the text view prints the hop count and the labelled chain; its path identity -
+a concatenation of every node identifier on the trail - stays in
+`agent-json`/`json`. The same footer rule applies to every other paged text
+answer (`path`, `node`, `explore`): `Pagination: page=A/B <item>=X-Y/T next=…`
+without a budget echo or a previous-page field. Stable entity identifiers are
+printed only for a non-exact match; resolved answers and exact-name pick lists
+print the qualified name and source anchor, and a relationship row states its
+confidence and resolution only when they are not the strongest `exact`. The raw
+`compass.query/1` response and the
+`agent-json` view still carry every identifier, anchor, and omission counter.
+Continuation cursors use a compact wire encoding that stores 64-bit digest
+prefixes and a version byte; cursors issued by an earlier release are rejected
+with an explicit version error instead of being reinterpreted. Consumers that
+parsed the previous multi-line `State:`/`Match:` block or the version prefix of
+the pagination line must read the new single-line form.
+
+### Discovery agent-noun expansion
+
+Natural discovery now adds graph-verified agent-noun spellings of behavior
+terms to the bounded ranking terms: a term ending in a silent `e` also tries
+`-er` and `-or` (`route` → `router`, `validate` → `validator`), and a variant is
+kept only when the graph's bounded name index returns at least one node for it.
+The response schema, `seed terms` rendering, limits, and candidate budgets are
+unchanged, and the expansion cannot introduce a term the graph does not
+declare. Questions that previously matched only `route`-shaped names can now
+seed `Router`, `PathRouter`, and `MethodRouter`.
+
+Discovery also reads preposition phrases as identifier compounds: "to json" and
+"from json" add the `tojson`/`fromjson` terms, verified against the bounded
+name index like the agent-noun variants. A compound term that equals a declared
+name is classified as an exact-name match even in a multi-concept question;
+ordinary question words keep their previous alias rank even when a node shares
+their spelling. Each concept is also guaranteed one candidate slot before
+another concept's postings can fill the pool. The response schema, limits, and
+candidate budgets are unchanged.
+
+Discovery also reads the operation verb's direction when the question spells no
+preposition: a reading or loading verb names its source `from<Object>`, a
+writing or serializing verb names its destination `to<Object>`, and a
+conversion or transformation names both, with the object before `into`/`to`
+treated as the source and the object after it as the destination. Only
+compounds the bounded name index declares are admitted, a preposition the
+question already spells is never re-derived, and an infinitive `to` is not a
+direction marker, so previously answered phrasings keep their seeds. The
+response schema, limits, and candidate budgets are unchanged; the ranking terms
+of a question that names an operation and its object can now include the
+compound the graph declares (`read json into an object` → `fromjson`).
+
 Immutable history now accepts up to 5 GiB of aggregate authoritative key and
 value bytes per realization, raised from 512 MiB. The history schema and
 canonical encoding are unchanged, as are the per-key, per-value, per-tree,

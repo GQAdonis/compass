@@ -1509,6 +1509,7 @@ name = "compass-output"
 version = "0.3.28"
 dependencies = [
  "ahash",
+ "base64 0.22.1",
  "compass-agent-graph",
  "compass-analysis",
  "compass-cypher",
@@ -1592,7 +1593,6 @@ dependencies = [
 name = "compass-query"
 version = "0.3.28"
 dependencies = [
- "base64 0.22.1",
  "compass-agent-graph",
  "compass-analysis",
  "compass-cypher",

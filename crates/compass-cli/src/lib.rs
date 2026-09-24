@@ -77,17 +77,19 @@ use compass_output::{
     build_code_query_view, build_discovery_query_view, export_obsidian, export_wiki,
     graph_artifact_identity, graph_community_view_model_document, graph_view_model_bundle_document,
     graph_view_model_document, node_filenames, project_architecture,
-    render_agent_query_header_lines, render_agent_query_text, render_orientation_json,
-    validate_orientation_graph_identity, write_callflow_html, write_canvas, write_cypher,
-    write_graphml, write_svg, write_tree_html, write_workbench_html_with_source_navigation,
+    render_agent_query_continuation_header, render_agent_query_header_lines,
+    render_agent_query_text, render_orientation_json, validate_orientation_graph_identity,
+    write_callflow_html, write_canvas, write_cypher, write_graphml, write_svg, write_tree_html,
+    write_workbench_html_with_source_navigation,
 };
 use compass_prs::{ProcessRunner, SystemRunner};
 use compass_query::{
     DEFAULT_AFFECTED_RELATIONS, DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET, DEFAULT_PATH_DEPTH_LIMIT,
     DEFAULT_TEXT_TOKEN_BUDGET, DiscoveryTextPageOptions, TextPageOptions, TraversalMode,
-    discovery_request_digest, format_affected, format_benchmark, open as open_code_query,
-    open_with_verified_document, query_graph_text_page, render_discovery_text_page_with_prefix,
-    render_explanation_page, render_shortest_path_with_limit, run_benchmark,
+    discovery_request_digest, explanation_source, format_affected, format_benchmark,
+    open as open_code_query, open_with_verified_document, query_graph_text_page,
+    render_discovery_text_page_with_prefix, render_explanation_page,
+    render_shortest_path_with_limit, run_benchmark,
 };
 use compass_semantic::{
     CachedCorpusExtractionOptions, CorpusExtractionOptions, PreparedDocumentInputs,
@@ -1866,10 +1868,20 @@ fn collect_state_health_notes(
         let drifted = configured && !install_commands::managed_skill_is_healthy(&skill);
         let missing_in_existing_directory =
             managed_directory.as_deref().is_some_and(Path::is_dir) && !skill.is_file();
-        if drifted || missing_in_existing_directory {
+        // The two states need different advice: a missing managed skill is
+        // restored by reinstalling it, while edited managed content is never
+        // overwritten, so the operator has to decide what to discard first.
+        if missing_in_existing_directory {
             record_attempt(relative);
             notes.push(format!(
-                "[compass health] {platform} managed skill is missing or modified at {}; repair with `compass install --platform {}`",
+                "[compass health] {platform} managed skill is missing at {}; repair with `compass install --platform {}`",
+                skill.display(),
+                platform.to_ascii_lowercase()
+            ));
+        } else if drifted {
+            record_attempt(relative);
+            notes.push(format!(
+                "[compass health] {platform} managed skill at {} no longer matches its install manifest; review it, then remove it and run `compass install --platform {}` to restore it",
                 skill.display(),
                 platform.to_ascii_lowercase()
             ));
@@ -5877,7 +5889,12 @@ fn command_discovery_query(
             Ok(view) => view,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };
-        let mut prefix = match render_agent_query_header_lines(&view) {
+        let header = if cursor.is_some() {
+            render_agent_query_continuation_header(&view)
+        } else {
+            render_agent_query_header_lines(&view)
+        };
+        let mut prefix = match header {
             Ok(prefix) => prefix,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };
@@ -6225,10 +6242,44 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         return Outcome::failure(explain_help(frontend));
     };
     let mut budget = DEFAULT_TEXT_TOKEN_BUDGET;
+    let mut budget_given = false;
     let mut page = 1_usize;
+    let mut with_source = false;
+    let mut source_root = std::path::PathBuf::from(".");
+    let mut max_source_bytes = DEFAULT_EXPLAIN_SOURCE_BYTES;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
+            "--source" => {
+                with_source = true;
+                index += 1;
+            }
+            "--root" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --root requires a path".to_owned());
+                };
+                source_root = std::path::PathBuf::from(value);
+                index += 2;
+            }
+            "--max-source-bytes" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                };
+                let Ok(parsed) = value.parse::<u64>() else {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                };
+                if parsed == 0 {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                }
+                max_source_bytes = parsed;
+                index += 2;
+            }
             "--budget" => {
                 let Some(value) = args.get(index + 1) else {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
@@ -6237,6 +6288,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
                 };
                 budget = value;
+                budget_given = true;
                 index += 2;
             }
             "--page" => {
@@ -6254,6 +6306,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
                 };
                 budget = value;
+                budget_given = true;
                 index += 1;
             }
             value if value.starts_with("--page=") => {
@@ -6261,6 +6314,24 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --page must be an integer".to_owned());
                 };
                 page = value;
+                index += 1;
+            }
+            value if value.starts_with("--root=") => {
+                source_root = std::path::PathBuf::from(&value[7..]);
+                index += 1;
+            }
+            value if value.starts_with("--max-source-bytes=") => {
+                let Ok(parsed) = value[19..].parse::<u64>() else {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                };
+                if parsed == 0 {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                }
+                max_source_bytes = parsed;
                 index += 1;
             }
             value => {
@@ -6271,7 +6342,20 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
     if let Err(error) = validate_text_pagination(budget, page) {
         return Outcome::failure(format!("error: {error}"));
     }
-    let loaded = match load_selection(frontend, &selection, true) {
+    // `--source` answers "show me the declaration": the excerpt is the answer,
+    // so the neighborhood list is bounded to its strongest entries instead of
+    // spending the request on rows the caller did not ask for. The page footer
+    // still reports the list's true total and continues it (`--page 2`), and an
+    // explicit `--budget` always wins.
+    if with_source && !budget_given {
+        budget = budget.min(EXPLAIN_SOURCE_CONNECTION_BUDGET);
+    }
+    let selection_result = if with_source {
+        load_selection_full(frontend, &selection)
+    } else {
+        load_selection(frontend, &selection, true)
+    };
+    let loaded = match selection_result {
         Ok(loaded) => loaded,
         Err(outcome) => return outcome,
     };
@@ -6280,8 +6364,57 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         Ok(output) => output,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
+    let output = if with_source {
+        append_explanation_source(output, &loaded.graph, label, &source_root, max_source_bytes)
+    } else {
+        output
+    };
     touch_selected_query_stamp(&selection);
     render_shared_output(format, "explain", output)
+}
+
+/// Default bound for the `explain --source` excerpt.
+const DEFAULT_EXPLAIN_SOURCE_BYTES: u64 = 4 * 1024;
+
+/// Default slice of the connection list a `--source` request spends.
+///
+/// The declaration text is what the caller asked for; the neighborhood list is
+/// context. On the reviewed corpora this keeps the strongest handful of
+/// connections beside the source and leaves the rest behind the page footer's
+/// `next=`, instead of spending half a source answer on rows nobody requested.
+const EXPLAIN_SOURCE_CONNECTION_BUDGET: usize = 240;
+
+fn append_explanation_source(
+    mut output: String,
+    graph: &compass_model::Graph,
+    label: &str,
+    root: &std::path::Path,
+    max_source_bytes: u64,
+) -> String {
+    match explanation_source(graph, label, root, max_source_bytes) {
+        Ok(excerpt) => {
+            output.push_str("\n\nSOURCE ");
+            output.push_str(&excerpt.file);
+            output.push_str(&format!(
+                " L{}-L{} (digest-verified)\n",
+                excerpt.start_line, excerpt.end_line
+            ));
+            for (offset, line) in excerpt.source.lines().enumerate() {
+                let number = excerpt.start_line as usize + offset;
+                output.push_str(&format!("  {number:>6}: {line}\n"));
+            }
+            if excerpt.truncated {
+                output.push_str(&format!(
+                    "  [truncated: excerpt limited to {max_source_bytes} bytes; pass --max-source-bytes for more]\n"
+                ));
+            }
+            output.trim_end().to_owned()
+        }
+        Err(error) => {
+            output.push_str(&format!("\n\nSOURCE unavailable: {error}"));
+            output
+        }
+    }
 }
 
 fn validate_text_pagination(token_budget: usize, page: usize) -> Result<(), String> {
@@ -6567,6 +6700,29 @@ pub(crate) fn load_selection(
         GraphSelection::File(path) => load(path, force_directed),
         GraphSelection::Commit(revision) => {
             history_commands::load_graph_at(frontend, revision, force_directed)
+                .map_err(|error| Outcome::failure(format!("error: {error}")))
+        }
+    }
+}
+
+/// Load a selection with the complete typed projection.
+///
+/// Focused traversal commands use the compact projection; commands that read
+/// recorded byte spans or symbol digests need the complete one.
+pub(crate) fn load_selection_full(
+    frontend: Frontend,
+    selection: &GraphSelection,
+) -> Result<LoadedGraph, Outcome> {
+    match selection {
+        GraphSelection::File(path) => {
+            let path =
+                compass_files::BuildGuard::resolve_requested_artifact(path).map_err(|error| {
+                    Outcome::failure(format!("error: could not resolve graph: {error}"))
+                })?;
+            LoadedGraph::load_full_directed(&path).map_err(graph_load_outcome)
+        }
+        GraphSelection::Commit(revision) => {
+            history_commands::load_graph_at(frontend, revision, true)
                 .map_err(|error| Outcome::failure(format!("error: {error}")))
         }
     }

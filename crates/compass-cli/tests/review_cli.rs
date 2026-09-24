@@ -37,6 +37,55 @@ fn initialize(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Materialize one revision into the history store.
+///
+/// `compass review` compares two materialized realizations and refuses to build
+/// a revision implicitly - "history diff is read-only and will not build it" -
+/// so a test that reviews two commits has to seed both of them first, exactly
+/// as the CLI's own error message instructs.
+fn materialize(root: &Path, commits: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+    for commit in commits {
+        let output = run(root, &["history", "build", commit, "--code-only"])?;
+        if !output.status.success() {
+            return Err(format!(
+                "could not materialize {commit}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// The revision a `review` run asked the caller to materialize, if any.
+fn missing_revision(stderr: &str) -> Option<String> {
+    let marker = "revision ";
+    let tail = stderr.split(marker).nth(1)?;
+    let revision = tail.split_whitespace().next()?.trim();
+    revision
+        .chars()
+        .all(|character| character.is_ascii_hexdigit())
+        .then(|| revision.to_owned())
+}
+
+/// Run `review`, materializing each revision it reports as missing.
+///
+/// The comparison is read-only by design: `review` names the realization it
+/// needs - including the synthetic merge result it computes - and refuses to
+/// build it implicitly. The tests follow the same two steps a caller does.
+fn review(root: &Path, arguments: &[&str]) -> Result<Output, Box<dyn std::error::Error>> {
+    let mut attempt = run(root, arguments)?;
+    for _ in 0..4 {
+        let stderr = String::from_utf8_lossy(&attempt.stderr).into_owned();
+        let Some(revision) = missing_revision(&stderr) else {
+            break;
+        };
+        materialize(root, &[revision.as_str()])?;
+        attempt = run(root, arguments)?;
+    }
+    Ok(attempt)
+}
+
 fn publish_historical_base(root: &Path, commit: &str) -> Result<(), Box<dyn std::error::Error>> {
     let seeded = run(root, &["history", "build", commit, "--code-only"])?;
     if !seeded.status.success() {
@@ -84,6 +133,51 @@ fn persist_historical_repository_profile(root: &Path) -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn review_lists_markdown_sections_and_rejects_invalid_selection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    initialize(root.path())?;
+
+    let listed = run(
+        root.path(),
+        &["review", "--format", "markdown", "--list-sections"],
+    )?;
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(listed.stdout)?
+            .trim()
+            .lines()
+            .collect::<Vec<_>>(),
+        [
+            "summary",
+            "risk-factors",
+            "merge-checks",
+            "findings",
+            "not-included"
+        ]
+    );
+
+    let unknown = run(
+        root.path(),
+        &["review", "--format", "markdown", "--section", "bogus"],
+    )?;
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("--section must be one of"));
+
+    let wrong_format = run(
+        root.path(),
+        &["review", "--format", "json", "--section", "findings"],
+    )?;
+    assert!(!wrong_format.status.success());
+    assert!(String::from_utf8_lossy(&wrong_format.stderr).contains("require --format markdown"));
+    Ok(())
+}
+
+#[test]
 fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     initialize(directory.path())?;
@@ -108,8 +202,9 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
     git(directory.path(), &["commit", "--quiet", "-m", "target"])?;
     let base = git(directory.path(), &["rev-parse", "HEAD"])?;
     let report_path = directory.path().join("review.json");
+    materialize(directory.path(), &[&base, &head])?;
 
-    let output = run(
+    let output = review(
         directory.path(),
         &[
             "review",
@@ -162,7 +257,7 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
 
     let preserved_path = directory.path().join("bounded-review.md");
     std::fs::write(&preserved_path, "preserve-me")?;
-    let bounded = run(
+    let bounded = review(
         directory.path(),
         &[
             "review",
@@ -186,7 +281,7 @@ fn local_review_writes_round_trippable_exact_report() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn local_review_rebuilds_a_comparable_pair_from_a_noncurrent_profile()
+fn local_review_names_the_profile_fix_and_then_reviews_a_comparable_pair()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     initialize(directory.path())?;
@@ -200,8 +295,37 @@ fn local_review_rebuilds_a_comparable_pair_from_a_noncurrent_profile()
     git(directory.path(), &["commit", "--quiet", "-m", "feature"])?;
     let head = git(directory.path(), &["rev-parse", "HEAD"])?;
     publish_historical_base(directory.path(), &base)?;
+    materialize(directory.path(), &[&head])?;
 
-    let output = run(
+    let output = review(
+        directory.path(),
+        &[
+            "review", "--base", &base, "--head", &head, "--format", "json",
+        ],
+    )?;
+    // The base carries a non-current engine profile while the head was built by
+    // this release, so the review refuses and names the fix instead of silently
+    // comparing two engines.
+    assert!(
+        !output.status.success(),
+        "an incompatible pair must not produce a report: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let refusal = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(refusal.contains("incompatible graph engines"), "{refusal}");
+    assert!(refusal.contains("--profile-from"), "{refusal}");
+
+    let rebuilt = run(
+        directory.path(),
+        &["history", "build", &base, "--profile-from", &head],
+    )?;
+    assert!(
+        rebuilt.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&rebuilt.stdout),
+        String::from_utf8_lossy(&rebuilt.stderr)
+    );
+    let output = review(
         directory.path(),
         &[
             "review", "--base", &base, "--head", &head, "--format", "json",
@@ -247,6 +371,7 @@ fn local_review_rebuilds_a_persisted_profile_after_a_current_graph_build()
     git(directory.path(), &["commit", "--quiet", "-m", "feature"])?;
     let head = git(directory.path(), &["rev-parse", "HEAD"])?;
     persist_historical_repository_profile(directory.path())?;
+    materialize(directory.path(), &[&base, &head])?;
 
     let built = run(
         directory.path(),
@@ -267,7 +392,7 @@ fn local_review_rebuilds_a_persisted_profile_after_a_current_graph_build()
         Some(SYNTHETIC_ENGINE_IDENTITY)
     );
 
-    let reviewed = run(
+    let reviewed = review(
         directory.path(),
         &[
             "review", "--base", &base, "--head", &head, "--format", "json",
@@ -302,9 +427,13 @@ fn local_review_rebuilds_a_persisted_profile_after_a_current_graph_build()
     Ok(())
 }
 
-fn assert_review_reconciles_existing_realizations(
-    noncurrent_head: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// Compare two revisions whose materialized profiles are `both` or `mixed`.
+///
+/// The comparison is read-only: a pair that shares an engine profile is
+/// compared as it stands, and a pair whose profiles differ is refused with the
+/// `--profile-from` fix named, after which the caller rebuilds one side and the
+/// review reports the same conflicted outcome against comparable realizations.
+fn assert_review_pair_outcome(both_noncurrent: bool) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     initialize(directory.path())?;
     git(directory.path(), &["checkout", "--quiet", "-b", "feature"])?;
@@ -324,27 +453,53 @@ fn assert_review_reconciles_existing_realizations(
     git(directory.path(), &["commit", "--quiet", "-m", "target"])?;
     let base = git(directory.path(), &["rev-parse", "HEAD"])?;
     publish_historical_base(directory.path(), &base)?;
-    if noncurrent_head {
+    if both_noncurrent {
         publish_historical_base(directory.path(), &head)?;
     } else {
-        let built = run(
-            directory.path(),
-            &["history", "build", &head, "--code-only"],
-        )?;
-        assert!(
-            built.status.success(),
-            "stdout={} stderr={}",
-            String::from_utf8_lossy(&built.stdout),
-            String::from_utf8_lossy(&built.stderr)
-        );
+        materialize(directory.path(), &[&head])?;
     }
 
-    let reviewed = run(
+    let mut reviewed = review(
         directory.path(),
         &[
             "review", "--base", &base, "--head", &head, "--format", "json",
         ],
     )?;
+    if both_noncurrent {
+        // Both sides carry the same non-current profile, so the pair is
+        // comparable and the review reports it as it stands.
+        assert!(
+            reviewed.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&reviewed.stdout),
+            String::from_utf8_lossy(&reviewed.stderr)
+        );
+    } else {
+        assert!(
+            !reviewed.status.success(),
+            "a mixed pair must not produce a report: {}",
+            String::from_utf8_lossy(&reviewed.stdout)
+        );
+        let refusal = String::from_utf8_lossy(&reviewed.stderr).into_owned();
+        assert!(refusal.contains("incompatible graph engines"), "{refusal}");
+        assert!(refusal.contains("--profile-from"), "{refusal}");
+        let rebuilt = run(
+            directory.path(),
+            &["history", "build", &base, "--profile-from", &head],
+        )?;
+        assert!(
+            rebuilt.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&rebuilt.stdout),
+            String::from_utf8_lossy(&rebuilt.stderr)
+        );
+        reviewed = review(
+            directory.path(),
+            &[
+                "review", "--base", &base, "--head", &head, "--format", "json",
+            ],
+        )?;
+    }
     assert!(
         reviewed.status.success(),
         "stdout={} stderr={}",
@@ -362,24 +517,26 @@ fn assert_review_reconciles_existing_realizations(
     for revision in [base, head] {
         let commit = repository.resolve(&revision)?;
         let preferred = history.preferred(&commit)?.ok_or("preferred realization")?;
-        assert_eq!(
-            preferred.version.build_profile.value("compass_version"),
-            Some(env!("CARGO_PKG_VERSION"))
-        );
+        let version = preferred.version.build_profile.value("compass_version");
+        if both_noncurrent {
+            assert_eq!(version, Some(SYNTHETIC_ENGINE_IDENTITY));
+        } else {
+            assert_eq!(version, Some(env!("CARGO_PKG_VERSION")));
+        }
     }
     Ok(())
 }
 
 #[test]
-fn local_review_reconciles_existing_different_engine_profiles()
+fn local_review_requires_a_comparable_pair_for_mixed_engine_profiles()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert_review_reconciles_existing_realizations(false)
+    assert_review_pair_outcome(false)
 }
 
 #[test]
-fn local_review_hard_cuts_over_matching_noncurrent_engine_profiles()
+fn local_review_reports_a_matching_noncurrent_pair_as_it_stands()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert_review_reconciles_existing_realizations(true)
+    assert_review_pair_outcome(true)
 }
 
 #[test]
@@ -404,7 +561,7 @@ fn conflicted_review_is_unavailable_without_false_clean_gate()
     git(directory.path(), &["commit", "--quiet", "-m", "target"])?;
     let base = git(directory.path(), &["rev-parse", "HEAD"])?;
 
-    let output = run(
+    let output = review(
         directory.path(),
         &[
             "review", "--base", &base, "--head", &head, "--format", "json",

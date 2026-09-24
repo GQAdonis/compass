@@ -406,19 +406,77 @@ compass explore "<symbol>" ... [--format text|agent-json|json]
 compass node "<source>" "<target>" [--format text|agent-json|json]
 ```
 
-`text` is the answer-first Agent View projection. It starts with `RESULT`,
-`ANSWER`, and any blocking `CAVEATS`, then shows source-located entities,
-paths, relationships, and bounded next actions. `agent-json` emits the strict
+`explore --format text` closes its bounded page with a `SOURCE` section: the
+recorded line range of each primary anchor, rendered from the digest-verified
+file the command already reads below `--root`. Blocks are bounded per anchor
+and by the page budget; a truncated file read is labeled, and a stale digest
+leaves that anchor out of the source section instead of presenting unverified
+text.
+
+`text` is the answer-first Agent View projection. It starts with one `RESULT`
+line carrying the result state and whichever of match, evidence, execution and
+coverage qualify the answer; `match=exact`, `evidence=exact` and
+`execution=complete` are what a resolved answer means and are left out, so an
+ordinary page opens `RESULT answered · coverage=incomplete`. `ANSWER` and any
+blocking `CAVEATS` follow, then the source-located entities, paths,
+relationships, and bounded next actions. Warning caveats print their actionable
+sentence and leave the explanatory remainder to `agent-json`/`json`, and a
+caveat retained more than once is stated once. An entity prints its stable
+identifier only where the page has to resolve a name *and* the label it printed
+cannot pick that row out of the answer, which is when two retained rows share
+the label; every other row is addressed by the qualified name and source anchor
+it prints.
+`agent-json` emits the strict
 `compass.query.agent-view/1` object. `json` remains the unchanged raw
 `compass.query/1` response and is the right choice when an audit consumer needs
 every evidence record. The natural `query` command accepts the same
 `agent-json` format for discovery; its text header is answer-first while the
-existing discovery entry ledger and v2 cursor remain unchanged.
+existing discovery entry ledger and v2 cursor semantics are unchanged.
 
-`agent-json` is incompatible with text-only `--cursor`, `--text-budget`,
-`--evidence`, and `--result-envelope` controls. Agent View JSON contains
+Text output is paged. `--text-budget <N>` sets the approximate token budget of
+one page (default 2000) and the closing `Pagination:` line carries a
+`compass.query.agent-text-page/1` cursor in `next=` (a compact, checksummed
+envelope; cursors from an earlier release are rejected with an explicit
+version error). One page renders at most the Agent View's profile - 12 primary
+results, 24 relationships, 5 paths - and reports the ledger's true total, so
+the page stops at the strongest evidence instead of filling the budget with the
+tail of a long relation list. Passing that token back as
+`--cursor` continues the same deterministic ledger at the same page budget, so
+a capped result set is read page by page instead of re-run with a guessed
+larger limit. Each continuation re-runs the same query with wider internal
+record bounds and verifies the reviewed prefix before rendering, and an invalid
+or stale cursor fails explicitly. The ledger is derived from the raw
+`compass.query/1` response, so paging reaches records that the compact Agent
+View bounds omit; when the underlying query bound itself is reached, the page
+reports it and asks for wider `--max-nodes`/`--max-edges` limits.
+
+Page one states the result state, answer, and every caveat. Continuation pages
+keep the state and answer and replace the caveat block with a single
+`CAVEATS: N unchanged from page 1 (code×count)` line, so the same budget is
+spent on result entries rather than repeated prose. Blocking caveats are always
+stated in full; warning caveats state their actionable sentence.
+
+`agent-json` and `json` are incompatible with text-only `--cursor`,
+`--text-budget`, `--evidence`, and `--result-envelope` controls. Agent View JSON contains
 bounded `nextActions` as argv arrays or JSON argument objects; clients should
 use those values instead of reconstructing shell commands from result text.
+
+Every typed query accepts `--timeout-ms <N>` (default 60000, maximum 600000).
+The deadline is armed once per command, so continuation pages and the internal
+bound widening share it, and it is checked between resolution, candidate,
+relationship, impact, and path-expansion steps. An expired deadline fails with
+`code_query_timeout` and a hint to raise the deadline or lower the record
+bounds; no partial response is published.
+
+`--format agent-json --brief` emits the compact
+`compass.query.agent-view.brief/1` projection: the same status, answer,
+caveats, source-located entities, relationships, paths, and next actions, with
+audit-only identities, digests, omission counters, per-relationship IDs, and
+per-edge evidence layers removed. Use it when an agent needs the reviewed
+answer cheaply; use `--format json` or the plain `agent-json` projection when it
+needs exact identity, digests, or full evidence. `--brief` is rejected for any
+other format. On the evaluation corpus the same caller answers cost 1.7k-2.0k
+tokens in brief form instead of 6.3k-6.8k.
 
 `callers` returns incoming relationship evidence: calls, routes, references,
 imports, exports, and aliases. `callees` remains the direct outgoing call view.
@@ -463,12 +521,23 @@ visited-node count. Relationship arrows always preserve their stored direction.
 Traversal may follow a relationship in either direction; the arrows make that
 choice visible rather than rewriting the graph.
 
+Both endpoints accept a file path as well as a symbol. When a language
+publishes an isolated metadata `file` node beside the `module` node that
+carries the file's contents, an isolated file endpoint resolves to the single
+module that owns the same source file and the answer names both
+(`schemas (packages/zod/src/v4/classic/schemas.ts)`). A file with several
+candidate modules, or a name that matches several declarations, still fails
+closed with the candidate list instead of guessing.
+
 ### `explain`
 
 ```text
 compass explain "<node>"
   [--budget N]
   [--page N]
+  [--source]
+  [--root PATH]
+  [--max-source-bytes N]
   [--format text|json|agent-json]
   [--graph PATH | --at REV]
 ```
@@ -477,10 +546,26 @@ Shows one node and incoming/outgoing connections. An exact node ID or unique
 exact qualified name resolves directly. When a label or qualified name names
 multiple source-backed declarations, Compass lists the candidates and their
 source ranges and asks for the full node ID instead of silently selecting one.
-Connection lines include the stored relationship site.
+Connection lines include the stored relationship site; extraction is the
+graph's default provenance, so `[EXTRACTED]` is stated once in the
+`Connections (N, extracted unless marked):` header and a line carries a
+provenance tag only when the edge is something else.
 Connections and ambiguous candidates use the same bounded, deterministic
 pagination contract as natural-language queries instead of silently cutting off
 after the first group.
+
+`--source` appends the declaration text for a uniquely resolved, source-backed
+node. The excerpt is read below `--root` (default: the current directory),
+limited to `--max-source-bytes` (default: 4096), and verified against the
+symbol digest recorded in the graph before it is printed. A rewritten file
+fails closed with `SOURCE unavailable: ... does not match ...`; an ambiguous or
+unsourced target keeps the candidate list instead of guessing. The declaration
+is what a `--source` request is for, so the connection list beside it is
+bounded to its strongest entries by default: the `Pagination:` footer still
+reports the list's true total and `--page 2` continues it, while an explicit
+`--budget` lists as much of the list as that budget reaches. On the reviewed
+corpora this removes about a third of a source answer without putting any
+connection out of reach.
 
 ### `affected`
 
@@ -847,6 +932,15 @@ requires a project-scoped Claude target. With no explicit platform, Compass
 detects agents and also installs the portable Agent Skills package. Dry-run
 output includes the complete skill and adapter path plan and performs read-only
 preflight checks.
+
+An installed skill is owned through its `.compass-install.json` manifest, and
+`compass ensure` reports drift before it builds: a managed skill that is
+missing, or one whose files no longer match the manifest, is named on the
+build's output with the command that repairs it. A missing managed file is an
+incomplete install, so a plain `compass install` restores it. A file that was
+edited since it was installed is never overwritten: the install fails with
+`was modified since Compass installed it and will not be overwritten`, and the
+operator decides whether to remove it and reinstall.
 
 ### `uninstall`
 

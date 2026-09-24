@@ -1,6 +1,7 @@
 use compass_output::{
-    render_readiness_json, render_readiness_markdown, render_review_json, render_review_markdown,
-    render_review_markdown_bounded, render_review_sarif, render_review_text,
+    ReviewSection, render_readiness_json, render_readiness_markdown, render_review_json,
+    render_review_markdown, render_review_markdown_bounded, render_review_markdown_selected,
+    render_review_sarif, render_review_text,
 };
 use compass_pr_intelligence::{
     AdvisoryRisk, ChangeHunk, ChangeRequest, Completeness, Confidence, Finding, FindingType,
@@ -158,6 +159,37 @@ fn bounded_markdown_reports_exact_omission_without_mutating_digest()
             .contains("Exactly 1 finding(s) were omitted")
     );
     assert_eq!(report.report_digest, digest);
+    Ok(())
+}
+
+#[test]
+fn selected_markdown_sections_are_addressable_without_the_full_report()
+-> Result<(), Box<dyn std::error::Error>> {
+    let report = report()?;
+    let summary =
+        render_review_markdown_selected(&report, 10, 64 * 1024, &[ReviewSection::Summary])?.content;
+    assert!(summary.contains("Repository: `crabbuild/compass`"));
+    assert!(summary.contains("Report reference:"));
+    assert!(!summary.contains("### Findings"));
+    assert!(!summary.contains("### Merge checks"));
+
+    let findings =
+        render_review_markdown_selected(&report, 10, 64 * 1024, &[ReviewSection::Findings])?
+            .content;
+    assert!(findings.contains("### Findings"));
+    assert!(findings.contains("Contract change"));
+    assert!(!findings.contains("### Risk factors"));
+    assert!(!findings.contains("### Merge checks"));
+
+    assert!(
+        render_review_markdown_selected(&report, 10, 64 * 1024, &[]).is_err(),
+        "an empty selection must fail closed"
+    );
+    assert_eq!(
+        ReviewSection::parse("risk-factors"),
+        Some(ReviewSection::RiskFactors)
+    );
+    assert_eq!(ReviewSection::parse("bogus"), None);
     Ok(())
 }
 

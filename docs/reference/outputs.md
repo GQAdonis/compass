@@ -529,6 +529,57 @@ execution states, explicit caveats, full stable IDs, source locations, and
 ambiguous response is never presented as a positive answer. `coverage` is
 `incomplete` only when the raw query says so; otherwise it is `unknown`.
 
+When a typed lookup cannot resolve one exact target, the projection retains the
+exact-name candidates in `primaryResults` with their IDs, kinds, and source
+anchors, reports `status.matchState = ambiguous`, and emits
+`retry_with_exact_id` actions. Callers therefore disambiguate in one follow-up
+instead of issuing a broad search. Primary results are deduplicated by node ID,
+including when a real self-edge names the same node twice.
+
+Typed text output is paged. Each page carries a
+`Pagination: page=N range=A-B of T next=<CURSOR>` footer; `--cursor` continues
+the same ledger at the same `--text-budget`. The cursor is a checksummed
+base64url envelope with a compact wire form that binds the operation, graph
+identity, page number, and a digest of the reviewed entry prefix at 64 bits
+each; cursors from an earlier release are rejected with an explicit version
+error. A cursor from another graph, another operation, or a changed result
+fails closed rather than restarting the page. One page renders at most 12
+primary results, 24 relationships, and 5 paths while reporting the ledger's
+true total, so a page carries the strongest evidence and `next=` continues the
+rest. Stable identifiers are printed only for a non-exact match, where the
+printed name may not address the row; a resolved answer and an exact-name pick
+list print the qualified name and source anchor instead, and the raw
+`compass.query/1` response still carries every identifier. A `PATHS` row prints
+its hop count and the labelled trail rather than the path identity, which is
+built from every node identifier on the trail, and a relationship row keeps its
+relation, endpoints and site on one line, spelling out the confidence and
+resolution only when they are not the strongest (`exact`).
+
+`--format agent-json --brief` emits `compass.query.agent-view.brief/1`: the same
+status, headline, caveats, source-located entities, relationships, paths, and
+next-action argv as `compass.query.agent-view/1`, without `identity`,
+`omissions`, per-relationship IDs, per-entity roles, or per-edge evidence
+layers. The brief projection is presentation-only; exact record identity and
+digests remain in the raw `compass.query/1` response.
+
+Agent View relationships are ordered by relation strength so a bounded answer
+keeps the direct usage an agent asked for: calls, instantiations, routes,
+handlers, and registrations first; then imports and exports; then references
+and documents; then remaining relations, with the exact relationship ID as the
+deterministic tie-break. Callers and callees primary results follow the same
+order, and their headline reports the source response's edge count, so
+`omissions.relationships` shows how many of them the bounded projection left
+out.
+
+`compass impact` output follows the same evidence rule in two places. The
+reverse walk visits edges that name the expanded node before edges that only
+reach its containing owner, then ranks by relation strength, because the
+retained trail ledger is capped and a heavily referenced symbol would
+otherwise spend it on owner-level trails. The text and agent views then order
+the impacted nodes by trail length and the strength of the trail's last hop, so
+the direct callers a change breaks are listed before the symbols that only
+touch a containing owner.
+
 The fixed presentation profile retains at most 12 primary results, 24
 relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is
 limited to 256 KiB and text to 64 KiB. `omissions` and

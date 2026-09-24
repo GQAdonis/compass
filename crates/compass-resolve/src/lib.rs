@@ -3208,7 +3208,11 @@ fn select_typescript_path_config<'a>(
     let mut candidates = configs
         .iter()
         .filter(|config| {
-            !referenced_configs.contains(&config.source)
+            // A config that other projects extend is still a project for the
+            // files it explicitly includes. Only a base config without its own
+            // `files`/`include` list is treated as a shared base and skipped.
+            (!referenced_configs.contains(&config.source)
+                || typescript_config_declares_own_program(config))
                 && importer_path.starts_with(&config.directory)
                 && typescript_config_applies(config, &importer_extension)
                 && typescript_config_owns_source(config, &importer_key, root, false)
@@ -3219,6 +3223,19 @@ fn select_typescript_path_config<'a>(
         .map(|config| config.directory.components().count())
         .max()?;
     candidates.retain(|config| config.directory.components().count() == deepest);
+    if candidates.len() > 1 {
+        // A project and its `extends` base can sit in the same directory (for
+        // example `tsconfig.build.json` extending `tsconfig.json`). The
+        // extending project owns the invocation, so prefer it over the base.
+        let standalone = candidates
+            .iter()
+            .copied()
+            .filter(|config| !referenced_configs.contains(&config.source))
+            .collect::<Vec<_>>();
+        if standalone.len() == 1 {
+            return standalone.first().copied();
+        }
+    }
     if candidates.len() == 1 {
         return candidates.pop();
     }
@@ -3226,6 +3243,14 @@ fn select_typescript_path_config<'a>(
     // compiler invocation selects one explicitly; Compass has no such command
     // context, so it preserves the import rather than guessing.
     None
+}
+
+/// True when a config declares its own compiler program.
+///
+/// Configs without `files` or `include` are usually shared `extends` bases:
+/// their ownership rules would otherwise match every importer below them.
+fn typescript_config_declares_own_program(config: &TypeScriptPathConfig) -> bool {
+    config.files.is_some() || config.include.is_some()
 }
 
 fn typescript_config_applies(config: &TypeScriptPathConfig, extension: &str) -> bool {
