@@ -602,10 +602,16 @@ const PAGES: &[Page] = &[
         "Options:\n  --graph <PATH>          Graph JSON [default: compass-out/graph.json]\n\nExamples:\n  compass export orientation-json\n  compass export orientation-json --graph compass-out/graph.json\n\nNotes:\n  The orientation is accepted only when its generation, graph digest, and publication metadata match the selected graph."
     ),
     page!(
+        "export hierarchy-json",
+        "Export the atomically published community hierarchy",
+        ["compass export hierarchy-json [OPTIONS]"],
+        "Options:\n  --graph <PATH>          Graph JSON [default: compass-out/graph.json]\n  --output <PATH>         Write the artifact to a file instead of stdout\n\nExamples:\n  compass export hierarchy-json\n  compass export hierarchy-json --output compass-out/community-hierarchy.json\n\nNotes:\n  Reproduces `compass.community-hierarchy/1` byte for byte. Levels are defined over the level below, so the artifact stays bounded on large repositories; the root level is level 0 and the last level is the published community partition. An unknown schema major, a missing artifact, or a graph identity mismatch fails instead of emitting a hierarchy that describes another graph."
+    ),
+    page!(
         "export html",
         "Generate the interactive graph HTML report",
         ["compass export html [OPTIONS]"],
-        "Options:\n  --graph <PATH>          Graph JSON [default: compass-out/graph.json]\n  --labels <PATH>         Community-label JSON\n  --node-limit <N>        Maximum nodes rendered [default: 5000]\n  --no-viz                Skip visualization output\n\nExamples:\n  compass export html\n  compass export html --node-limit 2000\n\nNotes:\n  Large exports embed a bounded set of complete community details; use VS Code or export json --community ID for an omitted detail. Source actions open immutable links for recognized GitHub, GitLab, and Bitbucket origins. Compass uses the graph commit when published, or a published ancestor only when every represented source file is byte-identical; otherwise the viewer explains that local navigation requires VS Code. Interactive terminals ask before opening the generated HTML; scripts and --no-viz never prompt or open a browser."
+        "Options:\n  --graph <PATH>          Graph JSON [default: compass-out/graph.json]\n  --labels <PATH>         Community-label JSON\n  --node-limit <N>        Maximum nodes rendered [default: 5000]\n  --hierarchy-level <N>   Community level the page opens on [default: 0]\n  --no-viz                Skip visualization output\n\nExamples:\n  compass export html\n  compass export html --hierarchy-level 1\n\nNotes:\n  Large exports embed a bounded set of complete community details; use VS Code or export json --community ID for an omitted detail. A page built from a clustered graph also embeds the published community hierarchy and opens on level 0, or on the level --hierarchy-level names; an unknown level or a missing hierarchy fails instead of rendering a different page. Source actions open immutable links for recognized GitHub, GitLab, and Bitbucket origins. Compass uses the graph commit when published, or a published ancestor only when every represented source file is byte-identical; otherwise the viewer explains that local navigation requires VS Code. Interactive terminals ask before opening the generated HTML; scripts and --no-viz never prompt or open a browser."
     ),
     page!(
         "export callflow-html",

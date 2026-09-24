@@ -15,19 +15,20 @@ use compass_files::{
     write_text_atomic,
 };
 use compass_graph::{
-    BuildEvidence, CommunityExecution, CommunityLimits, CommunityProfile, CommunityQualityArtifact,
-    CommunityRequest, CommunityResult, EntityTiebreaker, GRAPH_DIAGNOSTICS_EXTENSION,
-    GRAPH_JSON_DELTA_MAX_SOURCE_BYTES, GRAPH_SNAPSHOT_MAX_OBJECTS,
-    GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1, GraphSnapshotBuilder, GraphSnapshotGcStats, InferenceLevel,
-    InventoryEvidence, PublicationOmissions, ResolutionPolicy, SnapshotSelector, SourceDigest,
-    apply_inference_level, build_communities,
-    build_owned_with_tiebreaker_at_inference as build_document, canonical_edge_kind,
-    canonical_raw_edge_sites, deduped_node_count, extraction_from_v1,
+    BuildEvidence, CommunityExecution, CommunityHierarchy, CommunityLimits, CommunityProfile,
+    CommunityQualityArtifact, CommunityRequest, CommunityResult, EntityTiebreaker,
+    GRAPH_DIAGNOSTICS_EXTENSION, GRAPH_JSON_DELTA_MAX_SOURCE_BYTES, GRAPH_SNAPSHOT_MAX_OBJECTS,
+    GRAPH_SNAPSHOT_SELECTOR_SCHEMA_V1, GraphSnapshotBuilder, GraphSnapshotGcStats, HierarchyBudget,
+    HierarchyRequest, InferenceLevel, InventoryEvidence, PublicationOmissions, ReconcilePolicy,
+    ResolutionPolicy, SnapshotSelector, SourceDigest, apply_inference_level, build_communities,
+    build_community_hierarchy, build_owned_with_tiebreaker_at_inference as build_document,
+    canonical_edge_kind, canonical_raw_edge_sites, deduped_node_count, extraction_from_v1,
     garbage_collect_graph_snapshots, graph_insights_with_blind_spots, graph_snapshot_needs_gc,
     normalize_document_v1_with_evidence_best_effort_owned_at_inference,
     normalize_document_v1_with_inventory_and_source_digests_best_effort_owned_at_inference,
-    normalize_document_v1_with_inventory_best_effort_at_inference, score_communities,
-    write_canonical_graph_json, write_fact_neutral_graph_json_delta_prevalidated,
+    normalize_document_v1_with_inventory_best_effort_at_inference, reconcile_hierarchy,
+    score_communities, write_canonical_graph_json,
+    write_fact_neutral_graph_json_delta_prevalidated,
 };
 use compass_languages::{
     BindingFact, DeclarationFact, EXTRACTION_QUALITY_EXTENSION, EXTRACTION_QUALITY_PARTIAL,
@@ -51,7 +52,7 @@ use compass_output::{
     DetectionSummary, FreshnessBasis, FreshnessStatus, GraphViewModel, HtmlOptions,
     OrientationHealth, OutputError, PublicationStatus, ReportOptions, TokenCost,
     agent_orientation_with_blind_spots, graph_view_model_document, render_agent_report_markdown,
-    render_orientation_json, write_html,
+    render_orientation_json, write_html_with_hierarchy,
 };
 use compass_resolve::{
     ResolutionAdmission, apply_program_projection, collect_program_projection_sites,
@@ -98,7 +99,7 @@ const PARALLEL_AST_FACT_DIGEST_MIN_FILES: usize = 32;
 const SHARED_STORE_GC_MANIFEST_THRESHOLD: usize = 8;
 const STORE_SNAPSHOT_EXCLUSIONS: [&str; 3] =
     [STORE_FILE_NAME, "store.sqlite3-wal", "store.sqlite3-shm"];
-const ROOT_ARTIFACTS: [&str; 8] = [
+const ROOT_ARTIFACTS: [&str; 9] = [
     "GRAPH_REPORT.md",
     "orientation.json",
     "graph-overview.json",
@@ -107,6 +108,7 @@ const ROOT_ARTIFACTS: [&str; 8] = [
     "program.json",
     "graph.json",
     "community-quality.json",
+    "community-hierarchy.json",
 ];
 
 #[derive(Clone, Debug)]
@@ -2032,6 +2034,8 @@ fn publish_fact_neutral_incremental(
     if !clustered {
         remove_if_exists(&output_dir.join(GRAPH_OVERVIEW_FILE))?;
         remove_if_exists(&output_dir.join("community-quality.json"))?;
+        remove_if_exists(&output_dir.join("community-hierarchy.json"))?;
+        remove_if_exists(&output_dir.join("community-hierarchy.json.sig"))?;
     }
     save_output_stats(
         &output_dir,
@@ -2204,6 +2208,8 @@ pub enum CoreError {
     Community(#[from] compass_graph::CommunityError),
     #[error(transparent)]
     CommunityQualityArtifact(#[from] compass_graph::CommunityQualityArtifactError),
+    #[error(transparent)]
+    CommunityHierarchyArtifact(#[from] compass_graph::CommunityHierarchyArtifactError),
     #[error(transparent)]
     Output(#[from] compass_output::OutputError),
     #[error("invalid cached AST extraction for {path}: {source}")]
@@ -3991,6 +3997,18 @@ fn build_graph_inner_unscoped(
             limits: community_limits,
         },
     )?;
+    // Derived from the partition above and the same typed projection, so the
+    // hierarchy is never rebuilt from the artifacts it describes.
+    let hierarchy_draft = build_community_hierarchy(
+        &published.document,
+        &clustered.communities,
+        &HierarchyRequest {
+            identity: &clustered.identity,
+            limits: &community_limits,
+            resolution: clustered.quality.resolution,
+            budget: HierarchyBudget::default(),
+        },
+    )?;
     let cluster_elapsed = cluster_started.elapsed();
     profile_internal_duration(
         if matches!(clustered.execution, CommunityExecution::Incremental { .. }) {
@@ -4108,7 +4126,8 @@ fn build_graph_inner_unscoped(
                 remove_if_exists(&html_path)?;
                 false
             } else {
-                let rendered = match write_html(
+                let hierarchy_levels = hierarchy_draft.levels_view();
+                let rendered = match write_html_with_hierarchy(
                     &document,
                     &communities,
                     &html_path,
@@ -4117,6 +4136,8 @@ fn build_graph_inner_unscoped(
                         node_limit: None,
                         ..HtmlOptions::default()
                     },
+                    Some(&hierarchy_levels),
+                    None,
                 ) {
                     Ok(rendered) => rendered,
                     Err(OutputError::HtmlTooLarge { .. }) => None,
@@ -4243,6 +4264,35 @@ fn build_graph_inner_unscoped(
     write_json_atomic(
         output_dir.join("community-quality.json"),
         &quality_artifact,
+        true,
+    )?;
+    let mut hierarchy_artifact = CommunityHierarchy::new(
+        published_document.graph.build.generation_id.clone(),
+        format!("sha256:{}", graph_seal_for_quality.sha256),
+        hierarchy_draft,
+    )?;
+    // A group that survives a rebuild keeps the id a reader already learned.
+    let previous_published = previous_communities(&output_dir.join("graph.json"));
+    if let Some(previous_artifact) = crate::cluster_existing::load_previous_hierarchy(&output_dir)
+        && !previous_published.is_empty()
+    {
+        let previous_partition = crate::cluster_existing::invert_partition(&previous_published);
+        let _ = reconcile_hierarchy(
+            &previous_artifact,
+            &previous_partition,
+            &mut hierarchy_artifact,
+            &communities,
+            &ReconcilePolicy::default(),
+        )?;
+    }
+    write_json_atomic(
+        output_dir.join("community-hierarchy.json"),
+        &hierarchy_artifact,
+        true,
+    )?;
+    write_json_atomic(
+        output_dir.join("community-hierarchy.json.sig"),
+        &crate::cluster_existing::hierarchy_identity_ledger(&hierarchy_artifact),
         true,
     )?;
     if options.purpose == BuildPurpose::Update {
@@ -4607,12 +4657,16 @@ fn publish_build_state(
                     output_dir.join("GRAPH_REPORT.md"),
                     output_dir.join("orientation.json"),
                     output_dir.join("community-quality.json"),
+                    output_dir.join("community-hierarchy.json"),
+                    output_dir.join("community-hierarchy.json.sig"),
                 ]);
             }
         }
         BuildPurpose::Extract if !options.no_cluster => {
             required.push(output_dir.join("analysis.json"));
             required.push(output_dir.join("community-quality.json"));
+            required.push(output_dir.join("community-hierarchy.json"));
+            required.push(output_dir.join("community-hierarchy.json.sig"));
         }
         BuildPurpose::Extract => {}
     }
@@ -9300,6 +9354,68 @@ char* Arena::AllocateAligned(size_t bytes) { return Allocate(bytes); }
         assert!(enriched_graph.links.iter().any(|edge| {
             edge.source_file() == Some("page.html") && edge.relation() == "contains"
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn clustered_builds_publish_a_hierarchy_that_flat_builds_never_validate_against()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        fs::write(
+            directory.path().join("main.py"),
+            "def alpha():\n    return 1\n\ndef beta():\n    return alpha()\n",
+        )?;
+        let mut clustered = BuildOptions::new(directory.path());
+        clustered.no_viz = true;
+        let cold = build_local_graph(&clustered)?;
+        assert!(cold.output_dir.join("community-quality.json").is_file());
+        let graph_bytes = fs::read(cold.output_dir.join("graph.json"))?;
+        let graph: V1GraphDocument = serde_json::from_slice(&graph_bytes)?;
+        let hierarchy_bytes = fs::read(cold.output_dir.join("community-hierarchy.json"))?;
+        let hierarchy: CommunityHierarchy = serde_json::from_slice(&hierarchy_bytes)?;
+        hierarchy.validate_for_graph(
+            &graph.graph.build.generation_id,
+            &format!("sha256:{:x}", Sha256::digest(&graph_bytes)),
+        )?;
+        assert_eq!(
+            hierarchy.finest_community_count,
+            graph
+                .nodes
+                .iter()
+                .filter_map(|node| node.community.as_ref())
+                .map(|community| community.id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            "the hierarchy describes the graph it is published beside"
+        );
+
+        let mut flat = BuildOptions::new(directory.path());
+        flat.no_cluster = true;
+        flat.no_viz = true;
+        let warm = build_local_graph(&flat)?;
+        // A flat build republishes over the community sidecars it removes, and
+        // anything left behind stays bound to the previous graph generation, so
+        // it can never validate against the unclustered graph.
+        assert_eq!(
+            warm.output_dir.join("community-quality.json").exists(),
+            warm.output_dir.join("community-hierarchy.json").exists(),
+            "the hierarchy is published exactly when the partition evidence is"
+        );
+        let stale = warm.output_dir.join("community-hierarchy.json");
+        if stale.is_file() {
+            let graph_bytes = fs::read(warm.output_dir.join("graph.json"))?;
+            let graph: V1GraphDocument = serde_json::from_slice(&graph_bytes)?;
+            let stale: CommunityHierarchy = serde_json::from_slice(&fs::read(&stale)?)?;
+            assert!(
+                stale
+                    .validate_for_graph(
+                        &graph.graph.build.generation_id,
+                        &format!("sha256:{:x}", Sha256::digest(&graph_bytes)),
+                    )
+                    .is_err(),
+                "a surviving hierarchy must not describe the unclustered graph"
+            );
+        }
         Ok(())
     }
 

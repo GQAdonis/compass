@@ -902,6 +902,36 @@ substitutes Louvain results under a Leiden profile or interprets one profile's
 member IDs as another profile's result. Existing `cohesion` remains the public
 density projection, now calculated by the shared quality evaluator.
 
+Clustered typed builds additionally publish strict
+`compass.community-hierarchy/1` at `community-hierarchy.json`. The artifact is
+additive: nothing in `graph.json`, `graph-overview.json`, `orientation.json`,
+CompassQL, MCP results, or query semantics reads it, so a consumer that ignores
+it behaves exactly as before. Readers must validate its self-digest, graph
+generation, canonical graph digest, and profile identity and reject unknown
+majors or fields. Absence means level navigation is unavailable — an older
+graph, a schema-less legacy recluster, or a `--no-cluster` build — not an empty
+hierarchy. Levels describe the same partition the quality artifact describes;
+`finestSignature` binds the two. `compass export hierarchy-json` emits the
+artifact unchanged and fails for an unknown major or a mismatched graph.
+
+Group ids inside that artifact are durable: `h<level>-<signature16>` over the
+group's member signatures. Reconciliation rewrites an id to the previous
+build's when a group survives, so consumers may key on `id` across rebuilds, but
+must treat a changed `signature` as changed membership and must handle
+`ambiguous` events rather than assuming every previous group has exactly one
+successor. The identity ledger `community-hierarchy.json.sig` is additive too:
+absence means identity can only be derived from the artifact's own signatures.
+Any change to the signature algorithm or the reconciliation thresholds is a
+compatibility-sensitive change and needs a version bump.
+
+`compass.community-hierarchy-diff/1` is the comparison surface for two
+generations. It is additive to the history workbench view
+(`compass.viewer.workbench/1`, `kind: "history"`), appears only when both
+realizations published a hierarchy, and must be rejected by consumers when its
+schema major is unknown. Absence means the comparison is unavailable, not that
+nothing changed; a present diff with zero change counts and no events is the
+"nothing structural changed" case.
+
 ## Compass Store release contract
 
 The first supported local store line is `0.3.x`. Its logical machine formats

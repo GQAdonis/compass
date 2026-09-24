@@ -23,6 +23,38 @@
 ## Status
 
 - **Priority**: P1 — the change that makes repositories with thousands of communities readable
+
+### Implementation status (2026-09-24)
+
+Steps 1–7 are implemented on `codex/community-hierarchy-artifact`: the artifact
+and its builder, publication beside `community-quality.json`, the
+`hierarchy-json` export, the embedded viewer payload with level navigation, the
+workbench code-view payload, `--hierarchy-level`, and
+`./scripts/qualify_code_graph_v1.sh --hierarchy` with every acceptance entry
+true and byte-identical reports across two runs.
+
+Known gap, deliberately deferred: at relationship levels the dominant-directory
+rule can name sibling groups identically (`pallets/flask` publishes 23 groups
+labelled `tests` at level 1) because neither group's members concentrate in one
+subdirectory. Disambiguating them means appending a qualifier whose coverage is
+below the label threshold, which is a label-policy decision rather than a
+defect in the artifact.
+
+Measured on real repositories, relationship-only coarsening cannot bound a
+root: 86 of `pallets/flask`'s 112 communities and 2,725 of
+`colinhacks/zod`'s 2,781 have no cross-community edge at all, so the group
+graph those levels merge is almost empty. This is the plan's STOP condition
+("meeting the root budget appears to require merging communities that share no
+evidence"). The operator chose to keep the budget and add a second, recorded
+rule: levels that relationship evidence cannot reduce are cut from the
+directory tree the groups already cite (`locationAffinity`), every level
+records its rule and counts, groups that cite no dominant directory are never
+merged, and `budgetSatisfied` reports the achieved count. Current results:
+
+| repository | communities | levels | root groups | `budgetSatisfied` |
+| --- | --- | --- | --- | --- |
+| `pallets/flask` | 112 | 3 | 24 | true |
+| `colinhacks/zod` | 2,781 | 4 | 70 (24 directories + 46 location-less singles) | false |
 - **Effort**: L (new artifact + graph-side builder + exporter + viewer consumption + qualification)
 - **Risk**: MED — a new versioned artifact and a new clustering policy; `graph.json` and query semantics stay unchanged
 - **Depends on**: none (Plan 026 is independent; its local label ranking becomes the fallback path)

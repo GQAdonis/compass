@@ -224,6 +224,11 @@ function WorkbenchView({
             <small>
               +{comparison.addedNodes} / −{comparison.removedNodes} / Δ{comparison.changedNodes} nodes
             </small>
+            {view.hierarchyDiff !== undefined ? (
+              <small data-hierarchy-diff="true">
+                {communityStructureChange(view.hierarchyDiff)}
+              </small>
+            ) : null}
           </span>
         </div>
         <FilteredGraph
@@ -249,6 +254,8 @@ function WorkbenchView({
       host={host}
       preferredLayout={preferredLayout}
       communityDetails={view.kind === "code" ? view.communityDetails : undefined}
+      hierarchy={view.kind === "code" ? view.hierarchy : undefined}
+      initialLevel={view.kind === "code" ? view.hierarchy?.initialLevel : undefined}
       communityDetail={view.kind === "code" ? communityDetail : undefined}
       communityLoading={view.kind === "code" ? communityLoading : undefined}
       communityError={view.kind === "code" ? communityError : undefined}
@@ -261,6 +268,38 @@ function WorkbenchView({
   );
 }
 
+/**
+ * One bounded line about the community structure between two generations.
+ * Absence of the diff means a side published no hierarchy, so the banner says
+ * nothing rather than "unchanged".
+ */
+function communityStructureChange(diff: NonNullable<
+  Extract<
+    Parameters<typeof VisualizationWorkbench>[0]["workbench"]["views"][number],
+    { kind: "history" }
+  >["hierarchyDiff"]
+>): string {
+  if (
+    diff.split === 0
+    && diff.merged === 0
+    && diff.appeared === 0
+    && diff.disappeared === 0
+    && diff.ambiguous === 0
+  ) {
+    return `${diff.stable} community groups unchanged`;
+  }
+  const parts = [
+    diff.split > 0 ? `${diff.split} split` : undefined,
+    diff.merged > 0 ? `${diff.merged} merged` : undefined,
+    diff.appeared > 0 ? `${diff.appeared} new` : undefined,
+    diff.disappeared > 0 ? `${diff.disappeared} gone` : undefined,
+    diff.ambiguous > 0 ? `${diff.ambiguous} ambiguous` : undefined
+  ].filter((part): part is string => part !== undefined);
+  return `Community structure: ${parts.join(" · ")}${
+    diff.omittedEvents > 0 ? ` · ${diff.omittedEvents} more omitted` : ""
+  }`;
+}
+
 function FilteredGraph({
   model,
   host,
@@ -268,6 +307,8 @@ function FilteredGraph({
   sourceRevisions,
   preferredLayout,
   communityDetails,
+  hierarchy,
+  initialLevel,
   communityDetail,
   communityLoading,
   communityError,
@@ -283,6 +324,8 @@ function FilteredGraph({
   sourceRevisions?: Parameters<typeof CompassGraph>[0]["sourceRevisions"];
   preferredLayout: Parameters<typeof CompassGraph>[0]["preferredLayout"];
   communityDetails?: Record<string, GraphViewModel> | undefined;
+  hierarchy?: Parameters<typeof CompassGraph>[0]["hierarchy"];
+  initialLevel?: number | undefined;
   communityDetail?: { communityId: number; model: GraphViewModel } | undefined;
   communityLoading?: number | null | undefined;
   communityError?: string | undefined;
@@ -356,6 +399,8 @@ function FilteredGraph({
     <div className="workbench-graph-lens">
       <CompassGraph
         model={activeCommunityDetail ? model : filtered}
+        hierarchy={hierarchy}
+        initialLevel={initialLevel}
         communityDetail={activeCommunityDetail ? {
           ...activeCommunityDetail,
           model: filtered

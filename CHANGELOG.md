@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- Give community levels a durable identity. Group ids are now derived from
+  member evidence (`h<level>-<signature16>` over the group's member
+  signatures) instead of position, every rebuild reconciles the fresh hierarchy
+  against the published one so surviving groups keep the id a reader learned,
+  and the reconciliation reports what split, merged, appeared, disappeared, or
+  was too close to call instead of guessing. The viewer lays levels out by that
+  identity, so an untouched group keeps its place when its neighbours change.
+- Compare two history realizations' community structure:
+  `compass.community-hierarchy-diff/1` rides on the history workbench view and
+  reports the split, merged, appeared, disappeared, and ambiguous groups between
+  them with the member overlap that justifies each entry, bounded with an exact
+  omitted count. It is absent when either generation published no hierarchy.
+- Publish `community-hierarchy.json` (`compass.community-hierarchy/1`) beside
+  `community-quality.json` on clustered typed builds: a bounded, nested
+  overview of the same partition, with `childIndices` levels instead of
+  repeated node ids, evidence-derived labels that carry their provenance, and a
+  completeness proof the build refuses to violate. Relationship evidence
+  decides a level first; where a repository publishes communities that share no
+  relationship at all — 2,725 of `colinhacks/zod`'s 2,781 — the remaining
+  levels are cut from the directory tree those groups already cite, and the
+  level records that rule, its counts, and whether the root met its budget.
+  Read it back with the new `compass export hierarchy-json`, which reproduces
+  the artifact byte for byte and rejects any other schema major or graph.
+- Navigate those levels in the graph viewer: an export with a published
+  hierarchy opens on level 0, the toolbar scope reads `Level 0 … N | Symbols`,
+  double-clicking a group descends into its children inside the level below,
+  and the breadcrumb walks back up one group or to the repository. The four
+  overview designs read whichever level is open, and a narrowed scope lists
+  only the groups it draws.
 - Make large `graph.html` exports readable: the viewer opens a repository on a
   labelled community overview derived from the embedded model, weights
   cross-community relationships by the number of relationships they summarize,

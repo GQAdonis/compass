@@ -40,6 +40,56 @@ fn update_writes_to_compass_out_by_default() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn hierarchy_export_reproduces_the_published_artifact() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    run_update(root.path(), |_| {})?;
+    let output_dir = root.path().join("compass-out");
+    let published = BuildGuard::resolve_artifact(&output_dir, "community-hierarchy.json")?;
+    assert!(
+        published.is_file(),
+        "a clustered build publishes the community hierarchy"
+    );
+    assert!(
+        output_dir.join("community-hierarchy.json").is_file(),
+        "the root projection carries the hierarchy too"
+    );
+
+    let export = |arguments: &[&str]| -> Result<std::process::Output, Box<dyn Error>> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_compass"))
+            .args(arguments)
+            .current_dir(root.path())
+            .env_remove("COMPASS_OUT")
+            .output()?)
+    };
+    let output = export(&["export", "hierarchy-json"])?;
+    assert!(
+        output.status.success(),
+        "compass export hierarchy-json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.stdout,
+        std::fs::read(&published)?,
+        "the export reproduces the published artifact byte for byte"
+    );
+
+    let mut artifact: Value = serde_json::from_slice(&std::fs::read(&published)?)?;
+    artifact["schema"] = Value::String("compass.community-hierarchy/2".to_owned());
+    std::fs::write(&published, serde_json::to_vec_pretty(&artifact)?)?;
+    let output = export(&["export", "hierarchy-json"])?;
+    assert!(
+        !output.status.success(),
+        "an unknown major version must fail instead of being emitted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unsupported community hierarchy schema"),
+        "unexpected error: {stderr}"
+    );
+    Ok(())
+}
+
+#[test]
 fn html_export_is_materialized_directly_in_compass_out() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     run_update(root.path(), |_| {})?;
