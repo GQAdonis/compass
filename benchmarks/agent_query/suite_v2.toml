@@ -636,7 +636,7 @@ compass = ["callees", "validate_path"]
 graphify = ["explain", "validate_path()"]
 expect = "answer"
 required = ["validate_v07_paths"]
-judgment = "validate_path calls validate_v07_paths(path) at path_router.rs:31, declared at line 36."
+judgment = "validate_path (path_router.rs:22) calls validate_v07_paths(path) at path_router.rs:30, declared at path_router.rs:36."
 
 [[repository.question]]
 id = "axum2-impact-validate-path"
@@ -657,7 +657,7 @@ compass = ["path", "validate_path", "validate_v07_paths"]
 graphify = ["path", "validate_path()", "validate_v07_paths()", "--undirected"]
 expect = "answer"
 required = ["validate_v07_paths"]
-judgment = "validate_path calls validate_v07_paths at src/routing/path_router.rs:31."
+judgment = "validate_path calls validate_v07_paths at src/routing/path_router.rs:30, declared at src/routing/path_router.rs:36."
 forbidden = ["NO PATH FOUND", "No directed path found", "No path found"]
 
 [[repository.question]]

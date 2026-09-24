@@ -329,6 +329,18 @@ verification:
 | axum | `route` ambiguity | `with_state` ambiguity |
 | axum | missing-router negative | missing-service negative |
 
+The final audit re-read every oracle against the pinned checkouts instead of
+against either tool. It compared each row's repository, kind and addressed
+operands with `suite.toml` (zero repeats on either tool's address form), then
+resolved all 66 `file:line` citations in the fifty judgments in the pinned
+sources. Sixty-four landed exactly on the cited declaration or call site; two
+Axum citations for the `validate_path -> validate_v07_paths` call named line 31
+instead of the call at `src/routing/path_router.rs:30` and were corrected, and
+the five `explain` rows were re-checked line by line
+(`command.go:1868`, `src/flask/app.py:995`, `Gson.java:797`,
+`from-json-schema.ts:105`, `method_filter.rs:9`). The suite digest after the
+correction is `efb614af…`; the run recorded below uses it.
+
 ### Where Graphify wins
 
 - **Nothing on correctness.** After the two routing fixes below, Compass passes
@@ -532,9 +544,9 @@ Graphify cannot answer at all), the discovery seed and node ledger, and the
 pick lists that must still separate colliding labels. The whole pass is
 measured against the pre-session build at
 `agent-query-v2-fast3/runs/20260923T215256Z` and re-verified at
-`agent-query-v2-token4/runs/20260923T230539Z`: 21,123 to 18,135 tokens over the
-suite (14% less), a paired median of 280 against Graphify's unchanged 98, and
-the same 50/50 result.
+`agent-query-v2-verify-final/runs/20260924T003110Z` (suite digest
+`efb614af…`): 21,123 to 18,135 tokens over the suite (14% less), a paired
+median of 280 against Graphify's unchanged 98, and the same 50/50 result.
 
 ## Latency
 
