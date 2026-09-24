@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.29 - 2026-09-23
+
 - Spend a `--source` request on the declaration. `compass explain <symbol>
   --source` printed the whole neighborhood list before the code the caller
   asked for, and for a symbol with thirty-one connections that list was half of
