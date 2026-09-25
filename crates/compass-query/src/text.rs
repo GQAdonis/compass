@@ -28,7 +28,6 @@ const GENERIC_RELATIONAL_TERMS: &[&str] = &[
     "relations",
     "relationship",
     "relationships",
-    "route",
     "use",
     "used",
     "uses",

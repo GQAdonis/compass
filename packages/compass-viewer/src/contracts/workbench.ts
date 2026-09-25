@@ -3,6 +3,7 @@ import { CallGraphResponseSchema } from "./callGraph";
 import { ArchitectureViewModelSchema } from "./architecture";
 import { CodeQueryResponseSchema } from "./codeQuery";
 import { GraphViewModelSchema } from "./graph";
+import { CommunityHierarchyViewSchema, HierarchyDiffSchema } from "./hierarchy";
 
 export const WORKBENCH_SCHEMA = "compass.viewer.workbench/1" as const;
 
@@ -11,6 +12,8 @@ export const WorkbenchCoverageSchema = z.strictObject({
   truncated: z.boolean(),
   nodes: z.number().int().nonnegative(),
   edges: z.number().int().nonnegative(),
+  /** Levels the code view carries, when the build published a hierarchy. */
+  hierarchyLevels: z.number().int().nonnegative().optional(),
   limitations: z.array(z.string()).default([])
 });
 
@@ -35,7 +38,8 @@ export const WorkbenchViewSchema = z.discriminatedUnion("kind", [
     ...ViewBase,
     kind: z.literal("code"),
     model: GraphViewModelSchema,
-    communityDetails: z.record(z.string(), GraphViewModelSchema).default({})
+    communityDetails: z.record(z.string(), GraphViewModelSchema).default({}),
+    hierarchy: CommunityHierarchyViewSchema.optional()
   }),
   z.strictObject({
     ...ViewBase,
@@ -60,7 +64,9 @@ export const WorkbenchViewSchema = z.discriminatedUnion("kind", [
     baseRevision: z.string(),
     targetRevision: z.string(),
     before: GraphViewModelSchema,
-    after: GraphViewModelSchema
+    after: GraphViewModelSchema,
+    /** Absent when either generation published no community hierarchy. */
+    hierarchyDiff: HierarchyDiffSchema.optional()
   }),
   z.strictObject({
     ...ViewBase,

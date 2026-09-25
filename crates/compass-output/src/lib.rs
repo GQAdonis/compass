@@ -8,12 +8,14 @@ mod canvas;
 mod cql;
 mod cypher;
 mod graphml;
+mod hierarchy_view;
 mod history_bundle;
 mod history_viewer;
 mod html;
 mod json;
 mod lenses;
 mod obsidian;
+mod palette;
 mod report;
 mod review;
 mod svg;
@@ -23,16 +25,21 @@ mod wiki;
 mod workbench;
 
 pub use agent_query::{
-    AGENT_QUERY_VIEW_SCHEMA, AGENT_VIEW_MAX_BYTES, AGENT_VIEW_MAX_CAVEATS,
-    AGENT_VIEW_MAX_NEXT_ACTIONS, AGENT_VIEW_MAX_PATHS, AGENT_VIEW_MAX_PRIMARY_RESULTS,
-    AGENT_VIEW_MAX_RELATIONSHIPS, AGENT_VIEW_MAX_SCALAR_CHARS, AGENT_VIEW_TEXT_MAX_BYTES,
-    AgentActionCli, AgentActionMcp, AgentAnswer, AgentBasis, AgentCaveat, AgentCoverage,
+    AGENT_BRIEF_VIEW_SCHEMA, AGENT_QUERY_VIEW_SCHEMA, AGENT_TEXT_PAGE_VERSION,
+    AGENT_VIEW_MAX_BYTES, AGENT_VIEW_MAX_CAVEATS, AGENT_VIEW_MAX_NEXT_ACTIONS,
+    AGENT_VIEW_MAX_PATHS, AGENT_VIEW_MAX_PRIMARY_RESULTS, AGENT_VIEW_MAX_RELATIONSHIPS,
+    AGENT_VIEW_MAX_SCALAR_CHARS, AGENT_VIEW_TEXT_MAX_BYTES, AgentActionCli, AgentActionMcp,
+    AgentAnswer, AgentBasis, AgentBriefAction, AgentBriefEntity, AgentBriefPath,
+    AgentBriefRelationship, AgentBriefStatus, AgentBriefView, AgentCaveat, AgentCoverage,
     AgentEndpoint, AgentEntity, AgentEvidence, AgentExecution, AgentIdentity, AgentMatch,
     AgentNextAction, AgentOmissions, AgentOperand, AgentOperandRole, AgentOperation, AgentPath,
     AgentPathDirection, AgentPathStep, AgentProjection, AgentQueryContext, AgentQueryView,
     AgentRelationship, AgentRelationshipEvidence, AgentRequest, AgentResultState, AgentSeverity,
-    AgentSource, AgentStatus, build_code_query_view, build_discovery_query_view,
-    render_agent_query_header_lines, render_agent_query_text,
+    AgentSource, AgentStatus, AgentTextPage, AgentTextPageCursor, AgentTextPageOptions,
+    DEFAULT_AGENT_TEXT_PAGE_TOKENS, build_code_query_brief, build_code_query_view,
+    build_discovery_query_view, decode_agent_text_page_cursor,
+    render_agent_query_continuation_header, render_agent_query_header_lines,
+    render_agent_query_text, render_code_query_text_page,
 };
 pub use architecture_projection::{
     ARCHITECTURE_OVERLAY_SCHEMA, ARCHITECTURE_VIEWER_SCHEMA, ArchitectureClassCounts,
@@ -56,6 +63,10 @@ pub use canvas::{CanvasOptions, canvas_document, write_canvas};
 pub use cql::{render_cql_json, render_cql_jsonl, render_cql_table};
 pub use cypher::{cypher_document, write_cypher};
 pub use graphml::{graphml_document, write_graphml};
+pub use hierarchy_view::{
+    CommunityHierarchyView, HIERARCHY_VIEW_SCHEMA, HierarchyGroupView, HierarchyLevelView,
+    HierarchyViewContext, community_hierarchy_view,
+};
 pub use history_bundle::{
     DerivedArtifactRequest, HistoricalPublicationEvidence, HistoryBundleInput,
     SUPPORTED_HISTORY_RENDERER, publish_history_bundle,
@@ -63,7 +74,9 @@ pub use history_bundle::{
 pub use history_viewer::{HistoricalViewError, historical_graph_document, historical_view_model};
 pub use html::{
     GraphViewBundle, HtmlOptions, HtmlRender, graph_community_view_model_document,
-    graph_view_model_bundle_document, graph_view_model_document, html_document, write_html,
+    graph_view_model_bundle_document, graph_view_model_bundle_document_with_hierarchy,
+    graph_view_model_document, html_document, html_document_with_hierarchy, write_html,
+    write_html_with_hierarchy,
 };
 pub use json::{JsonExportOptions, export_json_value, write_json};
 pub use lenses::{
@@ -86,9 +99,10 @@ pub use report::{
     render_orientation_markdown, validate_blind_spot_report, validate_orientation_graph_identity,
 };
 pub use review::{
-    MAX_REVIEW_RENDER_BYTES, RenderedReview, render_readiness_json, render_readiness_markdown,
-    render_review_json, render_review_markdown, render_review_markdown_bounded,
-    render_review_sarif, render_review_text,
+    MAX_REVIEW_RENDER_BYTES, RenderedReview, ReviewSection, render_readiness_json,
+    render_readiness_markdown, render_review_json, render_review_markdown,
+    render_review_markdown_bounded, render_review_markdown_selected, render_review_sarif,
+    render_review_text,
 };
 pub use svg::{SvgOptions, spring_layout, svg_document, write_svg};
 pub use tree::{TreeNode, TreeOptions, build_tree, tree_html_document, write_tree_html};
@@ -96,7 +110,7 @@ pub use viewer_model::{
     EffectiveGraphViewContext, GRAPH_VIEWER_SCHEMA, GraphViewCommunity, GraphViewDocument,
     GraphViewEdge, GraphViewModel, GraphViewNode, GraphViewSource, GraphViewStats,
     effective_graph_view_model, graph_view_model, shared_viewer_html,
-    shared_viewer_html_with_communities,
+    shared_viewer_html_with_communities, shared_viewer_html_with_hierarchy,
 };
 pub use wiki::{WikiExport, WikiOptions, export_wiki};
 pub use workbench::{
@@ -120,6 +134,8 @@ pub enum OutputError {
     InvalidReview(String),
     #[error("invalid agent query view: {0}")]
     InvalidAgentQuery(String),
+    #[error("invalid agent text page: {0}")]
+    InvalidAgentTextPage(String),
     #[error("agent query view text is {rendered_bytes} bytes; limit is {limit}")]
     AgentQueryTextBudgetExceeded { rendered_bytes: usize, limit: usize },
     #[error(transparent)]

@@ -17,11 +17,17 @@ import {
 import type { ArchitectureLens, ArchitectureOverview, ArchitectureViewModel } from "../contracts/architecture";
 import type { GraphViewModel } from "../contracts/graph";
 import type { WorkbenchModel, WorkbenchView } from "../contracts/workbench";
+import type { ThemePreference } from "../lib/theme";
 import { ArchitectureMap, type ArchitectureSelection } from "../architecture/ArchitectureMap";
 import { architectureOverview } from "../architecture/projection";
 import { CallGraph } from "../calls/CallGraph";
-import { CompassGraph, type GraphHost } from "../graph/CompassGraph";
+import {
+  CompassGraph,
+  type GraphHost
+} from "../graph/CompassGraph";
 import { codeQueryGraphViewModel } from "../graph/codeQueryGraph";
+import { embeddedCommunityBound } from "../graph/communityBound";
+import { GraphToolbarSlotContext } from "../graph/GraphToolbarSlot";
 import type { InspectorLayout } from "../graph/inspectorLayout";
 import { compareGraphs } from "../history/ComparisonOverlay";
 
@@ -38,7 +44,9 @@ export function VisualizationWorkbench({
   communityError,
   onBackToOverview,
   initialInspectorLayout,
-  onInspectorLayoutChange
+  onInspectorLayoutChange,
+  themePreference,
+  onThemePreferenceChange
 }: {
   workbench: WorkbenchModel;
   host: VisualizationWorkbenchHost;
@@ -48,9 +56,18 @@ export function VisualizationWorkbench({
   onBackToOverview?: (() => void) | undefined;
   initialInspectorLayout?: InspectorLayout | undefined;
   onInspectorLayoutChange?: ((layout: InspectorLayout) => void) | undefined;
+  themePreference?: ThemePreference | undefined;
+  onThemePreferenceChange?: ((next: ThemePreference) => void) | undefined;
 }) {
   const [activeViewId, setActiveViewId] = useState(() => hashView(workbench) ?? workbench.defaultView);
-  const [navigationCollapsed, setNavigationCollapsed] = useState(false);
+  // A workbench that publishes one view has nothing to navigate between, so the
+  // rail starts folded to the stage: an export reads as the graph, not as a
+  // one-item menu. Hosts that publish several views keep the rail open.
+  const singleView = workbench.views.length <= 1;
+  const [navigationCollapsed, setNavigationCollapsed] = useState(singleView);
+  // The graph control rail belongs to the header row here, so the canvas keeps
+  // the whole stage instead of lending its top strip to floating controls.
+  const [controlSlot, setControlSlot] = useState<HTMLElement | null>(null);
   const activeView = workbench.views.find((view) => view.id === activeViewId)
     ?? workbench.views[0];
 
@@ -102,23 +119,27 @@ export function VisualizationWorkbench({
               : <PanelLeftCloseIcon aria-hidden="true" />}
           </button>
         </header>
-        <nav aria-label="Graph views">
-          {workbench.views.map((view) => (
-            <button
-              key={view.id}
-              type="button"
-              aria-current={view.id === activeView.id ? "page" : undefined}
-              onClick={() => selectView(view.id)}
-            >
-              <ViewIcon view={view} />
-              <span>
-                <strong>{view.title}</strong>
-                <small>{view.description}</small>
-              </span>
-              <i data-status={view.coverage.status} title={`${view.coverage.status} view`} />
-            </button>
-          ))}
-        </nav>
+        {singleView ? (
+          <nav aria-label="Graph views" />
+        ) : (
+          <nav aria-label="Graph views">
+            {workbench.views.map((view) => (
+              <button
+                key={view.id}
+                type="button"
+                aria-current={view.id === activeView.id ? "page" : undefined}
+                onClick={() => selectView(view.id)}
+              >
+                <ViewIcon view={view} />
+                <span>
+                  <strong>{view.title}</strong>
+                  <small>{view.description}</small>
+                </span>
+                <i data-status={view.coverage.status} title={`${view.coverage.status} view`} />
+              </button>
+            ))}
+          </nav>
+        )}
         <footer>
           <span>Snapshot</span>
           <code>{shortIdentity(workbench.graphIdentity)}</code>
@@ -126,10 +147,11 @@ export function VisualizationWorkbench({
       </aside>
       <main className="visualization-main">
         <header className="visualization-context">
-          <div>
+          <div className="visualization-context-title">
             <span>{viewEyebrow(activeView)}</span>
             <strong>{activeView.title}</strong>
           </div>
+          <div className="visualization-controls" ref={setControlSlot} />
           <div className="visualization-coverage" data-status={activeView.coverage.status}>
             {activeView.kind !== "call" && (
               <>
@@ -140,19 +162,26 @@ export function VisualizationWorkbench({
             <strong>{coverageLabel(activeView)}</strong>
           </div>
         </header>
-        <section className="visualization-stage" aria-label={`${activeView.title} visualization`}>
-          <WorkbenchView
-            key={activeView.id}
-            view={activeView}
-            host={host}
-            communityDetail={communityDetail}
-            communityLoading={communityLoading}
-            communityError={communityError}
-            onBackToOverview={onBackToOverview}
-            initialInspectorLayout={initialInspectorLayout}
-            onInspectorLayoutChange={onInspectorLayoutChange}
-          />
-        </section>
+        <GraphToolbarSlotContext.Provider value={controlSlot}>
+          <section
+            className="visualization-stage"
+            aria-label={`${activeView.title} visualization`}
+          >
+            <WorkbenchView
+              key={activeView.id}
+              view={activeView}
+              host={host}
+              communityDetail={communityDetail}
+              communityLoading={communityLoading}
+              communityError={communityError}
+              onBackToOverview={onBackToOverview}
+              initialInspectorLayout={initialInspectorLayout}
+              onInspectorLayoutChange={onInspectorLayoutChange}
+              themePreference={themePreference}
+              onThemePreferenceChange={onThemePreferenceChange}
+            />
+          </section>
+        </GraphToolbarSlotContext.Provider>
       </main>
     </div>
   );
@@ -166,7 +195,9 @@ function WorkbenchView({
   communityError,
   onBackToOverview,
   initialInspectorLayout,
-  onInspectorLayoutChange
+  onInspectorLayoutChange,
+  themePreference,
+  onThemePreferenceChange
 }: {
   view: WorkbenchView;
   host: VisualizationWorkbenchHost;
@@ -176,6 +207,8 @@ function WorkbenchView({
   onBackToOverview?: (() => void) | undefined;
   initialInspectorLayout?: InspectorLayout | undefined;
   onInspectorLayoutChange?: ((layout: InspectorLayout) => void) | undefined;
+  themePreference?: ThemePreference | undefined;
+  onThemePreferenceChange?: ((next: ThemePreference) => void) | undefined;
 }) {
   if (view.kind === "call") {
     return (
@@ -213,6 +246,11 @@ function WorkbenchView({
             <small>
               +{comparison.addedNodes} / −{comparison.removedNodes} / Δ{comparison.changedNodes} nodes
             </small>
+            {view.hierarchyDiff !== undefined ? (
+              <small data-hierarchy-diff="true">
+                {communityStructureChange(view.hierarchyDiff)}
+              </small>
+            ) : null}
           </span>
         </div>
         <FilteredGraph
@@ -238,14 +276,50 @@ function WorkbenchView({
       host={host}
       preferredLayout={preferredLayout}
       communityDetails={view.kind === "code" ? view.communityDetails : undefined}
+      hierarchy={view.kind === "code" ? view.hierarchy : undefined}
+      initialLevel={view.kind === "code" ? view.hierarchy?.initialLevel : undefined}
       communityDetail={view.kind === "code" ? communityDetail : undefined}
       communityLoading={view.kind === "code" ? communityLoading : undefined}
       communityError={view.kind === "code" ? communityError : undefined}
       onBackToOverview={view.kind === "code" ? onBackToOverview : undefined}
       initialInspectorLayout={initialInspectorLayout}
       onInspectorLayoutChange={onInspectorLayoutChange}
+      themePreference={themePreference}
+      onThemePreferenceChange={onThemePreferenceChange}
     />
   );
+}
+
+/**
+ * One bounded line about the community structure between two generations.
+ * Absence of the diff means a side published no hierarchy, so the banner says
+ * nothing rather than "unchanged".
+ */
+function communityStructureChange(diff: NonNullable<
+  Extract<
+    Parameters<typeof VisualizationWorkbench>[0]["workbench"]["views"][number],
+    { kind: "history" }
+  >["hierarchyDiff"]
+>): string {
+  if (
+    diff.split === 0
+    && diff.merged === 0
+    && diff.appeared === 0
+    && diff.disappeared === 0
+    && diff.ambiguous === 0
+  ) {
+    return `${diff.stable} community groups unchanged`;
+  }
+  const parts = [
+    diff.split > 0 ? `${diff.split} split` : undefined,
+    diff.merged > 0 ? `${diff.merged} merged` : undefined,
+    diff.appeared > 0 ? `${diff.appeared} new` : undefined,
+    diff.disappeared > 0 ? `${diff.disappeared} gone` : undefined,
+    diff.ambiguous > 0 ? `${diff.ambiguous} ambiguous` : undefined
+  ].filter((part): part is string => part !== undefined);
+  return `Community structure: ${parts.join(" · ")}${
+    diff.omittedEvents > 0 ? ` · ${diff.omittedEvents} more omitted` : ""
+  }`;
 }
 
 function FilteredGraph({
@@ -255,12 +329,16 @@ function FilteredGraph({
   sourceRevisions,
   preferredLayout,
   communityDetails,
+  hierarchy,
+  initialLevel,
   communityDetail,
   communityLoading,
   communityError,
   onBackToOverview,
   initialInspectorLayout,
-  onInspectorLayoutChange
+  onInspectorLayoutChange,
+  themePreference,
+  onThemePreferenceChange
 }: {
   model: GraphViewModel;
   host: VisualizationWorkbenchHost;
@@ -268,12 +346,16 @@ function FilteredGraph({
   sourceRevisions?: Parameters<typeof CompassGraph>[0]["sourceRevisions"];
   preferredLayout: Parameters<typeof CompassGraph>[0]["preferredLayout"];
   communityDetails?: Record<string, GraphViewModel> | undefined;
+  hierarchy?: Parameters<typeof CompassGraph>[0]["hierarchy"];
+  initialLevel?: number | undefined;
   communityDetail?: { communityId: number; model: GraphViewModel } | undefined;
   communityLoading?: number | null | undefined;
   communityError?: string | undefined;
   onBackToOverview?: (() => void) | undefined;
   initialInspectorLayout?: InspectorLayout | undefined;
   onInspectorLayoutChange?: ((layout: InspectorLayout) => void) | undefined;
+  themePreference?: ThemePreference | undefined;
+  onThemePreferenceChange?: ((next: ThemePreference) => void) | undefined;
 }) {
   const [relation, setRelation] = useState("");
   const [evidence, setEvidence] = useState("");
@@ -284,9 +366,13 @@ function FilteredGraph({
   const filterPanelId = useId();
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const filterPanelRef = useRef<HTMLDivElement>(null);
+  const embeddedDetailModel = communityId === undefined
+    ? undefined
+    : communityDetails?.[String(communityId)];
   const embeddedCommunityDetail = communityId === undefined ? undefined : {
     communityId,
-    model: communityDetails?.[String(communityId)] ?? model
+    model: embeddedDetailModel ?? model,
+    bounded: embeddedCommunityBound(model, communityId, embeddedDetailModel)
   };
   const activeCommunityDetail = embeddedCommunityDetail ?? communityDetail;
   const activeModel = activeCommunityDetail?.model ?? model;
@@ -339,6 +425,8 @@ function FilteredGraph({
     <div className="workbench-graph-lens">
       <CompassGraph
         model={activeCommunityDetail ? model : filtered}
+        hierarchy={hierarchy}
+        initialLevel={initialLevel}
         communityDetail={activeCommunityDetail ? {
           ...activeCommunityDetail,
           model: filtered
@@ -348,6 +436,8 @@ function FilteredGraph({
         onBackToOverview={communityId === undefined ? onBackToOverview : () => setCommunityId(undefined)}
         initialInspectorLayout={initialInspectorLayout}
         onInspectorLayoutChange={onInspectorLayoutChange}
+        themePreference={themePreference}
+        onThemePreferenceChange={onThemePreferenceChange}
         host={{
           ...host,
           openCommunity: (id) => {

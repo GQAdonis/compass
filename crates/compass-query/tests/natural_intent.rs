@@ -2,14 +2,16 @@ mod support;
 
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
 use compass_graph::GraphSnapshotBuilder;
 use compass_model::query_contract::{
     CodeQueryLimits, CodeQueryOperation, MAX_INDEXED_CANDIDATE_NODES_READ, QueryDiagnosticCode,
+    SearchRequest,
 };
 use compass_query::{
     EngineSelection, NaturalQueryIntent, NaturalQueryRequest, ProfiledCodeQueryResponse,
-    QUERY_EXECUTION_PROFILE_V1, QUERY_PLANNER_PROFILE_V1, QUERY_RANKER_PROFILE_V1,
+    QUERY_EXECUTION_PROFILE_V1, QUERY_PLANNER_PROFILE_V1, QUERY_RANKER_PROFILE_V1, QueryErrorKind,
     open_with_engine, plan_natural_query,
 };
 use compass_store::{STORE_FILE_NAME, STORE_REF_FILE_NAME, SqliteStore};
@@ -102,6 +104,31 @@ fn natural_intents_route_to_typed_operations_with_backend_parity()
 }
 
 #[test]
+fn expired_typed_query_deadline_fails_closed_with_a_typed_timeout()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let engine = open_with_engine(
+        &graph_path,
+        None,
+        &directory.path().join("cache"),
+        EngineSelection::Json,
+    )?
+    .with_deadline(Instant::now());
+    let error = match engine.search(SearchRequest {
+        query: "UserService".to_owned(),
+        limits: CodeQueryLimits::default(),
+    }) {
+        Ok(_) => return Err("an expired deadline must fail closed".into()),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), "code_query_timeout");
+    assert_eq!(error.kind(), QueryErrorKind::Timeout);
+    Ok(())
+}
+
+#[test]
 fn contradictory_and_ambiguous_questions_never_invent_direction()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
@@ -120,13 +147,18 @@ fn contradictory_and_ambiguous_questions_never_invent_direction()
 
     let ambiguous = engine.query_natural(request("who calls list?"))?;
     assert_eq!(ambiguous.operation, CodeQueryOperation::Callers);
-    assert!(ambiguous.nodes.is_empty());
     assert!(
         ambiguous
             .diagnostics
             .iter()
             .any(|diagnostic| { diagnostic.code == QueryDiagnosticCode::AmbiguousMatch })
     );
+    // Ambiguity retains the exact-name candidates so the next request can
+    // disambiguate in one step, and still invents no usage relationship.
+    assert_eq!(ambiguous.nodes.len(), 2);
+    assert_eq!(ambiguous.results.len(), 2);
+    assert!(ambiguous.edges.is_empty());
+    assert!(ambiguous.paths.is_empty());
     Ok(())
 }
 

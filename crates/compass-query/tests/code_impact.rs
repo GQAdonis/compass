@@ -3,9 +3,180 @@ mod support;
 use std::fs;
 
 use compass_model::code_graph::{EdgeKind, GraphDocument};
+use compass_model::code_graph::{EdgeRecord, NodeKind};
 use compass_model::identity::edge_id;
+use compass_model::provenance::{EvidenceConfidence, EvidenceOrigin, Provenance, SourceAnchor};
 use compass_model::query_contract::{CodeQueryLimits, ImpactRequest};
 use compass_query::open;
+
+fn site() -> SourceAnchor {
+    SourceAnchor {
+        file: "src/lib.rs".to_owned(),
+        start_byte: 0,
+        end_byte: 4,
+        start_line: 1,
+        start_column: 0,
+        end_line: 1,
+        end_column: 4,
+    }
+}
+
+fn owner_level_edge(source: &str, kind: EdgeKind) -> EdgeRecord {
+    edge(source, kind, "n:callee")
+}
+
+fn edge(source: &str, kind: EdgeKind, target: &str) -> EdgeRecord {
+    let anchor = site();
+    let id = edge_id(source, kind, target, Some(&anchor), None);
+    EdgeRecord {
+        id: id.clone(),
+        key: id,
+        source: source.to_owned(),
+        target: target.to_owned(),
+        kind,
+        occurrence_rule: None,
+        relationship_site: Some(anchor.clone()),
+        details: None,
+        evidence: vec![Provenance {
+            origin: EvidenceOrigin::Ast,
+            extractor: "test".to_owned(),
+            confidence: EvidenceConfidence::Exact,
+            rule: None,
+            anchors: vec![anchor],
+            wiring_site: None,
+            score: None,
+            candidates: Vec::new(),
+        }],
+        weight: None,
+        context: None,
+        deferred: false,
+        diagnostics: Vec::new(),
+    }
+}
+
+#[test]
+fn impact_retains_the_direct_caller_trail_ahead_of_calls_to_the_owning_module()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let mut graph = GraphDocument::load(&graph_path)?;
+    // Drop the fixture's stronger direct call so the only competition left is
+    // between two same-strength reference edges: one that names the target and
+    // one that only reaches its containing owner.
+    graph.links.retain(|edge| {
+        !(edge.source == "n:list" && edge.target == "n:callee" && edge.kind == EdgeKind::Calls)
+    });
+    let direct = edge("n:dependent", EdgeKind::References, "n:callee");
+    let direct_id = direct.id.clone();
+    graph.links.push(direct);
+    // `n:other` references the class that contains the target rather than
+    // naming the target. The reverse walk resolves that owner spelling through
+    // the containment chain, and owner-level evidence must not displace the
+    // direct reference from the bounded trail ledger.
+    graph
+        .nodes
+        .push(support::node("n:owner", NodeKind::Class, "Store", "Store"));
+    graph
+        .links
+        .push(edge("n:owner", EdgeKind::Contains, "n:callee"));
+    let owner_reference = [
+        "n:listing",
+        "n:other",
+        "n:unicode",
+        "n:resume",
+        "n:snake",
+        "n:camel",
+        "n:caller",
+        "n:heuristic",
+    ]
+    .into_iter()
+    .map(|source| edge(source, EdgeKind::References, "n:owner"))
+    .find(|candidate| candidate.id < direct_id)
+    .ok_or("fixture needs an owner-level reference whose ID sorts before the direct one")?;
+    let owner_source = owner_reference.source.clone();
+    graph.links.push(owner_reference);
+    fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
+
+    let engine = open(&graph_path, None, &directory.path().join("cache"))?;
+    let impact = engine.impact(ImpactRequest {
+        symbol: "Store.callee".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits {
+            max_paths: 1,
+            ..CodeQueryLimits::default()
+        },
+    })?;
+    let trail = impact.paths.first().ok_or("expected a retained trail")?;
+    assert!(
+        impact.nodes.iter().any(|node| node.id == owner_source),
+        "the owner-level reference must be resolved through the containment chain"
+    );
+    assert_eq!(
+        trail.node_ids.last().map(String::as_str),
+        Some("n:dependent")
+    );
+    Ok(())
+}
+
+#[test]
+fn impact_retains_the_direct_caller_trail_ahead_of_owner_level_references()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let mut graph = GraphDocument::load(&graph_path)?;
+    let call_id = graph
+        .links
+        .iter()
+        .find(|edge| {
+            edge.source == "n:list" && edge.target == "n:callee" && edge.kind == EdgeKind::Calls
+        })
+        .map(|edge| edge.id.clone())
+        .ok_or("fixture is missing the n:list -> n:callee call edge")?;
+    // Owner-level reference and import edges carry the fixture's other nodes
+    // into the reverse walk. Some of their deterministic IDs sort before the
+    // call edge, so an unsorted traversal spends its whole trail ledger on
+    // them and never records the caller that changing the symbol would break.
+    let mut sorted_earlier = 0;
+    for source in [
+        "n:listing",
+        "n:other",
+        "n:unicode",
+        "n:resume",
+        "n:snake",
+        "n:camel",
+        "n:alias",
+        "n:caller",
+        "n:dependent",
+        "n:heuristic",
+    ] {
+        let edge = owner_level_edge(source, EdgeKind::References);
+        if edge.id < call_id {
+            sorted_earlier += 1;
+        }
+        graph.links.push(edge);
+    }
+    assert!(
+        sorted_earlier > 0,
+        "fixture needs at least one reference edge that sorts before the call edge"
+    );
+    fs::write(&graph_path, serde_json::to_vec_pretty(&graph)?)?;
+
+    let engine = open(&graph_path, None, &directory.path().join("cache"))?;
+    let impact = engine.impact(ImpactRequest {
+        symbol: "Store.callee".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits {
+            max_paths: 1,
+            ..CodeQueryLimits::default()
+        },
+    })?;
+    let trail = impact.paths.first().ok_or("expected a retained trail")?;
+    assert_eq!(trail.node_ids.last().map(String::as_str), Some("n:list"));
+    assert!(impact.nodes.iter().any(|node| node.id == "n:list"));
+    Ok(())
+}
 
 #[test]
 fn impact_walks_the_approved_reverse_family_and_gates_heuristics()

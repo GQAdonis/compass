@@ -93,6 +93,7 @@ paths.
 | `GRAPH_REPORT.md` | derived human orientation | architecture survey |
 | `orientation.json` | versioned Agent Orientation bound to the same graph generation | coding assistants and MCP |
 | `community-quality.json` | strict graph-bound community evidence | detector inspection, qualification, immutable history |
+| `community-hierarchy.json` | strict graph-bound community hierarchy with a level budget | bounded community overview, level navigation |
 | `graph.html` | derived optional visualization | interactive exploration |
 | `manifest.json` | incremental build state | next compatible update |
 | binary query caches | disposable acceleration | internal query loading |
@@ -199,6 +200,147 @@ reported at the named evaluation resolution; conductance, connectedness,
 largest-community fraction, singleton count, topology evidence mixes, and
 witness omissions must be interpreted alongside it. Numeric community IDs are
 local to this graph realization.
+
+## `community-hierarchy.json`
+
+Clustered typed builds publish schema `compass.community-hierarchy/1` beside
+the quality artifact, bound to the same `graphGeneration` and SHA-256
+`graphDigest`. A flat partition scales with the repository, so an overview
+needs a bounded number of named, nested units: measured examples are 112
+communities for `pallets/flask` and 2,781 for `colinhacks/zod`.
+
+The artifact is a list of levels, coarsest first. Level 0 is the root a reader
+opens; the last level is the published partition itself, where group `i` pairs
+with the community id recorded in `groups[i].community`. Community ids are not
+always dense — the incremental path remaps surviving communities — so the
+pairing is explicit rather than positional. Levels never repeat node ids:
+`groups[*].childIndices` index the next finer level, `memberCount` sums the
+members below, and `finestSignature` digests the published partition's member
+signatures, so a reader can prove the hierarchy describes the partition it was
+built from without storing per-node membership.
+
+The budget tuple is `rootTarget` (24), `levelTarget` (300), `maxLevels` (4), and
+`minLevelResolution` (0.05), published with the identity
+`community-hierarchy-budget/v1`. `budgetSatisfied` is a recorded fact, not a
+promise: a repository can publish communities that share no evidence at all,
+and the artifact keeps the achieved count instead of merging them. A level that
+holds one group is the whole repository drawn as a single node, so the builder
+never publishes one: when a coarsening step would collapse the level below, the
+hierarchy stops there and the achieved level becomes the root. Every derived
+level therefore decomposes the level below it into at least two groups; only the
+published partition a hierarchy ends on may hold one.
+
+Each level records the rule that produced it. A `relationship` level comes from
+the same seeded Leiden local moving clustering uses, at the resolution in
+`resolution`, and must remove at least a tenth of the level below it to be
+published. A `locationAffinity` level is cut out of the directory tree its
+groups already cite: the cut starts at the repository root and repeatedly
+expands the largest directory whose children still fit the budget, so every
+merged group is a real directory its members share, and a group that cites no
+dominant directory stays a group of its own. `mergeEvidence` records the
+counts, including `unkeyedGroups`, plus `escapedSingleBucket`, which is true
+when the exact cut could not expand at all and the level took one bounded step
+instead. That escape exists because a repository whose top-level layout is
+wider than the target — 49 top-level directories against a `rootTarget` of 24,
+as `TheAlgorithms/Python` publishes — otherwise leaves the cut with one bucket
+holding every named group, a bucket whose directory labels do not even apply.
+Escaping shows the repository's own directories, and `budgetSatisfied` records
+the overshoot instead of hiding the structure. The policy identity is published
+as `mergePolicy`.
+
+Group labels carry their provenance in a fixed order: `dominantDirectory`
+(longest common directory prefix covering at least 60% of members),
+`modulePrefix`, `hubMember`, then a generic `communityId`. Consumers must read
+`label.rule` and `label.generic` rather than parsing label text. Group
+`quality` reports cohesion and conductance over the graph that level
+partitions, plus `boundaryKinds` counted from the exact kind set recorded in
+`boundaryKinds`.
+
+A level's projection draws the relationships that cross its own groups, so a
+reader must expect a coarse level to show fewer couplings than the level below
+it: coarsening on relationship evidence deliberately merges groups that are
+connected, which internalizes the edges between them. `pallets/flask` publishes
+51 cross-community relationships at its finest level and none between the 24
+groups of its root, and no level invents a relationship to fill the gap.
+
+Level membership is a navigation aid derived from the same evidence as the
+communities themselves. It never changes nodes, edges, or query results, and
+absence of the artifact means unavailable navigation, not an empty hierarchy.
+`compass export hierarchy-json` reproduces the published artifact unchanged and
+refuses an unknown schema major or a mismatched graph.
+
+The standalone page embeds the same levels as
+`compass.viewer.hierarchy/1`, so an export with a published hierarchy opens on
+the coarsest level that decomposes the repository instead of a derived
+overview. A hierarchy whose every level holds one group — a partition with one
+community publishes exactly that — is not an opening view, so the page keeps
+the canvas the export already published and the level toggle still reaches
+every published level. The graph toolbar's scope reads
+`Level 0 | … | Symbols`: switching a level redraws the canvas, the coupling
+matrix, the area map, or the tiers from that level's projection, and the
+`Symbols` scope still shows the underlying node set. Double-clicking a group
+descends one level, narrowed to that group's children; the breadcrumb and the
+`Overview` control walk back up one group or to the repository. A level the
+export could not draw inside its node budget renders as the overview the export
+already had. Exports without the artifact keep the previous behaviour exactly.
+
+A workbench that publishes a single view carries no view menu: the reader sees
+the graph, and the navigation rail folds to the brand, the snapshot identity,
+and its disclosure. Every projection names its communities with the repository's
+own words — when a build published no `labels.json`, the viewer takes the names
+from the finest level of the embedded hierarchy, because one group per community
+is exactly what that level holds, and it never replaces a label the export
+already published. Selecting a node or opening a community hides the community
+list entirely, so the inspector keeps the whole column; the list returns with
+the overview, which is also where the reader picks the next community, and
+Escape steps back out of a node selection. A history comparison is the
+exception: it keeps the list as a disclosure because both sides of the change
+stay reachable while one of them is read.
+
+A selected community reports the evidence the hierarchy holds for it rather
+than the bubble's own drawn degree: the symbols it stands for, its sub-groups,
+cohesion and conductance, the boundary kinds its members carry, its durable
+group id, and the couplings it keeps with the groups beside it in the level
+projection that drew it. The community that a detail can be opened for is the
+one the finest level pairs with the group: a group of a coarser level names no
+published community, so the reader descends instead of opening a community the
+group does not represent.
+
+### Group identity and the identity ledger
+
+`groups[*].id` is evidence-derived: `h<level>-<signature16>`, digesting the
+sorted member-community signatures of the group's members, with the algorithm
+recorded as `signatureAlgorithm` (`hierarchy-signature/v1`). `signature` is the
+group's digest in this build; `id` is the durable name, which reconciliation
+rewrites to the previous build's id when the same group survives. `index` stays
+presentation order, so a reader must key on `id`.
+
+Every rebuild publishes `community-hierarchy.json.sig` beside the artifact: a
+ledger of flattened group ordinal to `"<id> <signature>"`. It is written with
+the other required artifacts, removed with `--no-cluster`, and lets a later
+build restore identity when only the ledger survives. Reconciliation events are
+bounded and are not embedded in the artifact; consumers read them from the
+reconciliation report or the history comparison.
+
+### `compass.community-hierarchy-diff/1`
+
+Comparing two history realizations publishes a bounded diff of their community
+hierarchies on the history workbench view (`compass.viewer.workbench/1`,
+`kind: "history"`, `hierarchyDiff`). It names both sides (generation, graph
+digest, hierarchy digest, level and group counts) and the policy that produced
+it, then counts `stable`, `split`, `merged`, `appeared`, `disappeared`, and
+`ambiguous` entries with a bounded `events` list.
+
+An event carries the base and target group ids it involves, the member overlap
+that justifies it, and the members at stake. A group whose id survives is
+stable and is only listed when its membership moved underneath the same id;
+where an id does not survive, the members decide — one base group reappearing
+across several target groups is a split, several folding into one is a merge,
+and a base group with two candidates inside the ambiguity margin is reported as
+ambiguous with both named. `omittedEvents` counts the entries the bound
+withheld, and `resultDigest` covers the payload. Consumers must reject an
+unknown schema major, and absence means the comparison is unavailable because a
+side published no hierarchy — never "nothing changed".
 
 ### Inference levels
 
@@ -427,9 +569,14 @@ removed, and changed graph evidence.
 Node-link graph views provide bounded 1–4-hop selection isolation with exact
 incoming, outgoing, or bidirectional traversal, adjustable layout spacing, and
 a navigable minimap based on the rendered graph coordinates. Workbench graph
-filters live in the top graph-control rail and open as a compact panel, leaving
-the canvas at full height. Filters and their result count follow the graph
-currently on screen when moving between an overview and community detail.
+filters live in the top graph-control rail, which shares the view header row
+instead of floating over the canvas, and open as a compact panel. In a narrow
+header the rail wraps rather than scrolling its trailing controls out of reach.
+Filters and their result count follow the graph currently on screen when moving
+between an overview and community detail, and the community list stands down to
+its summary line while one community is open so the inspector keeps the room
+its node detail needs; it returns with the overview, and the reader can open it
+by hand meanwhile.
 Neighborhood depth and direction can be prepared before selecting a node;
 isolation becomes available after selection and fits the resulting
 neighborhood. The graph-settings panel documents keyboard controls; press `?`
@@ -443,16 +590,21 @@ workbench schemas must be rejected. Plain `compass export json` remains
 `compass.viewer.graph/1` for existing consumers.
 
 When the node limit selects a community overview, the standalone document
-embeds a deterministic bounded set of complete community details: at most
-5,000 detail nodes and 40,000 internal detail edges across the export. Details
-are validated only when opened. Double-click an available community node (or
-use **Open community** in the inspector) to enter its member graph; use
-**Overview** to return. Communities outside the embedded budget remain visible
-and are marked as unavailable for standalone drilldown; use the VS Code graph
-or `compass export json --community ID` to inspect one without loading every
-community into the HTML page. Embedded details preserve internal edges, source
-anchors, and hyperedges, while cross-community edges remain represented only
-in the overview.
+embeds a deterministic bounded detail for every community it can size: the
+export spends at most 5,000 detail nodes and 40,000 internal detail edges on
+one shared window, so small communities are embedded whole and large ones open
+on their most connected symbols instead of being dropped. Members are ordered
+by connectivity first, and a bounded window names itself in the viewer — it
+states how many of the community's symbols it holds and points at the VS Code
+graph or `compass export json --community ID` for the complete community. Only
+an export whose budget cannot host a single member leaves communities marked as
+unavailable for standalone drilldown. Details are validated only when opened.
+Double-click a community node (or use **Open community** in the inspector) to
+enter its member graph; use **Overview** to return. On a page that also opens
+on a published hierarchy, the finest level's groups open the same details, so
+descending the levels and entering a community stay one path. Embedded details
+preserve internal edges, source anchors, and hyperedges, while cross-community
+edges remain represented only in the overview.
 
 Large community overviews use a deterministic hub-centered layout. Physics is
 paused, labels remain bounded, and at most 4,000 aggregate edges are rendered
@@ -461,6 +613,124 @@ backbone; the inspector continues to report the complete relationship count
 and discloses the rendered count. This keeps repositories with thousands of
 communities from producing an expensive rectangular edge curtain without
 changing `graph.json` or the complete overview model.
+
+When an exported graph is large but not itself aggregated — for example a
+repository under the 5,000-node export limit — the viewer derives the same
+community overview from the embedded model instead of painting thousands of
+unlabeled symbols on one screen. The overview packs one labelled bubble per
+community, sized by exact member count, with cross-community relationships
+weighted by the number of relationships they summarize and drawn in the colour
+of their dominant relationship category. Hovering an aggregated relationship
+states the exact mix (for example `12 calls · 4 imports`), so the overview
+answers what binds two subsystems, not only that they are bound. The first
+screen then reads as a map of the repository rather than a hairball.
+
+Community overviews keep their labels readable in a fitted view: the packing
+reserves label room for the communities that matter most — ranked by member
+count, cross-community coupling, and boundary content such as routes and
+database objects — the rest stay available on hover and in the inspector, and
+**Show labels** reveals every bubble label. A `Repository` path above the canvas
+shows where the reader is and returns to the overview from a community detail,
+and every community row in the inspector can open its group directly.
+
+The same communities can be read through four designs, switchable from the
+**Overview design** control in the graph toolbar:
+
+- **Bubbles** — the packed canvas map above; position and labels carry
+  importance, edge colour carries the dominant relationship kind.
+- **Matrix** — one row and column per community (bounded to the most important
+  ones, with the omitted count stated), cell saturation is the exact
+  relationship count and cell colour the dominant relationship kind; selecting a
+  cell opens that community.
+- **Area** — a strip treemap where every tile's area is exactly proportional to
+  its symbol count, including a single disclosed tail tile when the render bound
+  applies. This is the design that stays readable for repositories with
+  thousands of communities.
+- **Tiers** — importance tiers of proportional bars with coupling ribbons
+  between them, which shows how the important layer couples into the rest.
+
+Every design reads the same validated model and the same overview projection, so
+switching designs never changes a query result, an artifact, or a community
+identity. When an export records only relationship counts — the aggregated
+fallback above the node limit — the matrix and tiers say so instead of implying
+that a neutral cell colour means something.
+
+Community colours come from one shared presentation palette
+(`crates/compass-output/src/palette.rs`) used by the viewer model, the HTML and
+SVG exports, and the Obsidian export, so the same graph looks the same wherever
+it is opened. The twelve hues sit in a narrow lightness band with moderate
+chroma: no community shouts, labels stay legible in ink or on white, and the
+index alternates hue families so neighbouring communities rarely share a hue.
+Colour is presentation only — it carries no meaning that a query depends on, and
+changes to it never invalidate a graph, a community identity, or a cached
+artifact.
+
+The graph canvas is flat schematic paper: one surface colour plus a hairline
+grid, with the community shapes, relationships, and labels carrying the
+information. Light and dark operating-system themes, VS Code themes, and
+high-contrast themes all drive the same tokens, so a standalone export and the
+editor extension stay visually identical.
+
+**Automatic** layout arranges itself when a view opens: the canvas starts from
+its deterministic seeded map, runs the force simulation until it settles, and
+stops by itself — symbol canvases, community overviews, and community
+drill-downs all benefit, and the arranging screen offers "Show graph now" if a
+graph takes longer than expected. Once settled, a deterministic separation pass
+removes any bubble and label collisions the simulation left behind, so the
+arrangement follows the couplings while labels stay readable. Graphs past the
+interactive budget (1,000 nodes or 4,000 relationships) keep their deterministic
+seeded map and say `press Layout to arrange` instead of blocking the first
+frame. Choosing Circle, Concentric, Spiral, or Square grid places the seeded
+layout immediately and never starts physics; **Layout** and **Stop** remain
+explicit actions on the toolbar, and `F`, `+`, `−`, `0`, `I`, `[`, `]`, `D`,
+and `M` keep working as documented in the graph settings panel.
+
+Layout is centre-weighted. The community overview and the flat community map
+both place the most important community in the middle and settle every next one
+outward within its own radius, so large communities hold the centre while small
+communities and single symbols scatter around the outside. Automatic layout adds
+a second step after the force simulation: each settled node keeps the direction
+its couplings gave it and moves toward the radius its importance rank earns
+before collisions are separated, which is what keeps a 174-community map centred
+and comfortable instead of drifting to one side.
+
+Community overviews spend hue on signal rather than on everything. The
+communities the importance budget labels keep their palette colour and a soft
+halo in the same hue; the long tail renders as neutral context, and pointing at
+or selecting a context bubble reveals its community colour on the spot. That is
+what stops a 174-community map from reading as confetti while still letting a
+reader find any community's colour, which the inspector's community list keeps
+as the full key.
+
+Standalone documents carry a **Colour theme** control — `Auto`, `Light`, or
+`Dark` — in the graph toolbar. `Auto` follows the operating system, and pinning
+a theme keeps the export's own surfaces stable for a screenshot or a shared
+file regardless of the viewer's system. The control never appears in an editor
+or IDE host, where the editor's own theme tokens take precedence over every
+Compass token.
+
+The control rail keeps the frequent actions and gives the rest a home. Scope,
+design variant, layout, run layout, zoom, fit, graph settings, and any host
+control (such as the workbench **Filters**) stay on the rail; **node labels**,
+**relationship labels**, **fit selection**, and **reset view** live in the graph
+settings panel, and `L` / `⇧ L` toggle labels from the keyboard. The design
+switch carries one icon per design — scattered map, coupling grid, area map,
+tier rows — and names itself on hover and to assistive technology rather than
+spending rail width on a label. When the graph
+stage is narrower than 1,240 px — an editor rail and an inspector are often
+enough — the rail wraps onto a second row, the scope and design switches drop to
+icons, and the breadcrumb and legend move down with it, so no control scrolls
+out of reach. Every control keeps an accessible name whether or not its visible
+label fits.
+**Communities** and **Symbols** in the graph toolbar switch between the derived
+overview and the unmodified symbol canvas; the graph remains the same validated
+model and no artifact is rewritten.
+
+Opening a community from a derived overview arranges that community once, then
+settles into the usual paused layout. A community larger than the viewer's
+drill-down budget opens its most connected symbols first and says so in the
+view; search still reaches every symbol and opens the community that holds it.
+**Overview**, the toolbar back control, or `Escape` returns to the overview.
 
 The HTML DOM and CSS classes are presentation details, not a compatibility
 contract. Automations should consume `graph.json` or `compass export json`
@@ -553,6 +823,57 @@ execution states, explicit caveats, full stable IDs, source locations, and
 `identity.sourceResultDigest` plus `identity.viewDigest`. A no-match or
 ambiguous response is never presented as a positive answer. `coverage` is
 `incomplete` only when the raw query says so; otherwise it is `unknown`.
+
+When a typed lookup cannot resolve one exact target, the projection retains the
+exact-name candidates in `primaryResults` with their IDs, kinds, and source
+anchors, reports `status.matchState = ambiguous`, and emits
+`retry_with_exact_id` actions. Callers therefore disambiguate in one follow-up
+instead of issuing a broad search. Primary results are deduplicated by node ID,
+including when a real self-edge names the same node twice.
+
+Typed text output is paged. Each page carries a
+`Pagination: page=N range=A-B of T next=<CURSOR>` footer; `--cursor` continues
+the same ledger at the same `--text-budget`. The cursor is a checksummed
+base64url envelope with a compact wire form that binds the operation, graph
+identity, page number, and a digest of the reviewed entry prefix at 64 bits
+each; cursors from an earlier release are rejected with an explicit version
+error. A cursor from another graph, another operation, or a changed result
+fails closed rather than restarting the page. One page renders at most 12
+primary results, 24 relationships, and 5 paths while reporting the ledger's
+true total, so a page carries the strongest evidence and `next=` continues the
+rest. Stable identifiers are printed only for a non-exact match, where the
+printed name may not address the row; a resolved answer and an exact-name pick
+list print the qualified name and source anchor instead, and the raw
+`compass.query/1` response still carries every identifier. A `PATHS` row prints
+its hop count and the labelled trail rather than the path identity, which is
+built from every node identifier on the trail, and a relationship row keeps its
+relation, endpoints and site on one line, spelling out the confidence and
+resolution only when they are not the strongest (`exact`).
+
+`--format agent-json --brief` emits `compass.query.agent-view.brief/1`: the same
+status, headline, caveats, source-located entities, relationships, paths, and
+next-action argv as `compass.query.agent-view/1`, without `identity`,
+`omissions`, per-relationship IDs, per-entity roles, or per-edge evidence
+layers. The brief projection is presentation-only; exact record identity and
+digests remain in the raw `compass.query/1` response.
+
+Agent View relationships are ordered by relation strength so a bounded answer
+keeps the direct usage an agent asked for: calls, instantiations, routes,
+handlers, and registrations first; then imports and exports; then references
+and documents; then remaining relations, with the exact relationship ID as the
+deterministic tie-break. Callers and callees primary results follow the same
+order, and their headline reports the source response's edge count, so
+`omissions.relationships` shows how many of them the bounded projection left
+out.
+
+`compass impact` output follows the same evidence rule in two places. The
+reverse walk visits edges that name the expanded node before edges that only
+reach its containing owner, then ranks by relation strength, because the
+retained trail ledger is capped and a heavily referenced symbol would
+otherwise spend it on owner-level trails. The text and agent views then order
+the impacted nodes by trail length and the strength of the trail's last hop, so
+the direct callers a change breaks are listed before the symbols that only
+touch a containing owner.
 
 The fixed presentation profile retains at most 12 primary results, 24
 relationships, 5 paths, 16 caveats, and 5 next actions. Serialized JSON is

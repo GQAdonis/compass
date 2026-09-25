@@ -813,7 +813,16 @@ fn envelope_preserves_ambiguity_without_inventing_a_target() -> Result<(), Box<d
     )?;
     let data = &envelope["result"];
     let view = &envelope["agentView"];
-    assert!(data["nodes"].as_array().is_some_and(Vec::is_empty));
+    // Ambiguity retains every exact-name candidate so the next request can
+    // disambiguate in one step, and still invents no usage relationship.
+    let mut candidates = data["nodes"]
+        .as_array()
+        .ok_or("nodes missing")?
+        .iter()
+        .filter_map(|node| node["id"].as_str())
+        .collect::<Vec<_>>();
+    candidates.sort_unstable();
+    assert_eq!(candidates, ["n:other-target", "n:target"]);
     assert!(data["edges"].as_array().is_some_and(Vec::is_empty));
 
     // The ambiguity must be reported, not resolved by picking a candidate.
@@ -830,14 +839,18 @@ fn envelope_preserves_ambiguity_without_inventing_a_target() -> Result<(), Box<d
         );
     }
     // The agent view must not invent a target either: it reports the ambiguity
-    // as its match state and offers no primary result or relationship.
+    // as its match state, lists every candidate for the caller to choose from,
+    // and offers no relationship for any of them.
     assert_eq!(view["status"]["matchState"], "ambiguous");
     assert_eq!(view["status"]["resultState"], "needs_resolution");
-    assert!(
-        view["primaryResults"].as_array().is_some_and(Vec::is_empty),
-        "{}",
-        view["primaryResults"]
-    );
+    let mut listed = view["primaryResults"]
+        .as_array()
+        .ok_or("primaryResults missing")?
+        .iter()
+        .filter_map(|result| result["id"].as_str())
+        .collect::<Vec<_>>();
+    listed.sort_unstable();
+    assert_eq!(listed, ["n:other-target", "n:target"]);
     assert!(
         view["relationships"].as_array().is_some_and(Vec::is_empty),
         "{}",
@@ -1078,7 +1091,7 @@ async fn mcp_code_queries_publish_structured_content_and_protocol_errors()
         .iter()
         .find_map(|content| content.as_text().map(|text| text.text.clone()))
         .ok_or("missing MCP text content")?;
-    assert!(text.starts_with("RESULT\n"));
+    assert!(text.starts_with("RESULT "), "{text}");
     assert!(text.contains("ANSWER\n"));
     let structured = response
         .structured_content

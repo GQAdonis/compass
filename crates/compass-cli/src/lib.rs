@@ -64,7 +64,7 @@ use compass_files::{
     ProjectSurrealEngine, detect, write_text_atomic,
 };
 use compass_global::{GlobalPaths, global_add};
-use compass_graph::god_nodes;
+use compass_graph::{CommunityHierarchy, god_nodes};
 use compass_graphdb::{push_to_falkordb, push_to_neo4j};
 use compass_model::GraphError;
 use compass_model::code_graph::{EdgeKind, GraphDocument};
@@ -80,19 +80,21 @@ use compass_output::{
     WorkbenchCoverage, WorkbenchCoverageStatus, WorkbenchModel, WorkbenchView,
     WorkbenchViewContent, affected_lens_view_model, artifact_lens_view_model,
     build_code_query_view, build_discovery_query_view, export_obsidian, export_wiki,
-    graph_artifact_identity, graph_community_view_model_document, graph_view_model_bundle_document,
-    graph_view_model_document, node_filenames, project_architecture,
-    render_agent_query_header_lines, render_agent_query_text, render_orientation_json,
-    validate_orientation_graph_identity, write_callflow_html, write_canvas, write_cypher,
-    write_graphml, write_svg, write_tree_html, write_workbench_html_with_source_navigation,
+    graph_artifact_identity, graph_community_view_model_document,
+    graph_view_model_bundle_document_with_hierarchy, graph_view_model_document, node_filenames,
+    project_architecture, render_agent_query_continuation_header, render_agent_query_header_lines,
+    render_agent_query_text, render_orientation_json, validate_orientation_graph_identity,
+    write_callflow_html, write_canvas, write_cypher, write_graphml, write_svg, write_tree_html,
+    write_workbench_html_with_source_navigation,
 };
 use compass_prs::{ProcessRunner, SystemRunner};
 use compass_query::{
     DEFAULT_AFFECTED_RELATIONS, DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET, DEFAULT_PATH_DEPTH_LIMIT,
     DEFAULT_TEXT_TOKEN_BUDGET, DiscoveryTextPageOptions, TextPageOptions, TraversalMode,
-    discovery_request_digest, format_affected, format_benchmark, open as open_code_query,
-    open_with_verified_document, query_graph_text_page, render_discovery_text_page_with_prefix,
-    render_explanation_page, render_shortest_path_with_limit, run_benchmark,
+    discovery_request_digest, explanation_source, format_affected, format_benchmark,
+    open as open_code_query, open_with_verified_document, query_graph_text_page,
+    render_discovery_text_page_with_prefix, render_explanation_page,
+    render_shortest_path_with_limit, run_benchmark,
 };
 use compass_semantic::{
     CachedCorpusExtractionOptions, CorpusExtractionOptions, PreparedDocumentInputs,
@@ -1992,10 +1994,20 @@ fn collect_state_health_notes(
         let drifted = configured && !install_commands::managed_skill_is_healthy(&skill);
         let missing_in_existing_directory =
             managed_directory.as_deref().is_some_and(Path::is_dir) && !skill.is_file();
-        if drifted || missing_in_existing_directory {
+        // The two states need different advice: a missing managed skill is
+        // restored by reinstalling it, while edited managed content is never
+        // overwritten, so the operator has to decide what to discard first.
+        if missing_in_existing_directory {
             record_attempt(relative);
             notes.push(format!(
-                "[compass health] {platform} managed skill is missing or modified at {}; repair with `compass install --platform {}`",
+                "[compass health] {platform} managed skill is missing at {}; repair with `compass install --platform {}`",
+                skill.display(),
+                platform.to_ascii_lowercase()
+            ));
+        } else if drifted {
+            record_attempt(relative);
+            notes.push(format!(
+                "[compass health] {platform} managed skill at {} no longer matches its install manifest; review it, then remove it and run `compass install --platform {}` to restore it",
                 skill.display(),
                 platform.to_ascii_lowercase()
             ));
@@ -3620,6 +3632,7 @@ fn validate_export_options(
             "--graph",
             "--labels",
             "--node-limit",
+            "--hierarchy-level",
             "--no-viz",
             "--output",
             "--view",
@@ -3649,6 +3662,7 @@ fn validate_export_options(
             "--graph",
             "--labels",
             "--node-limit",
+            "--hierarchy-level",
             "--view",
             "--direction",
             "--depth",
@@ -3749,6 +3763,9 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
     if format == "orientation-json" {
         return command_export_orientation_json(&args[1..]);
     }
+    if format == "hierarchy-json" {
+        return command_export_hierarchy_json(&args[1..]);
+    }
     if !matches!(
         format,
         "html"
@@ -3795,6 +3812,7 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
     let mut max_diagram_edges = 24_usize;
     let mut node_limit = 5000_isize;
     let mut community = None;
+    let mut hierarchy_level = None;
     let mut no_viz = false;
     let mut obsidian_dir = default_graph_path()
         .parent()
@@ -3943,6 +3961,35 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
                 node_limit = value;
                 index += 2;
             }
+            "--hierarchy-level" if matches!(format, "html" | "workbench-json") => {
+                seen_options.insert("--hierarchy-level");
+                let Some(value) = next().and_then(|value| value.parse::<usize>().ok()) else {
+                    return Outcome::failure(
+                        "error: --hierarchy-level must be a non-negative integer".to_owned(),
+                    );
+                };
+                if hierarchy_level.is_some() {
+                    return Outcome::failure("error: duplicate --hierarchy-level".to_owned());
+                }
+                hierarchy_level = Some(value);
+                index += 2;
+            }
+            value
+                if matches!(format, "html" | "workbench-json")
+                    && value.starts_with("--hierarchy-level=") =>
+            {
+                seen_options.insert("--hierarchy-level");
+                let Some(value) = value
+                    .strip_prefix("--hierarchy-level=")
+                    .and_then(|value| value.parse::<usize>().ok())
+                else {
+                    return Outcome::failure(
+                        "error: --hierarchy-level must be a non-negative integer".to_owned(),
+                    );
+                };
+                hierarchy_level = Some(value);
+                index += 1;
+            }
             "--community" if matches!(format, "json" | "viewer-json") => {
                 seen_options.insert("--community");
                 let Some(value) = next().and_then(|value| value.parse::<usize>().ok()) else {
@@ -3978,6 +4025,12 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
             "--community" => {
                 return Outcome::failure(
                     "error: --community is only valid with export json".to_owned(),
+                );
+            }
+            "--hierarchy-level" => {
+                return Outcome::failure(
+                    "error: --hierarchy-level is only valid with export html or export workbench-json"
+                        .to_owned(),
                 );
             }
             value if value.starts_with("--community=") => {
@@ -4312,6 +4365,7 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
                         relations: &view_relations,
                         program_path: program_path.as_deref(),
                     },
+                    hierarchy_level,
                 )
                 .and_then(|model| {
                     let source_navigation = export_source_navigation(&inputs, &graph_path);
@@ -4335,6 +4389,7 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
                         relations: &view_relations,
                         program_path: program_path.as_deref(),
                     },
+                    hierarchy_level,
                 )
                 .and_then(|model| serde_json::to_string(&model).map_err(|error| error.to_string()))
                 .map(ExportOutput::text)
@@ -4387,6 +4442,7 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
                 relations: &view_relations,
                 program_path: program_path.as_deref(),
             },
+            hierarchy_level,
         )
         .and_then(|model| serde_json::to_string(&model).map_err(|error| error.to_string()))
         .map(ExportOutput::text),
@@ -4499,6 +4555,7 @@ fn build_export_workbench(
     node_limit: isize,
     requested_views: &[ExportViewRequest],
     options: &ExportViewOptions<'_>,
+    hierarchy_level: Option<usize>,
 ) -> Result<WorkbenchModel, String> {
     let default_views = [ExportViewRequest::Code];
     let requests = if requested_views.is_empty() {
@@ -4524,11 +4581,28 @@ fn build_export_workbench(
     for request in requests {
         let (base_id, view) = match request {
             ExportViewRequest::Code => {
-                let bundle = graph_view_model_bundle_document(
+                let hierarchy = load_export_hierarchy(graph_path)?;
+                if let Some(level) = hierarchy_level {
+                    let levels = hierarchy
+                        .as_ref()
+                        .map_or(0, |artifact| artifact.levels.len());
+                    if level >= levels {
+                        return Err(format!(
+                            "--hierarchy-level {level} is unavailable: the published hierarchy at {} has {levels} level(s)",
+                            graph_path.display()
+                        ));
+                    }
+                }
+                let bundle = graph_view_model_bundle_document_with_hierarchy(
                     &inputs.document,
                     &inputs.communities,
                     graph_path,
                     &html_options,
+                    hierarchy
+                        .as_ref()
+                        .map(CommunityHierarchy::levels_view)
+                        .as_ref(),
+                    hierarchy_level,
                 )
                 .map_err(|error| error.to_string())?;
                 let coverage = if bundle.truncated {
@@ -4539,6 +4613,10 @@ fn build_export_workbench(
                     )
                 } else {
                     WorkbenchCoverage::graph(&bundle.overview)
+                };
+                let coverage = match bundle.hierarchy.as_ref() {
+                    Some(hierarchy) => coverage.with_hierarchy_levels(hierarchy.levels.len()),
+                    None => coverage,
                 };
                 (
                     "code".to_owned(),
@@ -4551,6 +4629,7 @@ fn build_export_workbench(
                         content: WorkbenchViewContent::Code {
                             model: bundle.overview,
                             community_details: bundle.community_details,
+                            hierarchy: bundle.hierarchy,
                         },
                     },
                 )
@@ -4597,6 +4676,7 @@ fn build_export_workbench(
                     truncated: graph.truncated,
                     nodes: graph.nodes.len(),
                     edges: graph.edges.len(),
+                    hierarchy_levels: None,
                     limitations: graph.coverage.limitations.clone(),
                 };
                 (
@@ -4705,6 +4785,7 @@ fn build_export_workbench(
                     history_commands::load_history_view_model_at(base, node_limit)?;
                 let (target_revision, _, after) =
                     history_commands::load_history_view_model_at(target, node_limit)?;
+                let hierarchy_diff = history_commands::load_history_hierarchy_diff(base, target)?;
                 let summarized = before.stats.aggregated || after.stats.aggregated;
                 let coverage = WorkbenchCoverage {
                     status: if summarized {
@@ -4715,6 +4796,7 @@ fn build_export_workbench(
                     truncated: false,
                     nodes: before.stats.nodes.saturating_add(after.stats.nodes),
                     edges: before.stats.edges.saturating_add(after.stats.edges),
+                    hierarchy_levels: None,
                     limitations: if summarized {
                         vec!["At least one historical graph is aggregated by community.".to_owned()]
                     } else {
@@ -4738,6 +4820,7 @@ fn build_export_workbench(
                             target_revision,
                             before: Box::new(before),
                             after: Box::new(after),
+                            hierarchy_diff: hierarchy_diff.map(Box::new),
                         },
                     },
                 )
@@ -5557,13 +5640,146 @@ fn safe_output_name(value: &str) -> String {
 }
 
 fn export_help() -> String {
-    "Usage: compass export <format>\n  orientation-json [--graph PATH]\n  html      [--graph PATH] [--output HTML] [VIEW ...]\n  json      [--graph PATH] [--node-limit N] [--community ID] [VIEW ...]\n  workbench-json [--graph PATH] [VIEW ...]\n  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--architecture-overlay PATH] [--output HTML]\n  callflow-json [GRAPH|DIR] [--graph PATH] [--labels PATH] [--architecture-overlay PATH] [--output JSON]\n  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]\n  wiki      [--graph PATH] [--labels PATH]\n  svg       [--graph PATH] [--labels PATH]\n  graphml   [--graph PATH]\n  neo4j     [--graph PATH] [--push URI] [--user U] [--password P]\n  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]\n\nVIEW may be repeated: --code-graph, --architecture-graph, --call-graph SYMBOL, --impact-graph SYMBOL, --affected-graph NODE, --history-graph OLD..NEW, --artifact-lens LENS, or --view SPEC.".to_owned()
+    "Usage: compass export <format>\n  orientation-json [--graph PATH]\n  hierarchy-json [--graph PATH]\n  html      [--graph PATH] [--output HTML] [VIEW ...]\n  json      [--graph PATH] [--node-limit N] [--community ID] [VIEW ...]\n  workbench-json [--graph PATH] [VIEW ...]\n  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--architecture-overlay PATH] [--output HTML]\n  callflow-json [GRAPH|DIR] [--graph PATH] [--labels PATH] [--architecture-overlay PATH] [--output JSON]\n  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]\n  wiki      [--graph PATH] [--labels PATH]\n  svg       [--graph PATH] [--labels PATH]\n  graphml   [--graph PATH]\n  neo4j     [--graph PATH] [--push URI] [--user U] [--password P]\n  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]\n\nVIEW may be repeated: --code-graph, --architecture-graph, --call-graph SYMBOL, --impact-graph SYMBOL, --affected-graph NODE, --history-graph OLD..NEW, --artifact-lens LENS, or --view SPEC.".to_owned()
 }
 
 fn export_workbench_help(format: &str) -> String {
     format!(
-        "Usage: compass export {format} [--graph PATH] [--labels PATH] [--node-limit N] [--output HTML] [VIEW ...]\n\nViews are emitted in command order into one navigable workbench:\n  --code-graph\n  --architecture-graph\n  --call-graph SYMBOL\n  --impact-graph SYMBOL\n  --affected-graph NODE\n  --history-graph OLD..NEW\n  --artifact-lens dependencies|routes|data|messaging|tests|provenance\n  --view code|architecture|call:SYMBOL|impact:SYMBOL|affected:NODE|history:OLD..NEW|artifact:LENS\n\nView options:\n  --direction callers|callees|both\n  --depth N\n  --max-nodes N\n  --max-edges N\n  --relation RELATION (repeatable; affected views)\n  --include-heuristic (impact views)\n  --program PATH (Program IR enrichment for call views)"
+        "Usage: compass export {format} [--graph PATH] [--labels PATH] [--node-limit N] [--hierarchy-level N] [--output HTML] [VIEW ...]\n\nViews are emitted in command order into one navigable workbench:\n  --code-graph\n  --architecture-graph\n  --call-graph SYMBOL\n  --impact-graph SYMBOL\n  --affected-graph NODE\n  --history-graph OLD..NEW\n  --artifact-lens dependencies|routes|data|messaging|tests|provenance\n  --view code|architecture|call:SYMBOL|impact:SYMBOL|affected:NODE|history:OLD..NEW|artifact:LENS\n\nView options:\n  --direction callers|callees|both\n  --depth N\n  --max-nodes N\n  --max-edges N\n  --relation RELATION (repeatable; affected views)\n  --include-heuristic (impact views)\n  --program PATH (Program IR enrichment for call views)\n  --hierarchy-level N (code views; level the page opens on, default 0)"
     )
+}
+
+/// Bounded read cap for the published hierarchy, which is a navigation artifact
+/// and must stay small even on repositories with thousands of communities.
+const MAX_HIERARCHY_JSON_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Load the hierarchy published beside a graph, bound to that exact graph.
+///
+/// A missing artifact is not an error — older graphs and unclustered builds
+/// have no levels — but a present artifact that describes another graph or an
+/// unknown schema major is.
+fn load_export_hierarchy(graph_path: &Path) -> Result<Option<CommunityHierarchy>, String> {
+    let path = graph_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("community-hierarchy.json");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text =
+        hook_commands::read_text_bounded(&path, MAX_HIERARCHY_JSON_BYTES).map_err(|error| {
+            format!(
+                "community hierarchy is unreadable at {}: {error}",
+                path.display()
+            )
+        })?;
+    let hierarchy = serde_json::from_str::<CommunityHierarchy>(&text)
+        .map_err(|error| format!("invalid community hierarchy: {error}"))?;
+    let (graph, digest) =
+        compass_model::code_graph::GraphDocument::load_with_artifact_digest(graph_path)
+            .map_err(|error| format!("could not load selected graph: {error}"))?;
+    hierarchy
+        .validate_for_graph(
+            &graph.graph.build.generation_id,
+            &format!("sha256:{digest}"),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(Some(hierarchy))
+}
+
+fn command_export_hierarchy_json(args: &[String]) -> Outcome {
+    if args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "-h" | "--help"))
+    {
+        return Outcome::success(
+            "Usage: compass export hierarchy-json [--graph PATH] [--output PATH]\n\nEmit the versioned budgeted community hierarchy that was atomically published with the selected graph generation. An artifact whose schema major or graph identity does not match the selected graph fails instead of being emitted."
+                .to_owned(),
+        );
+    }
+    let mut requested_graph = default_graph_path();
+    let mut output_path: Option<PathBuf> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--graph" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --graph requires a path".to_owned());
+                };
+                requested_graph = PathBuf::from(value);
+                index += 2;
+            }
+            "--output" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --output requires a path".to_owned());
+                };
+                output_path = Some(PathBuf::from(value));
+                index += 2;
+            }
+            value if value.starts_with("--graph=") => {
+                requested_graph = PathBuf::from(&value[8..]);
+                index += 1;
+            }
+            value if value.starts_with("--output=") => {
+                output_path = Some(PathBuf::from(&value[9..]));
+                index += 1;
+            }
+            value => {
+                return Outcome::failure(format!(
+                    "error: unexpected hierarchy-json export argument {value}"
+                ));
+            }
+        }
+    }
+    let graph_path = match compass_files::BuildGuard::resolve_requested_artifact(&requested_graph) {
+        Ok(path) => path,
+        Err(error) => return Outcome::failure(format!("error: could not resolve graph: {error}")),
+    };
+    let (graph, graph_digest) =
+        match compass_model::code_graph::GraphDocument::load_with_artifact_digest(&graph_path) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                return Outcome::failure(format!("error: could not load selected graph: {error}"));
+            }
+        };
+    let hierarchy_path = graph_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("community-hierarchy.json");
+    let hierarchy_json =
+        match hook_commands::read_text_bounded(&hierarchy_path, MAX_HIERARCHY_JSON_BYTES) {
+            Ok(hierarchy_json) => hierarchy_json,
+            Err(error) => {
+                return Outcome::failure(format!(
+                    "error: coherent community hierarchy is unavailable for {}: {error}",
+                    graph_path.display()
+                ));
+            }
+        };
+    let hierarchy = match serde_json::from_str::<CommunityHierarchy>(&hierarchy_json) {
+        Ok(hierarchy) => hierarchy,
+        Err(error) => {
+            return Outcome::failure(format!("error: invalid community hierarchy: {error}"));
+        }
+    };
+    if let Err(error) = hierarchy.validate_for_graph(
+        &graph.graph.build.generation_id,
+        &format!("sha256:{graph_digest}"),
+    ) {
+        return Outcome::failure(format!("error: {error}"));
+    }
+    match output_path {
+        Some(path) => match compass_files::write_text_atomic(&path, &hierarchy_json) {
+            Ok(()) => Outcome::success(format!("wrote {}", path.display())),
+            Err(error) => Outcome::failure(format!(
+                "error: could not write {}: {error}",
+                path.display()
+            )),
+        },
+        // Emitted unchanged: the published bytes are what a consumer digests,
+        // so stdout carries no extra trailing newline.
+        None => Outcome::success_exact(hierarchy_json),
+    }
 }
 
 fn command_export_orientation_json(args: &[String]) -> Outcome {
@@ -6130,7 +6346,12 @@ fn command_discovery_query(
             Ok(view) => view,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };
-        let mut prefix = match render_agent_query_header_lines(&view) {
+        let header = if cursor.is_some() {
+            render_agent_query_continuation_header(&view)
+        } else {
+            render_agent_query_header_lines(&view)
+        };
+        let mut prefix = match header {
             Ok(prefix) => prefix,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };
@@ -6478,10 +6699,44 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         return Outcome::failure(explain_help(frontend));
     };
     let mut budget = DEFAULT_TEXT_TOKEN_BUDGET;
+    let mut budget_given = false;
     let mut page = 1_usize;
+    let mut with_source = false;
+    let mut source_root = std::path::PathBuf::from(".");
+    let mut max_source_bytes = DEFAULT_EXPLAIN_SOURCE_BYTES;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
+            "--source" => {
+                with_source = true;
+                index += 1;
+            }
+            "--root" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure("error: --root requires a path".to_owned());
+                };
+                source_root = std::path::PathBuf::from(value);
+                index += 2;
+            }
+            "--max-source-bytes" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                };
+                let Ok(parsed) = value.parse::<u64>() else {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                };
+                if parsed == 0 {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                }
+                max_source_bytes = parsed;
+                index += 2;
+            }
             "--budget" => {
                 let Some(value) = args.get(index + 1) else {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
@@ -6490,6 +6745,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
                 };
                 budget = value;
+                budget_given = true;
                 index += 2;
             }
             "--page" => {
@@ -6507,6 +6763,7 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --budget must be an integer".to_owned());
                 };
                 budget = value;
+                budget_given = true;
                 index += 1;
             }
             value if value.starts_with("--page=") => {
@@ -6514,6 +6771,24 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
                     return Outcome::failure("error: --page must be an integer".to_owned());
                 };
                 page = value;
+                index += 1;
+            }
+            value if value.starts_with("--root=") => {
+                source_root = std::path::PathBuf::from(&value[7..]);
+                index += 1;
+            }
+            value if value.starts_with("--max-source-bytes=") => {
+                let Ok(parsed) = value[19..].parse::<u64>() else {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                };
+                if parsed == 0 {
+                    return Outcome::failure(
+                        "error: --max-source-bytes must be a positive integer".to_owned(),
+                    );
+                }
+                max_source_bytes = parsed;
                 index += 1;
             }
             value => {
@@ -6524,7 +6799,20 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
     if let Err(error) = validate_text_pagination(budget, page) {
         return Outcome::failure(format!("error: {error}"));
     }
-    let loaded = match load_selection(frontend, &selection, true) {
+    // `--source` answers "show me the declaration": the excerpt is the answer,
+    // so the neighborhood list is bounded to its strongest entries instead of
+    // spending the request on rows the caller did not ask for. The page footer
+    // still reports the list's true total and continues it (`--page 2`), and an
+    // explicit `--budget` always wins.
+    if with_source && !budget_given {
+        budget = budget.min(EXPLAIN_SOURCE_CONNECTION_BUDGET);
+    }
+    let selection_result = if with_source {
+        load_selection_full(frontend, &selection)
+    } else {
+        load_selection(frontend, &selection, true)
+    };
+    let loaded = match selection_result {
         Ok(loaded) => loaded,
         Err(outcome) => return outcome,
     };
@@ -6533,8 +6821,57 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         Ok(output) => output,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
+    let output = if with_source {
+        append_explanation_source(output, &loaded.graph, label, &source_root, max_source_bytes)
+    } else {
+        output
+    };
     touch_selected_query_stamp(&selection);
     render_shared_output(format, "explain", output)
+}
+
+/// Default bound for the `explain --source` excerpt.
+const DEFAULT_EXPLAIN_SOURCE_BYTES: u64 = 4 * 1024;
+
+/// Default slice of the connection list a `--source` request spends.
+///
+/// The declaration text is what the caller asked for; the neighborhood list is
+/// context. On the reviewed corpora this keeps the strongest handful of
+/// connections beside the source and leaves the rest behind the page footer's
+/// `next=`, instead of spending half a source answer on rows nobody requested.
+const EXPLAIN_SOURCE_CONNECTION_BUDGET: usize = 240;
+
+fn append_explanation_source(
+    mut output: String,
+    graph: &compass_model::Graph,
+    label: &str,
+    root: &std::path::Path,
+    max_source_bytes: u64,
+) -> String {
+    match explanation_source(graph, label, root, max_source_bytes) {
+        Ok(excerpt) => {
+            output.push_str("\n\nSOURCE ");
+            output.push_str(&excerpt.file);
+            output.push_str(&format!(
+                " L{}-L{} (digest-verified)\n",
+                excerpt.start_line, excerpt.end_line
+            ));
+            for (offset, line) in excerpt.source.lines().enumerate() {
+                let number = excerpt.start_line as usize + offset;
+                output.push_str(&format!("  {number:>6}: {line}\n"));
+            }
+            if excerpt.truncated {
+                output.push_str(&format!(
+                    "  [truncated: excerpt limited to {max_source_bytes} bytes; pass --max-source-bytes for more]\n"
+                ));
+            }
+            output.trim_end().to_owned()
+        }
+        Err(error) => {
+            output.push_str(&format!("\n\nSOURCE unavailable: {error}"));
+            output
+        }
+    }
 }
 
 fn validate_text_pagination(token_budget: usize, page: usize) -> Result<(), String> {
@@ -6820,6 +7157,29 @@ pub(crate) fn load_selection(
         GraphSelection::File(path) => load(path, force_directed),
         GraphSelection::Commit(revision) => {
             history_commands::load_graph_at(frontend, revision, force_directed)
+                .map_err(|error| Outcome::failure(format!("error: {error}")))
+        }
+    }
+}
+
+/// Load a selection with the complete typed projection.
+///
+/// Focused traversal commands use the compact projection; commands that read
+/// recorded byte spans or symbol digests need the complete one.
+pub(crate) fn load_selection_full(
+    frontend: Frontend,
+    selection: &GraphSelection,
+) -> Result<LoadedGraph, Outcome> {
+    match selection {
+        GraphSelection::File(path) => {
+            let path =
+                compass_files::BuildGuard::resolve_requested_artifact(path).map_err(|error| {
+                    Outcome::failure(format!("error: could not resolve graph: {error}"))
+                })?;
+            LoadedGraph::load_full_directed(&path).map_err(graph_load_outcome)
+        }
+        GraphSelection::Commit(revision) => {
+            history_commands::load_graph_at(frontend, revision, true)
                 .map_err(|error| Outcome::failure(format!("error: {error}")))
         }
     }

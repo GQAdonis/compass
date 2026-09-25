@@ -94,6 +94,7 @@ impl CodeQueryEngine {
         &self,
         request: NaturalQueryRequest,
     ) -> Result<(CodeQueryResponse, QueryInstrumentation), QueryError> {
+        self.check_deadline()?;
         validate_limits(&request.limits)?;
         let mut instrumentation = QueryInstrumentation::default();
         let intent_started = Instant::now();

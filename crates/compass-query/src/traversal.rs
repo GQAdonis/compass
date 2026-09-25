@@ -1,16 +1,18 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
+use std::path::Path;
 
 use compass_model::query_contract::{
     DiscoveryLimits, MAX_DISCOVERY_EDGES, MAX_DISCOVERY_EXPANDED_RELATIONSHIPS, MAX_DISCOVERY_NODES,
 };
-use compass_model::{EdgeIndex, Graph, NodeIndex};
+use compass_model::{EdgeIndex, Graph, NodeIndex, NodeRecord};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::score::{
     TextRankProfile, find_exact_nodes, find_node, pick_seeds, score_nodes_with_profile,
 };
+use crate::source::bounded_source_span;
 use crate::text::{infer_context_filters, normalize_context_filters, query_terms, sanitize_label};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -310,32 +312,50 @@ pub fn render_shortest_path_with_limit(
     }
     let source = resolve_exact_path_endpoint(graph, source_query)?;
     let target = resolve_exact_path_endpoint(graph, target_query)?;
-    if source == target {
+    if source.index == target.index {
         return Err(format!(
             "'{source_query}' and '{target_query}' both resolved to the same node '{}'. Use a more specific label or the exact node ID.",
-            graph.node(source).id
+            graph.node(source.index).id
         ));
     }
-    let weighted = ranked_path_undirected(graph, source, target, max_depth, PathRanking::Weighted);
+    let weighted = ranked_path_undirected(
+        graph,
+        source.index,
+        target.index,
+        max_depth,
+        PathRanking::Weighted,
+    );
     let Some(path) = weighted.path else {
         return Ok(format!(
             "Source resolved: {}\nTarget resolved: {}\nNO PATH FOUND to resolved target (depth limit {max_depth}, {} nodes visited)",
-            rendered_path_endpoint(graph, source),
-            rendered_path_endpoint(graph, target),
+            rendered_path_endpoint(graph, source.index, source.note.as_deref()),
+            rendered_path_endpoint(graph, target.index, target.note.as_deref()),
             weighted.visited_nodes,
         ));
     };
     let hops = path.nodes.len().saturating_sub(1);
     let mut lines = vec![
-        format!("Source resolved: {}", rendered_path_endpoint(graph, source)),
-        format!("Target resolved: {}", rendered_path_endpoint(graph, target)),
+        format!(
+            "Source resolved: {}",
+            rendered_path_endpoint(graph, source.index, source.note.as_deref())
+        ),
+        format!(
+            "Target resolved: {}",
+            rendered_path_endpoint(graph, target.index, target.note.as_deref())
+        ),
         format!(
             "Best path (weighted, {hops} hops, weight {}):\n  {}",
             path.weight,
             render_graph_path(graph, &path)
         ),
     ];
-    let shorter = ranked_path_undirected(graph, source, target, max_depth, PathRanking::Hops);
+    let shorter = ranked_path_undirected(
+        graph,
+        source.index,
+        target.index,
+        max_depth,
+        PathRanking::Hops,
+    );
     if let Some(alternative) = shorter.path
         && alternative.edges != path.edges
         && alternative.nodes.len() < path.nodes.len()
@@ -352,29 +372,111 @@ pub fn render_shortest_path_with_limit(
     Ok(lines.join("\n"))
 }
 
-fn rendered_path_endpoint(graph: &Graph, index: NodeIndex) -> String {
+/// One resolved path endpoint.
+///
+/// The label and any resolution note address the endpoint for a follow-up
+/// query, so the stable identifier is not repeated here: a path answer prints
+/// two of these lines, and on a small answer the identifiers cost more of the
+/// text than the path itself. `--format json` keeps every identifier.
+fn rendered_path_endpoint(graph: &Graph, index: NodeIndex, note: Option<&str>) -> String {
     let node = graph.node(index);
-    format!("{} [id={}]", node.label(), node.id)
+    match note {
+        Some(note) if !note.is_empty() => format!("{} ({note})", node.label()),
+        _ => node.label().to_owned(),
+    }
 }
 
-fn resolve_exact_path_endpoint(graph: &Graph, query: &str) -> Result<NodeIndex, String> {
+fn resolve_exact_path_endpoint(graph: &Graph, query: &str) -> Result<PathEndpoint, String> {
     let matches = find_exact_nodes(graph, query);
     match matches.as_slice() {
-        [node] => Ok(*node),
+        [node] => Ok(file_content_endpoint(graph, *node)
+            .map(|(index, note)| PathEndpoint {
+                index,
+                note: Some(note),
+            })
+            .unwrap_or(PathEndpoint {
+                index: *node,
+                note: None,
+            })),
         [] => Err(format!("NO EXACT MATCH for {query:?}")),
         _ => {
-            let mut ids = matches
+            let mut candidates = matches
                 .iter()
-                .map(|node| graph.node(*node).id.clone())
+                .map(|index| graph.node(*index))
                 .collect::<Vec<_>>();
-            ids.sort();
-            Err(format!(
-                "AMBIGUOUS EXACT MATCH for {query:?}: {}. Pass an exact node ID.",
-                ids.join(", ")
-            ))
+            candidates.sort_by(|left, right| left.id.cmp(&right.id));
+            let mut lines = vec![format!(
+                "AMBIGUOUS EXACT MATCH for {query:?}: {} candidates. Pass an exact node ID:",
+                candidates.len()
+            )];
+            for node in candidates.iter().take(MAX_PATH_AMBIGUITY_CANDIDATES) {
+                let file = node.string("source_file");
+                let location = node.string("source_location");
+                lines.push(format!(
+                    "  {} {} {} id={}",
+                    node.label(),
+                    if file.is_empty() { "-" } else { &file },
+                    if location.is_empty() { "-" } else { &location },
+                    node.id
+                ));
+            }
+            if candidates.len() > MAX_PATH_AMBIGUITY_CANDIDATES {
+                lines.push(format!(
+                    "  ... and {} more candidate(s)",
+                    candidates.len() - MAX_PATH_AMBIGUITY_CANDIDATES
+                ));
+            }
+            Err(lines.join("\n"))
         }
     }
 }
+
+/// Resolve one file-path endpoint to the node that carries the file's content.
+///
+/// Languages whose extractor publishes a module node for a file leave the
+/// metadata file node without relationships. A path-shaped question then names
+/// the file but has nothing to traverse, so the module that owns the same
+/// source file becomes the endpoint. The fallback only applies to an isolated
+/// file node and only when exactly one content node can stand for the file.
+fn file_content_endpoint(graph: &Graph, index: NodeIndex) -> Option<(NodeIndex, String)> {
+    let node = graph.node(index);
+    if node.kind_name() != "file" {
+        return None;
+    }
+    if graph.outgoing_edges(index).next().is_some() || graph.incoming_edges(index).next().is_some()
+    {
+        return None;
+    }
+    let source = node.string("source_file");
+    if source.is_empty() {
+        return None;
+    }
+    let mut modules = graph
+        .nodes()
+        .filter(|(candidate, node)| {
+            *candidate != index
+                && node.kind_name() == "module"
+                && node.string("source_file") == source
+        })
+        .map(|(candidate, _)| candidate)
+        .collect::<Vec<_>>();
+    modules.sort_by(|left, right| graph.node(*left).id.cmp(&graph.node(*right).id));
+    modules.dedup();
+    match modules.as_slice() {
+        [module] => Some((*module, source)),
+        _ => None,
+    }
+}
+
+/// One resolved path endpoint and an optional display note.
+#[derive(Clone, Debug)]
+struct PathEndpoint {
+    index: NodeIndex,
+    note: Option<String>,
+}
+
+/// Bound for listing ambiguous path endpoints in one error message.
+const MAX_PATH_AMBIGUITY_CANDIDATES: usize = 8;
 
 #[derive(Clone, Copy)]
 enum PathRanking {
@@ -568,6 +670,133 @@ pub fn render_explanation(
     }
 }
 
+/// A digest-verified source excerpt for one uniquely resolved graph node.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExplainedSource {
+    pub file: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub source: String,
+    pub truncated: bool,
+}
+
+/// Reasons an explain source excerpt could not be produced.
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
+pub enum ExplanationSourceError {
+    #[error("no node matching {label:?} was found")]
+    Missing { label: String },
+    #[error("{label:?} matches {matches} nodes; pass an exact node ID")]
+    Ambiguous { label: String, matches: usize },
+    #[error("{label:?} has no recorded source anchor")]
+    Unsourced { label: String },
+    #[error("{0}")]
+    Read(String),
+}
+
+/// Read the recorded source span of one explain target below `root`.
+///
+/// Resolution follows the same rules as the explanation renderer: exact
+/// matches win, source-backed nodes are preferred, and an ambiguous or
+/// unsourced target is reported instead of guessed. The excerpt is bounded by
+/// `max_bytes`, and the recorded symbol digest is verified before the text is
+/// returned.
+pub fn explanation_source(
+    graph: &Graph,
+    label: &str,
+    root: &Path,
+    max_bytes: u64,
+) -> Result<ExplainedSource, ExplanationSourceError> {
+    let exact_matches = find_exact_nodes(graph, label);
+    let mut matches = if exact_matches.is_empty() {
+        find_node(graph, label)
+    } else {
+        exact_matches
+    };
+    let source_backed = matches
+        .iter()
+        .copied()
+        .filter(|index| node_source_anchor(graph.node(*index)).is_some())
+        .collect::<Vec<_>>();
+    if !source_backed.is_empty() {
+        matches = source_backed;
+    }
+    let node_index = match matches.as_slice() {
+        [] => {
+            return Err(ExplanationSourceError::Missing {
+                label: label.to_owned(),
+            });
+        }
+        [index] => *index,
+        _ => {
+            return Err(ExplanationSourceError::Ambiguous {
+                label: label.to_owned(),
+                matches: matches.len(),
+            });
+        }
+    };
+    let node = graph.node(node_index);
+    let anchor = node_source_anchor(node).ok_or_else(|| ExplanationSourceError::Unsourced {
+        label: label.to_owned(),
+    })?;
+    let digest = node_source_digest(node);
+    let span = bounded_source_span(
+        root,
+        &anchor.file,
+        anchor.start_byte,
+        anchor.end_byte,
+        digest.as_deref(),
+        max_bytes,
+    )
+    .map_err(|error| ExplanationSourceError::Read(error.to_string()))?;
+    Ok(ExplainedSource {
+        file: anchor.file,
+        start_line: anchor.start_line,
+        end_line: anchor.end_line,
+        source: span.text,
+        truncated: span.truncated,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct NodeSourceAnchor {
+    file: String,
+    start_byte: u64,
+    end_byte: u64,
+    start_line: u32,
+    end_line: u32,
+}
+
+fn node_source_anchor(node: &NodeRecord) -> Option<NodeSourceAnchor> {
+    let anchor = node.attributes.get("source")?.as_object()?;
+    let file = anchor.get("file")?.as_str()?.to_owned();
+    let start_byte = anchor.get("startByte")?.as_u64()?;
+    let end_byte = anchor.get("endByte")?.as_u64()?;
+    let start_line = u32::try_from(anchor.get("startLine")?.as_u64()?).ok()?;
+    let end_line = anchor
+        .get("endLine")
+        .and_then(Value::as_u64)
+        .and_then(|line| u32::try_from(line).ok())
+        .unwrap_or(start_line);
+    Some(NodeSourceAnchor {
+        file,
+        start_byte,
+        end_byte,
+        start_line,
+        end_line,
+    })
+}
+
+fn node_source_digest(node: &NodeRecord) -> Option<String> {
+    node.attributes
+        .get("details")?
+        .as_object()?
+        .get("data")?
+        .as_object()?
+        .get("sourceDigest")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 pub fn render_explanation_page(
     graph: &Graph,
     label: &str,
@@ -702,12 +931,23 @@ pub fn render_explanation_page(
         .map(|(outgoing, neighbor, edge_index)| {
             let edge = graph.edge(*edge_index);
             let site = formatted_site(&edge.string("source_file"), &edge.string("source_location"));
+            // Extraction is what the graph does by default, so the provenance
+            // tag is printed only where the edge is something else. A uniform
+            // `[EXTRACTED]` on every row of a thirty-row connection list costs
+            // more of the page than the list itself explains, and the header
+            // states the default once.
+            let confidence = edge.string("confidence");
+            let provenance = if confidence.is_empty() || confidence == "EXTRACTED" {
+                String::new()
+            } else {
+                format!(" [{confidence}]")
+            };
             vec![format!(
-                "  {} {} [{}] [{}]{}",
+                "  {} {} [{}]{}{}",
                 if *outgoing { "-->" } else { "<--" },
                 graph.node(*neighbor).label(),
                 edge.string("relation"),
-                edge.string("confidence"),
+                provenance,
                 if site.is_empty() {
                     String::new()
                 } else {
@@ -717,7 +957,10 @@ pub fn render_explanation_page(
         })
         .collect::<Vec<_>>();
     lines.push(String::new());
-    lines.push(format!("Connections ({}):", connection_lines.len()));
+    lines.push(format!(
+        "Connections ({}, extracted unless marked):",
+        connection_lines.len()
+    ));
     let fixed = lines.join("\n");
     let rendered = render_paginated_groups(
         &connection_lines,
@@ -1223,17 +1466,16 @@ fn render_paginated_groups(
         .join("\n");
     let first = if range.is_empty() { 0 } else { range.start + 1 };
     let last = range.end;
-    let previous = page
-        .checked_sub(1)
-        .filter(|previous| *previous > 0)
-        .map_or_else(|| "none".to_owned(), |previous| previous.to_string());
     let next = if page < total_pages {
         (page + 1).to_string()
     } else {
         "none".to_owned()
     };
+    // The page budget is the caller's own request and the previous page is
+    // `page - 1`, so neither is reprinted: this line closes every page of every
+    // text answer, and the label, range and continuation are what it must say.
     let pagination = format!(
-        "Pagination: page={page}/{total_pages} {item_label}={first}-{last}/{} budget_tokens=~{token_budget} previous={previous} next={next}",
+        "Pagination: page={page}/{total_pages} {item_label}={first}-{last}/{} next={next}",
         groups.len()
     );
     if body.is_empty() {

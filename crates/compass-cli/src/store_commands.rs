@@ -98,7 +98,7 @@ fn status(args: &[String]) -> Result<Value, String> {
 
     let store = if store_path.is_file() {
         match SqliteStore::open_read_only(&store_path) {
-            Ok(store) => match validate_store(&store, graph.as_mut(), &graph_path) {
+            Ok(store) => match validate_store(&store, graph.as_mut(), &graph_path, false) {
                 Ok((reference, snapshot_id, manifest_digest)) => Some(json!({
                     "present": true,
                     "valid": true,
@@ -183,7 +183,7 @@ fn validate(args: &[String]) -> Result<Value, String> {
     };
     let store = SqliteStore::open_read_only(&store_path).map_err(|error| error.to_string())?;
     let (reference, snapshot_id, manifest_digest) =
-        validate_store(&store, graph.as_mut(), &graph_path)?;
+        validate_store(&store, graph.as_mut(), &graph_path, true)?;
     let reference_path = output.join(STORE_REF_FILE_NAME);
     if !reference_path.is_file() {
         return Err(format!(
@@ -209,6 +209,7 @@ fn validate(args: &[String]) -> Result<Value, String> {
         "snapshotId": snapshot_id,
         "manifestDigest": manifest_digest,
         "storeReference": reference,
+        "graphValidation": "compass.graph/1",
     }))
 }
 
@@ -237,7 +238,7 @@ fn backup(args: &[String]) -> Result<Value, String> {
     reference.validate().map_err(|error| error.to_string())?;
     let store = SqliteStore::open(&store_path).map_err(|error| error.to_string())?;
     let (_, snapshot_id, manifest_digest) =
-        validate_store(&store, Some(&mut graph_value), &graph_path)?;
+        validate_store(&store, Some(&mut graph_value), &graph_path, true)?;
     if reference.snapshot_id != snapshot_id || reference.manifest_digest != manifest_digest {
         return Err("store.ref does not match the active snapshot".to_owned());
     }
@@ -328,7 +329,7 @@ fn restore(args: &[String]) -> Result<Value, String> {
     }
     let backup_store = source.join(STORE_FILE_NAME);
     let store = SqliteStore::open_read_only(&backup_store).map_err(|error| error.to_string())?;
-    validate_store(&store, Some(&mut graph_value), &graph_path)?;
+    validate_store(&store, Some(&mut graph_value), &graph_path, true)?;
     if digest_file(&backup_store)? != manifest.store_digest {
         return Err("backup store digest does not match manifest".to_owned());
     }
@@ -734,6 +735,7 @@ fn validate_store(
     store: &SqliteStore,
     graph: Option<&mut Value>,
     graph_path: &Path,
+    deep: bool,
 ) -> Result<(StoreRef, String, String), String> {
     let reference_path = graph_path
         .parent()
@@ -758,6 +760,14 @@ fn validate_store(
     reader
         .validate_integrity()
         .map_err(|error| error.to_string())?;
+    if deep {
+        // Tree digests only prove that the stored bytes are intact. Rebuild the
+        // typed graph so a store written by an older or interrupted publisher
+        // cannot report `valid` while every strict reader rejects it.
+        reader
+            .export_graph()
+            .map_err(|error| format!("stored graph failed validation: {error}"))?;
+    }
     if let Some(graph) = graph {
         let graph_bytes = graph
             .get("bytes")

@@ -415,6 +415,25 @@ impl EdgeKind {
             Self::Renders => "renders",
         }
     }
+
+    /// Rank an edge by how directly it proves a dependency between two nodes.
+    ///
+    /// Lower ranks are stronger evidence. Bounded traversals and projections
+    /// order by this rank so the direct call, route, or registration evidence
+    /// for a heavily referenced symbol is never dropped in favour of
+    /// owner-level references. Callers compare the rank first and use the
+    /// exact edge ID as the deterministic tie-break.
+    #[must_use]
+    pub const fn dependency_strength(self) -> u8 {
+        match self {
+            Self::Calls | Self::Instantiates | Self::RoutesTo | Self::Handles | Self::Registers => {
+                0
+            }
+            Self::Imports | Self::Exports | Self::Aliases | Self::DependsOn => 1,
+            Self::References | Self::Documents => 2,
+            _ => 3,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]

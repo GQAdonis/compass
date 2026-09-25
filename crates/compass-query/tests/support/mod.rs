@@ -44,7 +44,7 @@ fn evidence_for(file: &str) -> Provenance {
     }
 }
 
-fn node(id: &str, kind: NodeKind, name: &str, qualified_name: &str) -> NodeRecord {
+pub fn node(id: &str, kind: NodeKind, name: &str, qualified_name: &str) -> NodeRecord {
     node_in_file(id, kind, name, qualified_name, "src/lib.rs")
 }
 

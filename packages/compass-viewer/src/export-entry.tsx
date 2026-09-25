@@ -4,13 +4,19 @@ import {
   type GraphViewModel
 } from "./contracts/graph";
 import { WorkbenchModelSchema } from "./contracts/workbench";
-import { CompassGraph } from "./graph/CompassGraph";
+import { CommunityHierarchyViewSchema } from "./contracts/hierarchy";
+import { CompassGraph, type CommunityGraphDetail } from "./graph/CompassGraph";
+import { embeddedCommunityBound } from "./graph/communityBound";
 import { VisualizationWorkbench } from "./workbench/VisualizationWorkbench";
 import {
   openExportSource,
   SourceNavigationSchema,
   type SourceNavigation
 } from "./sourceLinks";
+import {
+  applyThemePreference,
+  type ThemePreference
+} from "./lib/theme";
 import "./theme.css";
 
 function mount() {
@@ -22,9 +28,20 @@ function mount() {
   const untrusted = JSON.parse(modelElement.textContent ?? "");
   const sourceNavigation = parseSourceNavigation();
   const root = createRoot(rootElement);
+  // A standalone document carries its own theme choice: readers may want the
+  // dark palette for a screenshot even when their system is light, or the
+  // reverse. Hosted viewers never get this control; their editor theme wins.
+  let theme: ThemePreference = "auto";
+  applyThemePreference(theme);
+  let renderStandalone: () => void = () => undefined;
+  const setTheme = (next: ThemePreference) => {
+    theme = next;
+    applyThemePreference(next);
+    renderStandalone();
+  };
   const workbench = WorkbenchModelSchema.safeParse(untrusted);
   if (workbench.success) {
-    root.render(
+    renderStandalone = () => root.render(
       <VisualizationWorkbench
         workbench={workbench.data}
         host={{
@@ -32,13 +49,17 @@ function mount() {
             openStandaloneSource(sourceNavigation, source, revision);
           }
         }}
+        themePreference={theme}
+        onThemePreferenceChange={setTheme}
       />
     );
+    renderStandalone();
     return;
   }
   const overview = GraphViewModelSchema.parse(untrusted);
+  const hierarchy = parseEmbeddedHierarchy();
   const detailCache = new Map<number, GraphViewModel>();
-  let communityDetail: { communityId: number; model: GraphViewModel } | undefined;
+  let communityDetail: CommunityGraphDetail | undefined;
   let communityLoading: number | null = null;
   let communityError: string | undefined;
 
@@ -46,6 +67,10 @@ function mount() {
     root.render(
       <CompassGraph
         model={overview}
+        hierarchy={hierarchy}
+        initialLevel={hierarchy?.initialLevel}
+        themePreference={theme}
+        onThemePreferenceChange={setTheme}
         communityDetail={communityDetail}
         communityLoading={communityLoading}
         communityError={communityError}
@@ -78,7 +103,13 @@ function mount() {
                   );
                   detailCache.set(communityId, model);
                 }
-                communityDetail = { communityId, model };
+                // The overview names the community's full size, so a detail the
+                // export could only embed in part says so in the view.
+                communityDetail = {
+                  communityId,
+                  model,
+                  bounded: embeddedCommunityBound(overview, communityId, model)
+                };
                 window.dispatchEvent(new CustomEvent("compass:open-community", {
                   detail: { communityId }
                 }));
@@ -94,7 +125,21 @@ function mount() {
       />
     );
   };
+  renderStandalone = render;
   render();
+}
+
+/**
+ * The published community hierarchy, when the export embedded one. An export
+ * from an older Compass or an unclustered build carries no script, and a level
+ * the export could not afford to draw has no model: both render the overview
+ * the export already had.
+ */
+function parseEmbeddedHierarchy() {
+  const element = document.getElementById("compass-viewer-hierarchy");
+  if (!element?.textContent) return undefined;
+  const parsed = CommunityHierarchyViewSchema.safeParse(JSON.parse(element.textContent));
+  return parsed.success ? parsed.data : undefined;
 }
 
 function parseSourceNavigation(): SourceNavigation | undefined {
