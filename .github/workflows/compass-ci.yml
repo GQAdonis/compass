@@ -351,8 +351,11 @@ jobs:
           # rust_decimal graph; the official remote release does not enable it.
           # rsa is enabled by SurrealDB/jsonwebtoken, but Compass never loads or
           # operates on a private RSA key. Neither advisory has a safe upgrade
-          # within the operator-pinned SurrealDB 3.2.4 graph.
-          ignore: RUSTSEC-2026-0235,RUSTSEC-2023-0071
+          # within the operator-pinned SurrealDB 3.3.0 graph. object_store
+          # 0.13.2's quick-xml path is used for cloud XML APIs that Compass does
+          # not construct; remove those two ignores when SurrealDB permits the
+          # patched object_store release.
+          ignore: RUSTSEC-2026-0235,RUSTSEC-2023-0071,RUSTSEC-2026-0194,RUSTSEC-2026-0195
 
   dependency-policy:
     runs-on: ubuntu-24.04
