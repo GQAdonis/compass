@@ -1089,14 +1089,21 @@ digest, projection fingerprint, engine, counts, and location. Explicit
 `--engine surreal` never falls back to SQLite or JSON. The current-project
 `default` engine prefers a valid `surreal.ref`, then a valid `store.ref`, then
 `graph.json`. Unknown reference/projection majors, mismatched generations, and
-unavailable engine features fail explicitly. SurrealDB 3.2.4 is pinned under
+unavailable engine features fail explicitly. SurrealDB 3.3.0 is pinned under
 BUSL 1.1; enabling an engine feature carries the notice and redistribution
 conditions recorded in `THIRD_PARTY_NOTICES.md`.
 
 Official release binaries enable `surreal-remote` while retaining the
 unconditional JSON artifact and bundled SQLite sidecar engines. They can use a
-separately managed SurrealDB 3.2.4 server without embedding SurrealKV or RocksDB.
+separately managed SurrealDB 3.3.0 server without embedding SurrealKV or RocksDB.
 Source builds keep the remote client optional through the explicit feature.
+
+When an existing remote datastore was last opened by SurrealDB 3.2, retain a
+restorable export before allowing 3.3.0 to open it. The server performs the
+3.2-to-3.3 datastore migration on first start and may report `503` until it is
+ready; returning to 3.2 afterward requires restoring the pre-upgrade export.
+See SurrealDB's official
+[3.2-to-3.3 migration guide](https://surrealdb.com/docs/build/migrating/from-old-surrealdb-versions/32-to-33).
 
 The additive `remote` engine in `compass.surreal.ref/1` binds a canonical
 WebSocket endpoint plus namespace/database instead of a directory. Older

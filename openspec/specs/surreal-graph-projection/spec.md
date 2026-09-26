@@ -7,7 +7,7 @@ Defines a lossless, optional, generation-atomic SurrealDB projection of canonica
 ## Requirements
 
 ### Requirement: Optional dependency isolation
-The projection capability SHALL live in a focused integration crate, SHALL require an explicit engine feature, and SHALL not link SurrealDB into default Compass library or binary builds. Surreal-enabled profiles MUST use exactly the reviewed SurrealDB 3.2.4 release and retain the recorded license obligations.
+The projection capability SHALL live in a focused integration crate, SHALL require an explicit engine feature, and SHALL not link SurrealDB into default Compass library or binary builds. Surreal-enabled profiles MUST use exactly the pinned SurrealDB 3.3.0 release and retain the recorded license obligations.
 
 #### Scenario: Default workspace build
 - **WHEN** Compass is built without a `compass-graphdb-surreal` engine feature
@@ -15,7 +15,7 @@ The projection capability SHALL live in a focused integration crate, SHALL requi
 
 #### Scenario: Enabled embedded profile
 - **WHEN** a caller explicitly enables Mem, SurrealKV, or RocksDB support
-- **THEN** the adapter uses pinned SurrealDB 3.2.4 and exposes only that selected embedded-engine capability
+- **THEN** the adapter uses pinned SurrealDB 3.3.0 and exposes only that selected embedded-engine capability
 
 ### Requirement: Canonical immutable generation input
 The projection SHALL accept only a validated `compass.graph/1` document and a non-empty repository identity. Every projected record SHALL carry the repository identity, the document generation identity, the projection schema version, and its stable Compass identity. A projection MUST be deterministic for equivalent inputs and MUST reject unsupported graph or projection schema versions explicitly.

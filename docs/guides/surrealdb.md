@@ -19,7 +19,7 @@ cargo install --locked --path crates/compass-cli --bin compass \
   --features surreal-surrealkv,surreal-rocksdb
 ```
 
-These features link the pinned SurrealDB 3.2.4 components covered by
+These features link the pinned SurrealDB 3.3.0 components covered by
 `THIRD_PARTY_NOTICES.md`. `surreal-remote` enables the server protocol and TLS;
 it can be combined with either embedded feature in one executable.
 

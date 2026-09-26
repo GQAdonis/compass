@@ -38,7 +38,7 @@ tokio.workspace = true
 workspace = true
 
 [package.metadata.compass.surrealdb]
-version = "3.2.4"
+version = "3.3.0"
 license = "Business Source License 1.1"
 change-date = "2030-01-01"
 change-license = "Apache-2.0"
