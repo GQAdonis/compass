@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "compass_version": "0.3.6",
+  "scope": "project",
+  "root": "/Users/gqadonis/Projects/references/compass",
+  "consumers": [
+    "kimi"
+  ],
+  "files": {
+    ".compass_version": "734c9fa30cbe8aa021c6c29b2906e7e8615e5631cec93aab85caec0cf16afce9",
+    "SKILL.md": "c6c097e081043c3f57cacb113423ff5783b0391f9881cb3262501277663a5d91",
+    "agents/openai.yaml": "b9d77734a8b60ebce10237ccdf47f639f7ca5e45549a72669d5dc2cac8614d47",
+    "references/add-watch.md": "4c03b80eb67d8ac4b3fd792ad63121598e6e4c69048d462c42137961317a583b",
+    "references/command-reference.md": "a7e812071f306ef4be8adf53eafd6a6bc72ac721267b541a7ddd50581872a96d",
+    "references/exports.md": "4d39d63dc962ea62b831789c50158697d6ef29ae09ff1c8e32c7631898af86a1",
+    "references/extraction-spec.md": "f5fb477975365f52dd43163f29e445f731630e55b5eafd3e5d2922d35b4d271f",
+    "references/github-and-merge.md": "4668aa1fc464a9067a1d34400c30b10e49c86e2d9bbabd477342838ba10032f0",
+    "references/history.md": "0fa65f865e324eb367a498d9cd9fd4ba651a47676e3d6a38ae087d3353bd733e",
+    "references/hooks.md": "fb290ee45d5332928df03d68e43655efc7649dd7cbf3f03f77f29085fb6a3b22",
+    "references/labeling.md": "c660b3c3e9e27440a4601d0e9bcc655674c2518dd6181535408a24dadafb32bb",
+    "references/operations.md": "fce30cbfde796f4e88cc6191f2b3a8edfc16431903c71f79fbc6233684970c59",
+    "references/query.md": "b26543b5608a3540b513d46357e5e463b7b127bbbfcc94a6313c791ad04cb4a8",
+    "references/reflections.md": "613eb9b0e27b319aaa7b75d6072ae1dd453332db1eced02ae1c997aca78bfcd5",
+    "references/security-and-boundaries.md": "5eea7800c6594305467f29ffbb7a54e71f39fc55a4ed8a5af06908f057dbbda7",
+    "references/semantic-extraction.md": "439b582c4a83322a5d1ce4eb22adc766b9234ece24a63ee81d6d6e2070318d47",
+    "references/serve.md": "5e9014fb1282b9257180dead094b7364b5fe40701653eff8f5675b209883d8f4",
+    "references/update.md": "47fd40f622cd242cc7f06acbfa7e05c174fcb9d6d85f84ec0852ceeca3d3e25e"
+  }
+}
