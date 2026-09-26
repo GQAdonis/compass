@@ -5,6 +5,7 @@ use compass_pr_intelligence::{
     Finding, FindingType, GateState, MergeOutcome, PullRequestReadiness, PullRequestReport,
     RepositoryIdentity, canonical_json_bytes, readiness_digest, report_digest,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::OutputError;
@@ -273,10 +274,70 @@ pub fn render_review_markdown(report: &PullRequestReport) -> Result<RenderedRevi
     render_review_markdown_bounded(report, report.findings.len(), MAX_REVIEW_RENDER_BYTES)
 }
 
+/// One addressable section of the canonical PR-review Markdown report.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReviewSection {
+    /// Identity, comparison, coverage, and advisory risk summary.
+    Summary,
+    /// Risk factors and their point contributions.
+    RiskFactors,
+    /// Merge-gate results.
+    MergeChecks,
+    /// Findings with references, locations, and evidence.
+    Findings,
+    /// Omitted findings and missing evidence.
+    NotIncluded,
+}
+
+impl ReviewSection {
+    /// Every section in report order.
+    pub const ALL: [Self; 5] = [
+        Self::Summary,
+        Self::RiskFactors,
+        Self::MergeChecks,
+        Self::Findings,
+        Self::NotIncluded,
+    ];
+
+    /// Stable CLI and documentation spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Summary => "summary",
+            Self::RiskFactors => "risk-factors",
+            Self::MergeChecks => "merge-checks",
+            Self::Findings => "findings",
+            Self::NotIncluded => "not-included",
+        }
+    }
+
+    /// Parse one CLI spelling.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|section| section.as_str() == value.trim().to_ascii_lowercase())
+    }
+}
+
 pub fn render_review_markdown_bounded(
     report: &PullRequestReport,
     max_findings: usize,
     max_bytes: usize,
+) -> Result<RenderedReview, OutputError> {
+    render_review_markdown_selected(report, max_findings, max_bytes, &ReviewSection::ALL)
+}
+
+/// Render only the requested sections of the canonical Markdown report.
+///
+/// The title and report reference always remain so a single extracted section
+/// still identifies the exact report it came from.
+pub fn render_review_markdown_selected(
+    report: &PullRequestReport,
+    max_findings: usize,
+    max_bytes: usize,
+    sections: &[ReviewSection],
 ) -> Result<RenderedReview, OutputError> {
     verify(report)?;
     if max_bytes == 0 || max_bytes > MAX_REVIEW_RENDER_BYTES {
@@ -284,10 +345,15 @@ pub fn render_review_markdown_bounded(
             "Markdown byte limit must be between 1 and {MAX_REVIEW_RENDER_BYTES}"
         )));
     }
+    if sections.is_empty() {
+        return Err(OutputError::InvalidReview(
+            "at least one Markdown section must be selected".to_owned(),
+        ));
+    }
     let mut included = report.findings.len().min(max_findings);
     loop {
         let omitted = report.findings.len().saturating_sub(included);
-        let content = markdown(report, included, omitted);
+        let content = markdown(report, included, omitted, sections);
         if content.len() <= max_bytes {
             return Ok(RenderedReview {
                 content,
@@ -304,7 +370,13 @@ pub fn render_review_markdown_bounded(
     }
 }
 
-fn markdown(report: &PullRequestReport, included: usize, omitted: usize) -> String {
+fn markdown(
+    report: &PullRequestReport,
+    included: usize,
+    omitted: usize,
+    sections: &[ReviewSection],
+) -> String {
+    let selected = |section: ReviewSection| sections.contains(&section);
     let mut output = String::new();
     let revisions = [
         report.identity.revisions.merge_base.as_str(),
@@ -317,67 +389,76 @@ fn markdown(report: &PullRequestReport, included: usize, omitted: usize) -> Stri
         .map(|finding| finding.fingerprint.as_str())
         .collect::<Vec<_>>();
     let _ = writeln!(output, "## Compass PR review\n");
-    let _ = writeln!(
-        output,
-        "Repository: `{}`  ",
-        escape_markdown(&repository_name(&report.identity.repository))
-    );
-    let _ = writeln!(
-        output,
-        "Comparison: base `{}` → PR `{}` · target `{}` · merge **{}**  ",
-        short_identifier_among(&report.identity.revisions.merge_base, &revisions),
-        short_identifier_among(&report.identity.revisions.pull_request_head, &revisions),
-        short_identifier_among(&report.identity.revisions.target_head, &revisions),
-        escape_markdown(&merge_summary(&report.identity.revisions.merge_result))
-    );
-    let _ = writeln!(
-        output,
-        "Evidence coverage: **{}**  ",
-        debug_label(&report.completeness)
-    );
-    let _ = writeln!(
-        output,
-        "Risk: **{}{}** (advisory only)  ",
-        debug_label(&report.advisory_risk.band),
-        report
-            .advisory_risk
-            .score
-            .map(|score| format!(" · {score}/100"))
-            .unwrap_or_default()
-    );
+    if selected(ReviewSection::Summary) {
+        let _ = writeln!(
+            output,
+            "Repository: `{}`  ",
+            escape_markdown(&repository_name(&report.identity.repository))
+        );
+        let _ = writeln!(
+            output,
+            "Comparison: base `{}` → PR `{}` · target `{}` · merge **{}**  ",
+            short_identifier_among(&report.identity.revisions.merge_base, &revisions),
+            short_identifier_among(&report.identity.revisions.pull_request_head, &revisions),
+            short_identifier_among(&report.identity.revisions.target_head, &revisions),
+            escape_markdown(&merge_summary(&report.identity.revisions.merge_result))
+        );
+        let _ = writeln!(
+            output,
+            "Evidence coverage: **{}**  ",
+            debug_label(&report.completeness)
+        );
+        let _ = writeln!(
+            output,
+            "Risk: **{}{}** (advisory only)  ",
+            debug_label(&report.advisory_risk.band),
+            report
+                .advisory_risk
+                .score
+                .map(|score| format!(" · {score}/100"))
+                .unwrap_or_default()
+        );
+    }
     let _ = writeln!(
         output,
         "Report reference: `{}`\n",
         short_identifier(&report.report_digest)
     );
-    output.push_str("### Risk factors\n\n");
-    if report.risk_factors.is_empty() {
-        output.push_str("No risk factors.\n");
+    if selected(ReviewSection::RiskFactors) {
+        output.push_str("### Risk factors\n\n");
+        if report.risk_factors.is_empty() {
+            output.push_str("No risk factors.\n");
+        }
+        for factor in &report.risk_factors {
+            let _ = writeln!(
+                output,
+                "- {} · **{} points** — {}",
+                escape_markdown(&debug_label(&factor.kind)),
+                factor.points,
+                escape_markdown(&factor.explanation)
+            );
+        }
     }
-    for factor in &report.risk_factors {
-        let _ = writeln!(
-            output,
-            "- {} · **{} points** — {}",
-            escape_markdown(&debug_label(&factor.kind)),
-            factor.points,
-            escape_markdown(&factor.explanation)
-        );
+    if selected(ReviewSection::MergeChecks) {
+        output.push_str("\n### Merge checks\n\n");
+        for gate in &report.gates {
+            let icon = match gate.state {
+                GateState::Pass => "✅",
+                GateState::Fail => "❌",
+                GateState::Indeterminate => "⚠️",
+                GateState::Error => "⛔",
+            };
+            let _ = writeln!(
+                output,
+                "- {icon} **{}: {}** — {}",
+                escape_markdown(&readable_label(&gate.id)),
+                debug_label(&gate.state),
+                escape_markdown(&gate.statement)
+            );
+        }
     }
-    output.push_str("\n### Merge checks\n\n");
-    for gate in &report.gates {
-        let icon = match gate.state {
-            GateState::Pass => "✅",
-            GateState::Fail => "❌",
-            GateState::Indeterminate => "⚠️",
-            GateState::Error => "⛔",
-        };
-        let _ = writeln!(
-            output,
-            "- {icon} **{}: {}** — {}",
-            escape_markdown(&readable_label(&gate.id)),
-            debug_label(&gate.state),
-            escape_markdown(&gate.statement)
-        );
+    if !selected(ReviewSection::Findings) {
+        return output;
     }
     output.push_str("\n### Findings\n\n");
     if report.findings.is_empty() {
@@ -425,7 +506,7 @@ fn markdown(report: &PullRequestReport, included: usize, omitted: usize) -> Stri
             );
         }
     }
-    if !report.omissions.is_empty() {
+    if selected(ReviewSection::NotIncluded) && !report.omissions.is_empty() {
         output.push_str("\n### Not included\n\n");
         for omission in &report.omissions {
             let _ = writeln!(
@@ -437,7 +518,7 @@ fn markdown(report: &PullRequestReport, included: usize, omitted: usize) -> Stri
             );
         }
     }
-    if omitted > 0 {
+    if selected(ReviewSection::NotIncluded) && omitted > 0 {
         let _ = writeln!(
             output,
             "\n_Exactly {omitted} finding(s) were omitted from this projection; the canonical JSON report is unchanged._"

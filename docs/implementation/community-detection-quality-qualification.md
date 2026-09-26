@@ -47,6 +47,55 @@ Run and byte-compare the report with:
   --report docs/implementation/community-detection-quality-qualification.json
 ```
 
+## Community hierarchy
+
+The budgeted hierarchy has its own report:
+
+```bash
+./scripts/qualify_code_graph_v1.sh --hierarchy \
+  --report docs/implementation/community-hierarchy-qualification.json
+```
+
+`compass.community-hierarchy-qualification/1` runs three shapes the real
+corpus publishes — clustered directories, communities that share no
+relationship at all, and groups that cite no location either — twice each and
+byte-compares the reports. Acceptance requires:
+
+| Entry | Meaning |
+| --- | --- |
+| `rootBudgetSatisfied` | every fixture's root count matches the budget its shape can support, and at least one fixture proves the budget is reachable |
+| `completeTree` | every level's children partition the level below exactly once with matching member counts, checked independently of the builder |
+| `labelsHaveProvenance` | every group label is non-empty, carries evidence, and marks itself generic exactly when it is a community id |
+| `genericRootLabelsBounded` | at most a quarter of the root groups are unnamed |
+| `deterministicDigest` | two builds of one fixture serialize identically with equal digests |
+| `boundedLevels` | no fixture exceeds its level budget and every coarser level merges groups |
+
+The fragmented fixture is the measured `colinhacks/zod` shape: it merges by
+shared location (`locationAffinity`) because relationship evidence alone cannot
+reduce it. The location-less fixture asserts the opposite: the artifact reports
+`budgetSatisfied: false` instead of merging groups nothing connects.
+
+### Hierarchy stability
+
+```bash
+./scripts/qualify_code_graph_v1.sh --hierarchy-stability \
+  --report docs/implementation/community-hierarchy-stability.json
+```
+
+`compass.community-hierarchy-stability/1` replays one fixture repository
+through a fixed edit sequence — add symbols to one community, move a file
+between two directories, delete a community — rebuilding and reconciling after
+each step, and runs the whole replay twice before byte-comparing the reports.
+
+| Entry | Measured |
+| --- | --- |
+| `rootBudgetSatisfied` / `completeTree` | every generation's root fits its budget and partitions exactly |
+| `ariAtLeastThreshold` / `amiAtLeastThreshold` | ARI and AMI between consecutive generations over the members they share, threshold 0.5 (measured 1.0 on this fixture) |
+| `stableIdsForUntouchedGroups` | groups whose member set did not change kept their id (5/5, 6/6, 5/5 through the sequence) |
+| `splitMergeEventsMatchEdits` | no event names an untouched group, and the delete is the only edit that removes one |
+| `ambiguousEventsReportedNotResolved` | a forced even split reports `ambiguous` and no successor inherits the id |
+| `deterministicDigest` | two replays produce identical reports and digests |
+
 ## Compact performance decision
 
 On 2026-09-12, an aarch64 macOS debug build at candidate commit `7e216079` ran

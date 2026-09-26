@@ -200,6 +200,24 @@ impl LoadedGraph {
         Ok(Self { graph, overlay })
     }
 
+    /// Load the complete graph projection instead of the traversal projection.
+    ///
+    /// Commands that need typed node detail - recorded byte spans, symbol
+    /// digests, or evidence - must use this loader; the traversal projection
+    /// keeps only the bounded traversal attributes.
+    pub fn load_full(path: &Path) -> Result<Self, GraphError> {
+        let graph = Graph::load(path)?;
+        let overlay = load_learning_overlay(path);
+        Ok(Self { graph, overlay })
+    }
+
+    /// Load the complete graph projection while forcing stored direction.
+    pub fn load_full_directed(path: &Path) -> Result<Self, GraphError> {
+        let graph = Graph::load_directed(path)?;
+        let overlay = load_learning_overlay(path);
+        Ok(Self { graph, overlay })
+    }
+
     pub fn load_for_affected(path: &Path) -> Result<Self, GraphError> {
         let graph = Graph::load_for_affected(path)?;
         Ok(Self {

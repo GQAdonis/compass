@@ -1,5 +1,5 @@
 {
-  "serverInfo": { "name": "compass", "version": "0.3.28" },
+  "serverInfo": { "name": "compass", "version": "0.3.29" },
   "capabilities": {
     "experimental": {},
     "resources": { "subscribe": false, "listChanged": false },

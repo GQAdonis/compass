@@ -9,16 +9,12 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::OutputError;
+use crate::palette::{community_border, community_color};
 use crate::viewer_model::GraphViewModel;
 
 const DEFAULT_NODE_LIMIT: isize = 5_000;
 const EMBEDDED_DETAIL_NODE_BUDGET: usize = 5_000;
 const EMBEDDED_DETAIL_EDGE_BUDGET: usize = 40_000;
-const COMMUNITY_COLORS: [&str; 10] = [
-    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
-    "#9C755F", "#BAB0AC",
-];
-
 #[derive(Clone, Debug, Default)]
 pub struct HtmlOptions<'a> {
     pub community_labels: Option<&'a BTreeMap<usize, String>>,
@@ -40,6 +36,8 @@ pub struct HtmlRender {
 pub struct GraphViewBundle {
     pub overview: GraphViewModel,
     pub community_details: BTreeMap<usize, GraphViewModel>,
+    /// Level navigation for the overview, when a build published a hierarchy.
+    pub hierarchy: Option<crate::hierarchy_view::CommunityHierarchyView>,
     pub truncated: bool,
 }
 
@@ -71,6 +69,7 @@ pub fn graph_view_model_bundle_document(
                 false,
             ),
             community_details: BTreeMap::new(),
+            hierarchy: None,
             truncated: false,
         });
     }
@@ -126,6 +125,7 @@ pub fn graph_view_model_bundle_document(
                 false,
             ),
             community_details: BTreeMap::new(),
+            hierarchy: None,
             truncated: true,
         });
     }
@@ -157,8 +157,39 @@ pub fn graph_view_model_bundle_document(
     Ok(GraphViewBundle {
         overview,
         community_details,
+        hierarchy: None,
         truncated: false,
     })
+}
+
+/// Project the published hierarchy for one overview, bounded by the export's
+/// node budget.
+pub fn graph_view_model_bundle_document_with_hierarchy(
+    document: &GraphDocument,
+    communities: &Communities,
+    output_path: impl AsRef<Path>,
+    options: &HtmlOptions<'_>,
+    hierarchy: Option<&compass_graph::CommunityHierarchyLevels<'_>>,
+    initial_level: Option<usize>,
+) -> Result<GraphViewBundle, OutputError> {
+    let mut bundle = graph_view_model_bundle_document(document, communities, output_path, options)?;
+    if let Some(hierarchy) = hierarchy {
+        let title = sanitize_label(&bundle.overview.title);
+        bundle.hierarchy = Some(crate::hierarchy_view::community_hierarchy_view(
+            hierarchy,
+            &crate::hierarchy_view::HierarchyViewContext {
+                document,
+                communities,
+                community_details: &bundle.community_details,
+                options,
+                title: &title,
+                node_budget: usize::try_from(options.node_limit.unwrap_or_else(viz_node_limit))
+                    .unwrap_or(EMBEDDED_DETAIL_NODE_BUDGET),
+                initial_level,
+            },
+        ));
+    }
+    Ok(bundle)
 }
 
 pub fn html_document(
@@ -166,6 +197,19 @@ pub fn html_document(
     communities: &Communities,
     output_path: impl AsRef<Path>,
     options: &HtmlOptions<'_>,
+) -> Result<Option<HtmlRender>, OutputError> {
+    html_document_with_hierarchy(document, communities, output_path, options, None, None)
+}
+
+/// Render the standalone page with the published community hierarchy embedded,
+/// so the viewer can navigate levels offline.
+pub fn html_document_with_hierarchy(
+    document: &GraphDocument,
+    communities: &Communities,
+    output_path: impl AsRef<Path>,
+    options: &HtmlOptions<'_>,
+    hierarchy: Option<&compass_graph::CommunityHierarchyLevels<'_>>,
+    initial_level: Option<usize>,
 ) -> Result<Option<HtmlRender>, OutputError> {
     let limit = options.node_limit.unwrap_or_else(viz_node_limit);
     if document.nodes.len() as isize > limit {
@@ -195,6 +239,8 @@ pub fn html_document(
                 EMBEDDED_DETAIL_NODE_BUDGET,
                 EMBEDDED_DETAIL_EDGE_BUDGET,
             )),
+            hierarchy,
+            initial_level,
         )?;
         return Ok(Some(HtmlRender {
             nodes: meta.nodes.len(),
@@ -204,7 +250,15 @@ pub fn html_document(
         }));
     }
     Ok(Some(HtmlRender {
-        html: render(document, communities, output_path.as_ref(), options, None)?,
+        html: render(
+            document,
+            communities,
+            output_path.as_ref(),
+            options,
+            None,
+            hierarchy,
+            initial_level,
+        )?,
         aggregated: false,
         nodes: document.nodes.len(),
         edges: document.links.len(),
@@ -357,6 +411,19 @@ pub fn write_html(
     output_path: impl AsRef<Path>,
     options: &HtmlOptions<'_>,
 ) -> Result<Option<HtmlRender>, OutputError> {
+    write_html_with_hierarchy(document, communities, output_path, options, None, None)
+}
+
+/// Write the standalone page, embedding the published community hierarchy when
+/// the build published one.
+pub fn write_html_with_hierarchy(
+    document: &GraphDocument,
+    communities: &Communities,
+    output_path: impl AsRef<Path>,
+    options: &HtmlOptions<'_>,
+    hierarchy: Option<&compass_graph::CommunityHierarchyLevels<'_>>,
+    initial_level: Option<usize>,
+) -> Result<Option<HtmlRender>, OutputError> {
     let output_path = output_path.as_ref();
     let owned_overlay;
     let effective = if options.learning_overlay.is_none() {
@@ -370,7 +437,14 @@ pub fn write_html(
     } else {
         options.clone()
     };
-    let rendered = html_document(document, communities, output_path, &effective)?;
+    let rendered = html_document_with_hierarchy(
+        document,
+        communities,
+        output_path,
+        &effective,
+        hierarchy,
+        initial_level,
+    )?;
     if let Some(rendered) = &rendered {
         write_text_atomic(output_path, &rendered.html)?;
     }
@@ -383,6 +457,8 @@ fn render(
     output_path: &Path,
     options: &HtmlOptions<'_>,
     drilldown: Option<(&GraphDocument, &Communities, usize, usize)>,
+    hierarchy: Option<&compass_graph::CommunityHierarchyLevels<'_>>,
+    initial_level: Option<usize>,
 ) -> Result<String, OutputError> {
     let title = sanitize_label(&output_path.to_string_lossy());
     let mut model = crate::viewer_model::graph_view_model(
@@ -412,11 +488,175 @@ fn render(
             }
         }
     }
-    Ok(crate::viewer_model::shared_viewer_html_with_communities(
-        &model, &details,
+    // A hierarchy always describes the published partition, so it is projected
+    // from the full source document even when this render draws the aggregate.
+    let (hierarchy_document, hierarchy_communities) = drilldown
+        .map_or((document, communities), |(document, communities, _, _)| {
+            (document, communities)
+        });
+    let hierarchy_view = hierarchy.map(|hierarchy| {
+        crate::hierarchy_view::community_hierarchy_view(
+            hierarchy,
+            &crate::hierarchy_view::HierarchyViewContext {
+                document: hierarchy_document,
+                communities: hierarchy_communities,
+                community_details: &details,
+                options,
+                title: &title,
+                node_budget: usize::try_from(options.node_limit.unwrap_or_else(viz_node_limit))
+                    .unwrap_or(EMBEDDED_DETAIL_NODE_BUDGET),
+                initial_level,
+            },
+        )
+    });
+    Ok(crate::viewer_model::shared_viewer_html_with_hierarchy(
+        &model,
+        &details,
+        hierarchy_view.as_ref(),
     )?)
 }
 
+fn community_membership(communities: &Communities) -> HashMap<&str, usize> {
+    communities
+        .iter()
+        .flat_map(|(community, members)| {
+            members
+                .iter()
+                .map(move |member| (member.as_str(), *community))
+        })
+        .collect()
+}
+
+/// Member nodes of every community, most connected first. The viewer's own
+/// drill-down orders members the same way, so an embedded detail and a
+/// viewer-computed one open on the same symbols.
+fn ordered_community_members<'a>(
+    document: &'a GraphDocument,
+    communities: &Communities,
+) -> Result<BTreeMap<usize, Vec<&'a NodeRecord>>, OutputError> {
+    let node_community = community_membership(communities);
+    let degrees = degrees(document);
+    let mut grouped = BTreeMap::<usize, Vec<&NodeRecord>>::new();
+    for node in &document.nodes {
+        if let Some(community) = node_community.get(node.id.as_str()) {
+            grouped.entry(*community).or_default().push(node);
+        }
+    }
+    for (community, members) in communities.iter() {
+        let missing = members
+            .len()
+            .saturating_sub(grouped.get(community).map_or(0, Vec::len));
+        if missing > 0 {
+            return Err(OutputError::IncompleteCommunity {
+                community: *community,
+                missing,
+            });
+        }
+    }
+    for nodes in grouped.values_mut() {
+        nodes.sort_by(|left, right| {
+            degrees
+                .get(right.id.as_str())
+                .copied()
+                .unwrap_or_default()
+                .cmp(&degrees.get(left.id.as_str()).copied().unwrap_or_default())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+    }
+    Ok(grouped)
+}
+
+/// What one uniform window size costs the whole export: how many member nodes
+/// it publishes and how many internal edges stay complete inside the window.
+struct WindowCost {
+    members: Vec<usize>,
+    /// `internal_edges[community][cap]` counts complete internal edges once the
+    /// window reaches `cap` members, so a candidate size is costed without
+    /// rebuilding any detail.
+    internal_edges: Vec<Vec<usize>>,
+}
+
+impl WindowCost {
+    fn new(ordered: &BTreeMap<usize, Vec<&NodeRecord>>, document: &GraphDocument) -> Self {
+        let mut position = HashMap::<&str, (usize, usize)>::with_capacity(document.nodes.len());
+        let mut members = Vec::with_capacity(ordered.len());
+        for nodes in ordered.values() {
+            let index = members.len();
+            members.push(nodes.len());
+            for (member, node) in nodes.iter().enumerate() {
+                position.insert(node.id.as_str(), (index, member));
+            }
+        }
+        let mut internal_edges = members
+            .iter()
+            .map(|count| vec![0_usize; count + 1])
+            .collect::<Vec<_>>();
+        for edge in &document.links {
+            let (Some(source), Some(target)) = (
+                position.get(edge.source.as_str()),
+                position.get(edge.target.as_str()),
+            ) else {
+                continue;
+            };
+            if source.0 != target.0 {
+                continue;
+            }
+            // An internal edge is complete only once the window covers both
+            // endpoints; the farther member decides that step.
+            let reached = source.1.max(target.1) + 1;
+            internal_edges[source.0][reached] += 1;
+        }
+        for prefix in &mut internal_edges {
+            for index in 1..prefix.len() {
+                prefix[index] += prefix[index - 1];
+            }
+        }
+        Self {
+            members,
+            internal_edges,
+        }
+    }
+
+    fn fits(&self, cap: usize, node_budget: usize, edge_budget: usize) -> bool {
+        let mut nodes = 0_usize;
+        let mut edges = 0_usize;
+        for (index, count) in self.members.iter().enumerate() {
+            let window = cap.min(*count);
+            nodes += window;
+            edges += self.internal_edges[index][window];
+            if nodes > node_budget || edges > edge_budget {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Largest shared window size that keeps the export inside both budgets.
+    /// Zero means no community fits, which leaves every overview bubble
+    /// explicitly unavailable for standalone drilldown.
+    fn largest_window(&self, node_budget: usize, edge_budget: usize) -> usize {
+        let mut low = 0_usize;
+        let mut high = self.members.iter().copied().max().unwrap_or_default();
+        while low < high {
+            let candidate = low + (high - low).div_ceil(2);
+            if self.fits(candidate, node_budget, edge_budget) {
+                low = candidate;
+            } else {
+                high = candidate - 1;
+            }
+        }
+        low
+    }
+}
+
+/// One embedded detail per community, each bounded by the same window size.
+///
+/// A standalone document cannot publish every symbol of a large repository, so
+/// the budget is spent fairly rather than on the largest communities alone: the
+/// window grows until the next step would exceed the export's node or internal
+/// edge budget, which keeps every community openable and complete communities
+/// complete. Members are ordered by connectivity first, so a bounded community
+/// still opens on its most important symbols.
 fn community_view_models(
     document: &GraphDocument,
     communities: &Communities,
@@ -425,90 +665,32 @@ fn community_view_models(
     node_budget: usize,
     edge_budget: usize,
 ) -> Result<BTreeMap<usize, GraphViewModel>, OutputError> {
-    let node_community = communities
-        .iter()
-        .flat_map(|(community, members)| {
-            members
-                .iter()
-                .map(move |member| (member.as_str(), *community))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut internal_edge_counts = BTreeMap::<usize, usize>::new();
-    for edge in &document.links {
-        let (Some(source), Some(target)) = (
-            node_community.get(edge.source.as_str()),
-            node_community.get(edge.target.as_str()),
-        ) else {
-            continue;
-        };
-        if source == target {
-            *internal_edge_counts.entry(*source).or_default() += 1;
-        }
-    }
-    let mut candidates = communities
-        .iter()
-        .map(|(community, members)| {
-            (
-                *community,
-                members.len(),
-                internal_edge_counts
-                    .get(community)
-                    .copied()
-                    .unwrap_or_default(),
-            )
-        })
+    let ordered = ordered_community_members(document, communities)?;
+    let window = WindowCost::new(&ordered, document);
+    let cap = window.largest_window(node_budget, edge_budget);
+    let nodes_by_community = ordered
+        .into_iter()
+        .map(|(community, nodes)| (community, nodes.into_iter().take(cap)))
         .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        right
-            .1
-            .cmp(&left.1)
-            .then_with(|| right.2.cmp(&left.2))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    let mut remaining_nodes = node_budget;
-    let mut remaining_edges = edge_budget;
-    let mut selected = HashSet::new();
-    for (community, nodes, edges) in candidates {
-        if nodes == 0 || nodes > remaining_nodes || edges > remaining_edges {
-            continue;
+    let mut windowed_nodes = BTreeMap::<usize, Vec<NodeRecord>>::new();
+    let mut selected = HashMap::<String, usize>::new();
+    for (community, nodes) in nodes_by_community {
+        let mut windowed = Vec::new();
+        for node in nodes {
+            selected.insert(node.id.clone(), community);
+            windowed.push(node.clone());
         }
-        selected.insert(community);
-        remaining_nodes -= nodes;
-        remaining_edges -= edges;
-    }
-    let mut grouped_nodes = BTreeMap::<usize, Vec<NodeRecord>>::new();
-    for node in &document.nodes {
-        if let Some(community) = node_community
-            .get(node.id.as_str())
-            .filter(|community| selected.contains(community))
-        {
-            grouped_nodes
-                .entry(*community)
-                .or_default()
-                .push(node.clone());
-        }
-    }
-    for (community, members) in communities
-        .iter()
-        .filter(|(community, _)| selected.contains(community))
-    {
-        let found = grouped_nodes.get(community).map_or(0, Vec::len);
-        if found != members.len() {
-            return Err(OutputError::IncompleteCommunity {
-                community: *community,
-                missing: members.len().saturating_sub(found),
-            });
-        }
+        windowed_nodes.insert(community, windowed);
     }
     let mut grouped_links = BTreeMap::<usize, Vec<EdgeRecord>>::new();
     for edge in &document.links {
         let (Some(source), Some(target)) = (
-            node_community.get(edge.source.as_str()),
-            node_community.get(edge.target.as_str()),
+            selected.get(edge.source.as_str()),
+            selected.get(edge.target.as_str()),
         ) else {
             continue;
         };
-        if source == target && selected.contains(source) {
+        if source == target {
             grouped_links.entry(*source).or_default().push(edge.clone());
         }
     }
@@ -530,7 +712,7 @@ fn community_view_models(
                 complete = false;
                 break;
             };
-            let Some(community) = node_community.get(id).copied() else {
+            let Some(community) = selected.get(id).copied() else {
                 complete = false;
                 break;
             };
@@ -540,8 +722,7 @@ fn community_view_models(
             }
             owner = Some(community);
         }
-        if complete && let Some(community) = owner.filter(|community| selected.contains(community))
-        {
+        if complete && let Some(community) = owner {
             grouped_hyperedges
                 .entry(community)
                 .or_default()
@@ -555,7 +736,10 @@ fn community_view_models(
         learning_overlay: options.learning_overlay,
     };
     let mut models = BTreeMap::new();
-    for (community, nodes) in grouped_nodes {
+    for (community, nodes) in windowed_nodes {
+        if nodes.is_empty() {
+            continue;
+        }
         let mut graph = Map::new();
         match grouped_hyperedges.remove(&community) {
             Some(hyperedges) if !hyperedges.is_empty() => {
@@ -614,7 +798,7 @@ pub(crate) fn node_values(
     let mut nodes = Vec::new();
     for node in &document.nodes {
         let community = node_community.get(node.id.as_str()).copied().unwrap_or(0);
-        let color = COMMUNITY_COLORS[community % COMMUNITY_COLORS.len()];
+        let color = community_color(community);
         let label = sanitize_label(&node_label(node));
         let degree = degrees.get(node.id.as_str()).copied().unwrap_or(1);
         let (size, font_size) = if let Some(counts) = options.member_counts {
@@ -633,7 +817,10 @@ pub(crate) fn node_values(
         let mut output = Map::new();
         output.insert("id".into(), Value::String(node.id.clone()));
         output.insert("label".into(), Value::String(label.clone()));
-        output.insert("color".into(), node_color(color, color));
+        output.insert(
+            "color".into(),
+            node_color(color, &community_border(community)),
+        );
         output.insert("size".into(), decimal_value(round_tenths(size)));
         output.insert(
             "font".into(),
@@ -1110,7 +1297,7 @@ fn add_learning_fields(
     );
 }
 
-fn aggregate(
+pub(crate) fn aggregate(
     document: &GraphDocument,
     communities: &Communities,
     options: &HtmlOptions<'_>,
@@ -2697,6 +2884,92 @@ mod tests {
             "nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}],
             "links":[{"source":"a","target":"b","relation":"calls"}]
         }))?;
+        let communities = Communities::from([(0usize, vec!["a".to_owned(), "b".to_owned()])]);
+        let rendered = html_document(&graph, &communities, "graph.html", &HtmlOptions::default())?
+            .ok_or("HTML unexpectedly skipped")?;
+        assert!(
+            !rendered.html.contains("id=\"compass-viewer-hierarchy\""),
+            "a graph without a published hierarchy embeds none"
+        );
+
+        let identity = compass_graph::CommunityIdentity {
+            algorithm: compass_graph::QUALITY_CLUSTER_ALGORITHM.to_owned(),
+            topology: compass_graph::QUALITY_CLUSTER_TOPOLOGY.to_owned(),
+            quality: compass_graph::QUALITY_CLUSTER_QUALITY.to_owned(),
+            selector: compass_graph::QUALITY_CLUSTER_SELECTOR.to_owned(),
+            seed: compass_graph::COMPATIBILITY_CLUSTER_SEED,
+            limits: compass_graph::QUALITY_CLUSTER_LIMITS.to_owned(),
+        };
+        let limits = compass_graph::CommunityLimits::default();
+        let draft = compass_graph::CommunityHierarchyDraft {
+            identity,
+            limits,
+            budget_identity: compass_graph::COMMUNITY_HIERARCHY_BUDGET.to_owned(),
+            merge_policy: compass_graph::COMMUNITY_HIERARCHY_MERGE_POLICY.to_owned(),
+            signature_algorithm: compass_graph::COMMUNITY_HIERARCHY_SIGNATURE_ALGORITHM.to_owned(),
+            budget: compass_graph::HierarchyBudget::default(),
+            boundary_kinds: vec!["route".to_owned()],
+            finest_community_count: 1,
+            finest_signature: format!("sha256:{}", "0".repeat(64)),
+            budget_satisfied: true,
+            levels: vec![compass_graph::HierarchyLevel {
+                level: 0,
+                merge: compass_graph::LevelMerge::Relationship,
+                resolution: Some(1.0),
+                merge_evidence: BTreeMap::new(),
+                group_count: 1,
+                signature: "0123456789abcdef".to_owned(),
+                groups: vec![compass_graph::HierarchyGroup {
+                    index: 0,
+                    id: "h0-0123456789abcdef".to_owned(),
+                    signature: "0123456789abcdef".to_owned(),
+                    community: Some(0),
+                    label: compass_graph::HierarchyLabel {
+                        text: "src".to_owned(),
+                        rule: compass_graph::HierarchyLabelRule::DominantDirectory,
+                        generic: false,
+                        evidence: BTreeMap::from([("value".to_owned(), serde_json::json!("src"))]),
+                    },
+                    member_count: 2,
+                    child_indices: Vec::new(),
+                    quality: compass_graph::GroupQuality {
+                        cohesion: 1.0,
+                        conductance: 0.0,
+                        boundary_kinds: BTreeMap::new(),
+                    },
+                }],
+            }],
+        };
+        let rendered = html_document_with_hierarchy(
+            &graph,
+            &communities,
+            "graph.html",
+            &HtmlOptions::default(),
+            Some(&draft.levels_view()),
+            None,
+        )?
+        .ok_or("HTML unexpectedly skipped")?;
+        assert!(
+            rendered.html.contains("id=\"compass-viewer-hierarchy\""),
+            "the page must embed the published levels"
+        );
+        assert!(rendered.html.contains("compass.viewer.hierarchy/1"));
+        assert!(
+            rendered.html.contains("locationAffinity") || rendered.html.contains("relationship")
+        );
+        assert!(
+            rendered.html.contains("\"label\":\"src\""),
+            "a level names its groups from the hierarchy, not from community labels"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn html_renders_workbench_controls() -> Result<(), Box<dyn Error>> {
+        let graph: GraphDocument = serde_json::from_value(json!({
+            "nodes":[{"id":"a","label":"A"},{"id":"b","label":"B"}],
+            "links":[{"source":"a","target":"b","relation":"calls"}]
+        }))?;
         let rendered = html_document(
             &graph,
             &Communities::new(),
@@ -2824,7 +3097,60 @@ mod tests {
     }
 
     #[test]
-    fn standalone_detail_models_obey_total_node_and_edge_budgets() -> Result<(), Box<dyn Error>> {
+    fn standalone_details_share_one_window_across_every_community() -> Result<(), Box<dyn Error>> {
+        // A hub community and a pair share one window size, so the budget buys
+        // every community a detail instead of one community the whole budget.
+        let graph: GraphDocument = serde_json::from_value(json!({
+            "nodes":[
+                {"id":"h","label":"H"},{"id":"x","label":"X"},{"id":"y","label":"Y"},
+                {"id":"p","label":"P"},{"id":"q","label":"Q"}
+            ],
+            "links":[
+                {"source":"h","target":"x","relation":"calls"},
+                {"source":"h","target":"y","relation":"calls"},
+                {"source":"p","target":"q","relation":"calls"}
+            ]
+        }))?;
+        let communities = BTreeMap::from([
+            (0, vec!["h".into(), "x".into(), "y".into()]),
+            (1, vec!["p".into(), "q".into()]),
+        ]);
+        let options = HtmlOptions::default();
+
+        let details = community_view_models(&graph, &communities, "graph.html", &options, 3, 10)?;
+        assert_eq!(details.keys().copied().collect::<Vec<_>>(), [0, 1]);
+        // One shared window of one member each: two nodes, no complete edge.
+        assert!(details.values().all(|detail| detail.stats.nodes == 1));
+        assert_eq!(
+            details[&0]
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            ["h"],
+            "the most connected member must lead a bounded detail",
+        );
+
+        // The internal edge budget bounds the window before the node budget does.
+        let details = community_view_models(&graph, &communities, "graph.html", &options, 4, 1)?;
+        let nodes = details
+            .values()
+            .map(|detail| detail.stats.nodes)
+            .sum::<usize>();
+        let edges = details
+            .values()
+            .map(|detail| detail.stats.edges)
+            .sum::<usize>();
+        assert_eq!((nodes, edges), (2, 0));
+
+        // A budget that cannot host one member leaves the export without details.
+        let details = community_view_models(&graph, &communities, "graph.html", &options, 0, 10)?;
+        assert!(details.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn standalone_details_mark_every_embedded_community_available() -> Result<(), Box<dyn Error>> {
         let graph: GraphDocument = serde_json::from_value(json!({
             "nodes":[
                 {"id":"a","label":"A"},{"id":"b","label":"B"},
@@ -2840,12 +3166,9 @@ mod tests {
             (1, vec!["c".into(), "d".into()]),
         ]);
         let options = HtmlOptions::default();
-        let details = community_view_models(&graph, &communities, "graph.html", &options, 2, 1)?;
-        assert_eq!(details.keys().copied().collect::<Vec<_>>(), [0]);
-
         let (overview, overview_communities, member_counts) =
             aggregate(&graph, &communities, &options);
-        let rendered = render(
+        let embedded = render(
             &overview,
             &overview_communities,
             Path::new("graph.html"),
@@ -2854,11 +3177,29 @@ mod tests {
                 ..HtmlOptions::default()
             },
             Some((&graph, &communities, 2, 1)),
+            None,
+            None,
         )?;
-        assert!(rendered.contains("\"detailAvailable\":true"));
-        assert!(rendered.contains("\"detailAvailable\":false"));
-        assert!(rendered.contains("data-compass-community=\"0\""));
-        assert!(!rendered.contains("data-compass-community=\"1\""));
+        assert!(embedded.contains("\"detailAvailable\":true"));
+        assert!(!embedded.contains("\"detailAvailable\":false"));
+        assert!(embedded.contains("data-compass-community=\"0\""));
+        assert!(embedded.contains("data-compass-community=\"1\""));
+
+        let omitted = render(
+            &overview,
+            &overview_communities,
+            Path::new("graph.html"),
+            &HtmlOptions {
+                member_counts: Some(&member_counts),
+                ..HtmlOptions::default()
+            },
+            Some((&graph, &communities, 0, 1)),
+            None,
+            None,
+        )?;
+        assert!(!omitted.contains("\"detailAvailable\":true"));
+        assert!(omitted.contains("\"detailAvailable\":false"));
+        assert!(!omitted.contains("data-compass-community=\"0\""));
         Ok(())
     }
 

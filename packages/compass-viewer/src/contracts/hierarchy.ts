@@ -1,0 +1,132 @@
+import { z } from "zod";
+import { GraphViewModelSchema } from "./graph";
+
+export const HIERARCHY_VIEW_SCHEMA = "compass.viewer.hierarchy/1" as const;
+
+/**
+ * The rule that produced a group label. Readers switch on this instead of
+ * parsing label text: a generic label says nothing about its members.
+ */
+export const HierarchyLabelRuleSchema = z.enum([
+  "dominantDirectory",
+  "modulePrefix",
+  "hubMember",
+  "communityId"
+]);
+
+/**
+ * How a level's groups were derived from the level below. `relationship` merges
+ * on projected evidence; `locationAffinity` merges on shared source location
+ * after relationship evidence stopped reducing the level.
+ */
+export const LevelMergeSchema = z.enum(["relationship", "locationAffinity"]);
+
+export const HierarchyGroupSchema = z.strictObject({
+  index: z.number().int().nonnegative(),
+  /** Durable identity: `h<level>-<signature16>` over the group's evidence. */
+  id: z.string().min(1),
+  /** Digest of this build's member evidence for the group. */
+  signature: z.string().min(1),
+  community: z.number().int().nonnegative().optional(),
+  label: z.string().min(1),
+  labelRule: HierarchyLabelRuleSchema,
+  labelGeneric: z.boolean(),
+  memberCount: z.number().int().positive(),
+  childIndices: z.array(z.number().int().nonnegative()).default([]),
+  cohesion: z.number(),
+  conductance: z.number(),
+  boundaryKinds: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  detailAvailable: z.boolean()
+});
+
+export const HierarchyLevelSchema = z.strictObject({
+  level: z.number().int().nonnegative(),
+  merge: LevelMergeSchema,
+  resolution: z.number().optional(),
+  groupCount: z.number().int().positive(),
+  memberCount: z.number().int().nonnegative(),
+  groups: z.array(HierarchyGroupSchema).min(1),
+  /** Omitted when the level holds more groups than the export's node budget. */
+  model: GraphViewModelSchema.optional()
+});
+
+/**
+ * The published community hierarchy as an export embeds it. Level 0 is the
+ * root a reader opens; the last level is the published partition. Levels are
+ * defined by `childIndices` into the level below, never by repeating node ids.
+ */
+export const CommunityHierarchyViewSchema = z.strictObject({
+  schema: z.literal(HIERARCHY_VIEW_SCHEMA),
+  budgetIdentity: z.string().min(1),
+  mergePolicy: z.string().min(1),
+  /** Level the export asks the viewer to open on. */
+  initialLevel: z.number().int().nonnegative().optional(),
+  rootTarget: z.number().int().positive(),
+  levelTarget: z.number().int().positive(),
+  maxLevels: z.number().int().positive(),
+  budgetSatisfied: z.boolean(),
+  finestCommunityCount: z.number().int().nonnegative(),
+  finestSignature: z.string().min(1),
+  boundaryKinds: z.array(z.string()).default([]),
+  levels: z.array(HierarchyLevelSchema).min(1)
+});
+
+export type HierarchyLabelRule = z.infer<typeof HierarchyLabelRuleSchema>;
+export type LevelMerge = z.infer<typeof LevelMergeSchema>;
+export type HierarchyGroup = z.infer<typeof HierarchyGroupSchema>;
+export type HierarchyLevel = z.infer<typeof HierarchyLevelSchema>;
+export type CommunityHierarchyView = z.infer<typeof CommunityHierarchyViewSchema>;
+
+export const HIERARCHY_DIFF_SCHEMA = "compass.community-hierarchy-diff/1" as const;
+
+export const HierarchyDiffSideSchema = z.strictObject({
+  generation: z.string(),
+  graphDigest: z.string(),
+  hierarchyDigest: z.string(),
+  levels: z.number().int().nonnegative(),
+  groups: z.number().int().nonnegative()
+});
+
+export const HierarchyDiffEventSchema = z.strictObject({
+  kind: z.enum([
+    "stable",
+    "split",
+    "merged",
+    "appeared",
+    "disappeared",
+    "ambiguous"
+  ]),
+  level: z.number().int().nonnegative(),
+  baseIds: z.array(z.string()),
+  targetIds: z.array(z.string()),
+  overlap: z.number(),
+  memberCount: z.number().int().nonnegative()
+});
+
+/**
+ * The bounded comparison of two published hierarchies. `omittedEvents` is the
+ * exact number of entries the bound withheld: a reader never has to guess
+ * whether an empty-looking list means "nothing changed".
+ */
+export const HierarchyDiffSchema = z.strictObject({
+  schema: z.literal(HIERARCHY_DIFF_SCHEMA),
+  base: HierarchyDiffSideSchema,
+  target: HierarchyDiffSideSchema,
+  policy: z.strictObject({
+    keepThreshold: z.number(),
+    ambiguityMargin: z.number(),
+    maxEvents: z.number().int().positive()
+  }),
+  stable: z.number().int().nonnegative(),
+  split: z.number().int().nonnegative(),
+  merged: z.number().int().nonnegative(),
+  appeared: z.number().int().nonnegative(),
+  disappeared: z.number().int().nonnegative(),
+  ambiguous: z.number().int().nonnegative(),
+  events: z.array(HierarchyDiffEventSchema),
+  omittedEvents: z.number().int().nonnegative(),
+  resultDigest: z.string().min(1)
+});
+
+export type HierarchyDiffEvent = z.infer<typeof HierarchyDiffEventSchema>;
+export type HierarchyDiff = z.infer<typeof HierarchyDiffSchema>;

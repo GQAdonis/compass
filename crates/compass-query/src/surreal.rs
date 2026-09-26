@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 use compass_graphdb_surreal::{SURREAL_REF_FILE_NAME, SurrealProjection, SurrealRef};
@@ -20,6 +21,7 @@ pub struct SurrealQueryEngine {
     reference: SurrealRef,
     pub(crate) projection: Arc<SurrealProjection>,
     graph_path: PathBuf,
+    deadline: Option<Instant>,
 }
 
 impl std::fmt::Debug for SurrealQueryEngine {
@@ -83,6 +85,7 @@ impl SurrealQueryEngine {
             reference,
             projection: Arc::new(projection),
             graph_path: graph_path.unwrap_or_else(|| Path::new("")).to_path_buf(),
+            deadline: None,
         })
     }
 
@@ -91,6 +94,16 @@ impl SurrealQueryEngine {
     #[must_use]
     pub fn with_graph_path(mut self, graph_path: &Path) -> Self {
         self.graph_path = graph_path.to_path_buf();
+        self
+    }
+
+    /// Arm the same typed-query deadline the JSON and SQLite engines accept.
+    ///
+    /// Every typed operation runs on a fresh typed engine, so the deadline is
+    /// carried into each one and checked between its traversal phases.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
         self
     }
 
@@ -129,6 +142,7 @@ impl SurrealQueryEngine {
             reference,
             projection: Arc::clone(&self.projection),
             graph_path: self.graph_path.clone(),
+            deadline: self.deadline,
         })
     }
 
@@ -264,6 +278,7 @@ impl SurrealQueryEngine {
         let index_path = PathBuf::from(&self.reference.location);
         let graph_identity = self.reference.graph_digest.clone();
         let build_generation_identity = self.reference.generation_id.clone();
+        let deadline = self.deadline;
         // SQLite connections and a materialized graph are deliberately absent.
         // Construct inside the blocking worker so no synchronous DB read can
         // block the async reactor that drives the embedded connection.
@@ -280,6 +295,7 @@ impl SurrealQueryEngine {
                 build_generation_identity,
                 search_query_cache: std::sync::Mutex::new(Default::default()),
                 fuzzy_lookup_cache: std::sync::Mutex::new(Default::default()),
+                deadline,
             };
             operation(&engine)
         })

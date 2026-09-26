@@ -1,0 +1,39 @@
+{
+  "mode": "diff",
+  "verdict": "PASS",
+  "judge_model": "k3",
+  "producer_model": "unknown",
+  "isolation_mode": "rest-gateway:http://localhost:4000/v1",
+  "cross_model_check": "unverified-producer-unknown",
+  "findings": [
+    {
+      "severity": "WARNING",
+      "file": ".kbd-orchestrator/phases/compass-scoping-and-bounds/plan.md",
+      "line": 532,
+      "claim": "plan.md presents itself as the live superseding plan yet is frozen as an immutable pinned snapshot, so its 'Blocked before execution \u2014 blocks Wave 5' section asserts C-011/C-013 are open decisions while the same commit's decision log and execution.md declare that exact gate satisfied and C-014/C-015 unblocked, and no in-file pointer reconciles the contradiction.",
+      "evidence": "plan.md hunk adds '### Decision \u2014 blocks Wave 5 (carried from assessment \u00a77): C-011 (license) is a user/legal decision; C-013 budget ratification is a recorded decision. Neither can be closed by implementation work.' and header '**Changes:** 20 \u2014 0 complete'; the same diff's decision-log.md adds 'C-011 ... The C-014/C-015 entry gate is therefore satisfied and those changes are unblocked.' The frozen-status rationale exists only in openspec/changes/archive/2026-08-29-surrealdb-license-decision/verification.md ('exactly preserving that immutable pre-measurement planning snapshot. Live gate resolution is recorded in the decision log...') and .refiner/artifacts/C-011/refinement_log.md Iteration 5 \u2014 plan.md itself carries no such notice, unlike execution.md which explicitly labels its ledger a historical snapshot.",
+      "suggested_fix": "Record the pinned-hash immutability and the pointer to decision-log.md/execution.md/progress.json for live status in a location a plan.md reader will actually encounter (e.g., a note in the C-013 decision document is insufficient; add the pointer to the pinned-hash record and to the phase README or goals.md), or relax the pin to allow a single header line in plan.md stating the freeze with the hash recomputed and re-pinned by recorded decision."
+    },
+    {
+      "severity": "WARNING",
+      "file": "docs/future/qualification-corpora-baselines.md",
+      "line": 22,
+      "claim": "The C-013 budget ratification did not satisfy the plan's stated anti-bias ordering rule as written: the plan requires ratification 'before any Surreal measurements are visible,' but the ratification document itself concedes C-012's SurrealKV/RocksDB measurements were 'already-recorded' before the decision, and the formal acceptance criterion it does meet ('dated prior to Wave 5 runs') is a weaker restatement.",
+      "evidence": "plan.md C-013 hunk: '**Ratify the numeric budgets** from the research doc (or amend them by recorded decision) **before** any Surreal measurements are visible.' docs/future/qualification-corpora-baselines.md: 'C-012's already-recorded disposable engine measurements are explicitly not inputs to this ratification' with Decision date 2026-08-28, while docs/future/surreal-persistent-probe-results.md records Run date 2026-08-28 \u2014 i.e., Surreal measurements existed and were retained before/at ratification. Mitigations (explicit exclusion from the basis, pinned plan/research-section SHA-256 precommitment) preserve the substance but not the stated ordering.",
+      "suggested_fix": "Amend the plan/rule text by recorded decision to match the enforced criterion (ratification dated prior to Wave 5 projection measurements, with Wave 4 probe measurements formally excluded from the decision basis), or record an explicit deviation note in the C-013 decision document acknowledging the prose rule was not met as written."
+    },
+    {
+      "severity": "WARNING",
+      "file": ".kbd-orchestrator/phases/compass-scoping-and-bounds/decision-log.md",
+      "line": 44,
+      "claim": "The C-011 archive change bundles content unrelated to the license decision \u2014 a C-010 MCP-protocol decision entry, C-001 handoff/verify-first entries, a newly created 20-change execution.md, and a full plan.md re-plan \u2014 breaching the no-unrelated-diff-noise warning constraint for this change's diff surface.",
+      "evidence": "Constraint 'no-unrelated-diff-noise': 'git diff and git status --short contain no unrelated or generated noise.' The diff adds to decision-log.md a '2026-08-29 \u2014 Latest MCP revision governs C-010 (user decision)' entry (an MCP transport decision with no bearing on the SurrealDB license gate) plus two C-001 entries dated 2026-08-28T12:45:00Z, and creates execution.md covering C-001 through C-020. .refiner/artifacts/C-011/refinement_log.md Iteration 3 acknowledges this: 'The remaining unrelated-hunk warning is an acknowledged consequence of the repository's cumulative uncommitted phase ledger' \u2014 acknowledged but not resolved.",
+      "suggested_fix": "Commit phase-ledger updates (decision-log, plan re-run, execution contract) as their own change(s) ahead of per-change archive packets, so each archived change's diff contains only that change's artifacts and evidence; at minimum, scope files.txt and the review packet to exclude hunks unrelated to C-011."
+    }
+  ],
+  "sycophancy_screen": {
+    "reject_cap": 2,
+    "cap_overridden": false,
+    "cap_default": 2
+  }
+}

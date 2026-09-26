@@ -1,5 +1,3 @@
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use compass_model::provenance::SourceAnchor;
 use compass_model::query_contract::{
     DiscoveryDirection, DiscoveryDirectionSource, DiscoveryQueryResponse, DiscoveryResultEnvelope,
@@ -9,6 +7,10 @@ use compass_model::query_contract::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+
+use crate::text_cursor::{
+    CursorTokenError, decode_cursor_token, encode_cursor_token, is_cursor_digest,
+};
 
 pub const DISCOVERY_TEXT_PAGE_VERSION: &str = "compass.query.discovery-text-page/2";
 pub const DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET: usize = 8_000;
@@ -120,6 +122,87 @@ struct CursorEnvelope {
     offset: usize,
 }
 
+/// Cursor wire version. Older encodings fail with an explicit version error.
+const CURSOR_WIRE_VERSION: u8 = 2;
+/// Hex characters stored for each digest the cursor binds.
+const CURSOR_DIGEST_CHARS: usize = 16;
+/// Fields this cursor carries behind its wire version.
+const CURSOR_WIRE_FIELDS: usize = 8;
+
+fn cursor_digest_prefix(value: &str) -> String {
+    value.chars().take(CURSOR_DIGEST_CHARS).collect()
+}
+
+fn cursor_digest_matches(stored: &str, current: &str) -> bool {
+    current.starts_with(stored)
+}
+
+impl CursorEnvelope {
+    fn to_wire_fields(&self) -> Vec<String> {
+        vec![
+            cursor_digest_prefix(&self.request_digest),
+            cursor_digest_prefix(&self.graph_identity),
+            cursor_digest_prefix(&self.graph_digest),
+            cursor_digest_prefix(&self.semantic_result_digest),
+            if self.include_evidence { "1" } else { "0" }.to_owned(),
+            self.section.clone(),
+            self.item.to_string(),
+            self.offset.to_string(),
+        ]
+    }
+
+    fn from_wire_fields(fields: Vec<String>) -> Result<Self, DiscoveryTextPageError> {
+        let [
+            request_digest,
+            graph_identity,
+            graph_digest,
+            semantic_result_digest,
+            include_evidence,
+            section,
+            item,
+            offset,
+        ] = <[String; CURSOR_WIRE_FIELDS]>::try_from(fields)
+            .map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)?;
+        let include_evidence = match include_evidence.as_str() {
+            "1" => true,
+            "0" => false,
+            _ => return Err(DiscoveryTextPageError::InvalidCursorEncoding),
+        };
+        let parse_position = |value: &str| {
+            value
+                .parse::<usize>()
+                .map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)
+        };
+        Ok(Self {
+            version: DISCOVERY_TEXT_PAGE_VERSION.to_owned(),
+            request_digest: cursor_field_digest(&request_digest)?,
+            // The graph identity is the artifact's own spelling - it may carry
+            // a `sha256:` prefix - so the shared decoder's field check is the
+            // only bound it needs; the prefix is compared against the graph the
+            // continuation is running on.
+            graph_identity,
+            graph_digest: cursor_field_digest(&graph_digest)?,
+            semantic_result_digest: cursor_field_digest(&semantic_result_digest)?,
+            include_evidence,
+            section,
+            item: parse_position(&item)?,
+            offset: parse_position(&offset)?,
+        })
+    }
+}
+
+/// One digest prefix read back from a cursor field.
+///
+/// The digest is compared against the current request, graph, and result, so
+/// this only rejects a field the encoder could not have written.
+fn cursor_field_digest(value: &str) -> Result<String, DiscoveryTextPageError> {
+    if is_cursor_digest(value, CURSOR_DIGEST_CHARS) {
+        Ok(value.to_owned())
+    } else {
+        Err(DiscoveryTextPageError::InvalidCursorEncoding)
+    }
+}
+
 pub fn render_discovery_text_page(
     response: &DiscoveryQueryResponse,
     options: DiscoveryTextPageOptions<'_>,
@@ -150,7 +233,7 @@ fn render_discovery_text_page_internal(
         return Err(DiscoveryTextPageError::InvalidBudget);
     }
     for digest in [options.request_digest, options.graph_digest] {
-        if !valid_digest(digest) {
+        if !valid_caller_digest(digest) {
             return Err(DiscoveryTextPageError::InvalidCursorEncoding);
         }
     }
@@ -186,6 +269,7 @@ fn render_discovery_text_page_internal(
         .sum::<usize>();
     let mut end = start;
     let mut entries_chars = 0_usize;
+    let mut truncated_entry: Option<String> = None;
     while let Some(entry) = entries.get(end) {
         let candidate_end = end + 1;
         let candidate_cursor =
@@ -211,7 +295,14 @@ fn render_discovery_text_page_internal(
             > max_chars
         {
             if end == start {
-                return Err(DiscoveryTextPageError::EntryTooLarge);
+                let remaining = max_chars
+                    .saturating_sub(fixed_chars)
+                    .saturating_sub(footer_chars);
+                let Some(text) = truncated_entry_text(&entry.text, remaining) else {
+                    return Err(DiscoveryTextPageError::EntryTooLarge);
+                };
+                truncated_entry = Some(text);
+                end = candidate_end;
             }
             break;
         }
@@ -220,7 +311,15 @@ fn render_discovery_text_page_internal(
     }
     let next_cursor = continuation_cursor(&entries, end, &options, &semantic_result_digest)?;
     let mut lines = fixed;
-    lines.extend(entries[start..end].iter().map(|entry| entry.text.clone()));
+    lines.extend(
+        entries[start..end]
+            .iter()
+            .enumerate()
+            .map(|(offset, entry)| match (offset, truncated_entry.as_ref()) {
+                (0, Some(text)) => text.clone(),
+                _ => entry.text.clone(),
+            }),
+    );
     let page_footer = footer(
         response,
         &semantic_result_digest,
@@ -249,6 +348,27 @@ fn render_discovery_text_page_internal(
         entry_end: end,
         entry_total: entries.len(),
     })
+}
+
+/// Mark a discovery entry that could not fit the requested text budget.
+const ENTRY_TRUNCATION_MARKER: &str = " …[truncated: entry exceeds --text-budget]";
+/// Short marker used when the full marker does not fit the page budget.
+const SHORT_ENTRY_TRUNCATION_MARKER: &str = " …[truncated]";
+
+/// Shorten one oversized entry so a bounded page can still advance.
+///
+/// Returns `None` when not even the marker fits, which keeps the explicit
+/// `EntryTooLarge` failure for budgets smaller than the page metadata.
+fn truncated_entry_text(text: &str, remaining_chars: usize) -> Option<String> {
+    // The paginator counts one extra character for the entry's line break.
+    let budget = remaining_chars.saturating_sub(1);
+    let marker = [ENTRY_TRUNCATION_MARKER, SHORT_ENTRY_TRUNCATION_MARKER]
+        .into_iter()
+        .find(|marker| budget > marker.chars().count() + 1)?;
+    let keep = budget - marker.chars().count();
+    let mut rendered = text.chars().take(keep).collect::<String>();
+    rendered.push_str(marker);
+    Some(rendered)
 }
 
 fn default_fixed_lines(
@@ -356,22 +476,9 @@ fn footer(
     include_evidence: bool,
 ) -> Vec<String> {
     let mut lines = vec![
+        completeness_line(response),
         format!(
-            "Completeness: {} (candidates={}, alternatives={}, nodes={}, edges={}, expandedRelationships={})",
-            if response.truncated {
-                "partial"
-            } else {
-                "complete"
-            },
-            omission(response.omissions.candidates),
-            omission(response.omissions.alternatives),
-            omission(response.omissions.nodes),
-            omission(response.omissions.edges),
-            omission(response.omissions.expanded_relationships),
-        ),
-        format!(
-            "Pagination: version={}{} range={}-{} of {} next={}",
-            DISCOVERY_TEXT_PAGE_VERSION,
+            "Pagination:{} range={}-{} of {} next={}",
             if include_evidence {
                 format!(" digest=sha256:{semantic_result_digest}")
             } else {
@@ -398,11 +505,46 @@ fn footer(
             );
         if hidden > 0 {
             lines.push(format!(
-                "({hidden} provenance record(s) hidden — pass --evidence for full detail)"
+                "({hidden} provenance record(s) hidden; --evidence)"
             ));
         }
     }
     lines
+}
+
+/// One compact completeness line.
+///
+/// Only bounds that actually withheld records are printed: "partial" already
+/// states that a bound applied, so repeating `candidates=0 alternatives=0` on
+/// every page spends the page budget on zeroes. `--format json` keeps every
+/// omission counter.
+fn completeness_line(response: &DiscoveryQueryResponse) -> String {
+    let mut counts = Vec::new();
+    for (name, value) in [
+        ("candidates", response.omissions.candidates),
+        ("alternatives", response.omissions.alternatives),
+        ("nodes", response.omissions.nodes),
+        ("edges", response.omissions.edges),
+        (
+            "expandedRelationships",
+            response.omissions.expanded_relationships,
+        ),
+    ] {
+        match value {
+            Some(0) | None => {}
+            Some(count) => counts.push(format!("{name}={count}")),
+        }
+    }
+    let state = if response.truncated {
+        "partial"
+    } else {
+        "complete"
+    };
+    if counts.is_empty() {
+        format!("Completeness: {state}")
+    } else {
+        format!("Completeness: {state} ({})", counts.join(", "))
+    }
 }
 
 fn entries(response: &DiscoveryQueryResponse, include_evidence: bool) -> Vec<Entry> {
@@ -675,13 +817,15 @@ fn validate_cursor(
     if cursor.version != DISCOVERY_TEXT_PAGE_VERSION {
         return Err(DiscoveryTextPageError::UnsupportedCursorVersion);
     }
-    if cursor.request_digest != request_digest {
+    if !cursor_digest_matches(&cursor.request_digest, request_digest) {
         return Err(DiscoveryTextPageError::RequestChanged);
     }
-    if cursor.graph_identity != graph_identity || cursor.graph_digest != graph_digest {
+    if !cursor_digest_matches(&cursor.graph_identity, graph_identity)
+        || !cursor_digest_matches(&cursor.graph_digest, graph_digest)
+    {
         return Err(DiscoveryTextPageError::GraphChanged);
     }
-    if cursor.semantic_result_digest != result_digest {
+    if !cursor_digest_matches(&cursor.semantic_result_digest, result_digest) {
         return Err(DiscoveryTextPageError::ResultChanged);
     }
     if cursor.include_evidence != include_evidence {
@@ -697,32 +841,37 @@ fn validate_cursor(
 }
 
 fn encode_cursor(cursor: &CursorEnvelope) -> Result<String, DiscoveryTextPageError> {
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(cursor)?);
-    let checksum = digest(payload.as_bytes());
-    Ok(format!("{payload}.{checksum}"))
+    let fields = cursor.to_wire_fields();
+    let fields = fields.iter().map(String::as_str).collect::<Vec<_>>();
+    Ok(encode_cursor_token(CURSOR_WIRE_VERSION, &fields))
 }
 
 fn decode_cursor(value: &str) -> Result<CursorEnvelope, DiscoveryTextPageError> {
     if value.len() > MAX_CURSOR_BYTES {
         return Err(DiscoveryTextPageError::CursorTooLarge);
     }
-    let (payload, checksum) = value
-        .split_once('.')
-        .ok_or(DiscoveryTextPageError::InvalidCursorEncoding)?;
-    if !valid_digest(checksum) || digest(payload.as_bytes()) != checksum {
-        return Err(DiscoveryTextPageError::InvalidCursorChecksum);
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)?;
-    serde_json::from_slice(&bytes).map_err(|_| DiscoveryTextPageError::InvalidCursorEncoding)
+    // The shared decoder proves the token is intact and readable as this wire
+    // form; every field's meaning is this pager's own.
+    decode_cursor_token(value, CURSOR_WIRE_VERSION, CURSOR_WIRE_FIELDS)
+        .map_err(|error| match error {
+            CursorTokenError::ChecksumMismatch => DiscoveryTextPageError::InvalidCursorChecksum,
+            CursorTokenError::UnsupportedVersion => {
+                DiscoveryTextPageError::UnsupportedCursorVersion
+            }
+            CursorTokenError::MissingChecksum | CursorTokenError::Malformed => {
+                DiscoveryTextPageError::InvalidCursorEncoding
+            }
+        })
+        .and_then(CursorEnvelope::from_wire_fields)
 }
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn valid_digest(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+
+/// Whether a caller handed in a full request or graph digest.
+fn valid_caller_digest(value: &str) -> bool {
+    is_cursor_digest(value, 64)
 }
 fn rendered_values(values: &[String]) -> String {
     if values.is_empty() {
@@ -890,9 +1039,6 @@ fn rendered_evidence(
         candidates,
     )
 }
-fn omission(value: Option<u64>) -> String {
-    value.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
-}
 fn direction_name(value: DiscoveryDirection) -> &'static str {
     match value {
         DiscoveryDirection::Auto => "auto",
@@ -1026,6 +1172,40 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_entry_is_truncated_instead_of_failing_the_page()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut response = response()?;
+        response.diagnostics[0].message = "x".repeat(4_000);
+        response.diagnostics[1].message = "second".to_owned();
+        let page = render_discovery_text_page(
+            &response,
+            DiscoveryTextPageOptions {
+                // The minimum budget: the page's fixed lines plus one capped
+                // entry exceed it, so the oversized entry must be shortened
+                // instead of failing the page.
+                token_budget: MIN_TEXT_BUDGET,
+                cursor: None,
+                request_digest: &"a".repeat(64),
+                graph_identity: "generation-1",
+                graph_digest: &"b".repeat(64),
+                include_evidence: false,
+            },
+        )?;
+        assert!(
+            page.text
+                .contains("[truncated: entry exceeds --text-budget]"),
+            "entries {}..{} of {}: {}",
+            page.entry_start,
+            page.entry_end,
+            page.entry_total,
+            page.text.chars().take(400).collect::<String>()
+        );
+        assert!(page.entry_end > page.entry_start);
+        assert!(page.next_cursor.is_some());
+        Ok(())
+    }
+
+    #[test]
     fn cursor_is_bound_to_request_graph_result_and_position()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut response = response()?;
@@ -1037,7 +1217,9 @@ mod tests {
         let first = render_discovery_text_page(
             &response,
             DiscoveryTextPageOptions {
-                token_budget: 512,
+                // Two entries cannot share one page at this budget, so the
+                // first page always ends with a continuation cursor.
+                token_budget: MIN_TEXT_BUDGET,
                 cursor: None,
                 request_digest: &"a".repeat(64),
                 graph_identity: "generation-1",

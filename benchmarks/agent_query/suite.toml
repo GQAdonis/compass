@@ -1,0 +1,641 @@
+# Agent query evaluation suite: five real repositories in five languages.
+#
+# Every question carries a manually source-reviewed judgment recorded in
+# `judgment`. Anchors are exact file names, line numbers, and symbols that the
+# reviewer read in the pinned checkout; they are the recall proxy used by the
+# runner, not an independent precision oracle.
+#
+# Kinds:
+#   explain    - one symbol, must locate its declaration with source evidence
+#   explain_source - one symbol, must return the declaration source text
+#   callers    - incoming usage, must return real call/usage sites
+#   path       - symbol-to-symbol connectivity
+#   file_path  - path-shaped input (file to file) connectivity
+#   ambiguity  - short name with several candidates, must offer a pick list
+#   negative   - absent symbol, must answer no-match instead of guessing
+#   broad      - natural question whose answer needs bounded follow-up
+#
+# `compass` and `graphify` are the exact per-tool argument vectors. The runner
+# appends tool-specific graph/bootstrap arguments.
+
+schema = "compass.agent-query-suite/1"
+
+[[repository]]
+name = "cobra"
+language = "Go"
+url = "https://github.com/spf13/cobra.git"
+commit = "adbc8813901bba65827259daa8e22ff94ec1f30e"
+
+[[repository.question]]
+id = "cobra-explain-executec"
+kind = "explain"
+subject = "cobra.Command::ExecuteC"
+compass = ["explain", "cobra.Command::ExecuteC", "--format", "agent-json"]
+graphify = ["explain", ".ExecuteC()"]
+expect = "answer"
+required = ["ExecuteC", "command.go", "1084"]
+judgment = "command.go:1084 declares func (c *Command) ExecuteC()."
+
+[[repository.question]]
+id = "cobra-brief-explore"
+kind = "brief"
+subject = "map ExecuteC and Find through the compact projection"
+compass = ["explore", "cobra.Command::ExecuteC", "cobra.Command::Find", "--root", ".", "--format", "agent-json", "--brief"]
+graphify = ["explain", ".ExecuteC()"]
+expect = "answer"
+required = ["ExecuteC", "Find"]
+judgment = "The compact map projection must still resolve both anchors."
+
+[[repository.question]]
+id = "cobra-brief-ambiguity"
+kind = "brief"
+subject = "Execute"
+compass = ["search", "Execute", "--format", "agent-json", "--brief"]
+graphify = ["query", "Execute", "--budget", "600"]
+expect = "pick_list"
+required_one_of = ["ExecuteC", "ExecuteContext", "execute"]
+min_one_of = 2
+judgment = "The compact ambiguity projection must still offer the candidate pick list."
+
+[[repository.question]]
+id = "cobra-brief-negative"
+kind = "brief"
+subject = "ZebraQuantumMissingSymbol"
+compass = ["search", "ZebraQuantumMissingSymbol", "--format", "agent-json", "--brief"]
+graphify = ["query", "ZebraQuantumMissingSymbol", "--budget", "600"]
+expect = "no_match"
+judgment = "The compact projection must keep the explicit no-match state cheaply."
+
+[[repository.question]]
+id = "cobra-callers-executec"
+kind = "callers"
+subject = "cobra.Command::ExecuteC"
+compass = ["callers", "cobra.Command::ExecuteC", "--format", "agent-json"]
+graphify = ["affected", ".ExecuteC()", "--depth", "1"]
+expect = "answer"
+required = ["calls", "command.go", "command_test.go", "4109"]
+judgment = "ExecuteC is called from command.go:1071/1080, command_test.go:54 and completions_test.go:4109; the answer must lead with those call edges rather than owner-level references."
+
+[[repository.question]]
+id = "cobra-path-executec-execute"
+kind = "path"
+subject = "cobra.Command::ExecuteC -> cobra.Command::Find"
+compass = ["path", "cobra.Command::ExecuteC", "cobra.Command::Find", "--format", "agent-json"]
+graphify = ["path", ".ExecuteC()", ".Find()"]
+expect = "answer"
+required = ["ExecuteC", "Find"]
+judgment = "ExecuteC calls c.Find(args) at command.go:1123."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "cobra-file-path"
+kind = "file_path"
+subject = "command.go -> args.go"
+compass = ["path", "command.go", "args.go", "--format", "agent-json"]
+graphify = ["path", "command.go", "args.go"]
+expect = "answer"
+required = ["command.go", "args.go"]
+judgment = "command.go and args.go are connected through legacyArgs (args.go:80) called from ExecuteC."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "cobra-map-context"
+kind = "explain_source"
+subject = "map ExecuteC and Find with source context"
+compass = ["explore", "cobra.Command::ExecuteC", "cobra.Command::Find", "--root", ".", "--format", "text", "--text-budget", "1200"]
+graphify = ["explain", ".ExecuteC()"]
+expect = "answer"
+required = ["SOURCE", "command.go", "func (c *Command) ExecuteC()"]
+judgment = "The explore map must render the digest-verified declaration source for its anchors."
+
+[[repository.question]]
+id = "cobra-ambiguous-execute"
+kind = "ambiguity"
+subject = "Execute"
+compass = ["search", "Execute", "--format", "agent-json"]
+graphify = ["query", "Execute", "--budget", "600"]
+expect = "pick_list"
+required_one_of = ["ExecuteC", "ExecuteContext", "execute"]
+min_one_of = 2
+judgment = "command.go declares Execute, ExecuteC, ExecuteContext and ExecuteContextC; a pick list is required."
+
+[[repository.question]]
+id = "cobra-explain-source"
+kind = "explain_source"
+subject = "cobra.Command::ExecuteC"
+compass = ["explain", "cobra.Command::ExecuteC", "--source", "--format", "agent-json"]
+graphify = ["explain", ".ExecuteC()"]
+expect = "answer"
+required = ["func (c *Command) ExecuteC() (cmd *Command, err error)"]
+judgment = "The declaration text at command.go:1084 is the only source that answers 'what does this do' without a file read."
+
+[[repository.question]]
+id = "cobra-paged-callers"
+kind = "paged_callers"
+subject = "cobra.Command::ExecuteC"
+compass = ["callers", "cobra.Command::ExecuteC", "--format", "text"]
+graphify = ["affected", ".ExecuteC()", "--depth", "1"]
+expect = "answer"
+required = ["command.go", "command_test.go"]
+budget_tokens = 400
+max_follow_ups = 8
+judgment = "The reviewed caller set spans command.go, command_test.go and completions_test.go; a bounded page must be continuable."
+
+[[repository.question]]
+id = "cobra-brief-callers"
+kind = "brief_callers"
+subject = "cobra.Command::ExecuteC"
+compass = ["callers", "cobra.Command::ExecuteC", "--format", "agent-json", "--brief"]
+graphify = ["affected", ".ExecuteC()", "--depth", "1"]
+expect = "answer"
+required = ["calls", "command.go", "command_test.go"]
+judgment = "The compact projection must still lead with the reviewed call sites without audit-only detail."
+
+[[repository.question]]
+id = "cobra-negative"
+kind = "negative"
+subject = "ZebraQuantumMissingSymbol"
+compass = ["search", "ZebraQuantumMissingSymbol", "--format", "agent-json"]
+graphify = ["query", "ZebraQuantumMissingSymbol", "--budget", "600"]
+expect = "no_match"
+judgment = "The identifier is absent from the pinned checkout; returning candidates is a false positive."
+
+[[repository.question]]
+id = "cobra-broad-subcommand"
+kind = "broad"
+subject = "how does cobra find a subcommand and execute it"
+compass = ["query", "how does cobra find a subcommand and execute it"]
+graphify = ["query", "how does cobra find a subcommand and execute it"]
+expect = "answer"
+required = ["Find", "execute"]
+budget_tokens = 400
+max_follow_ups = 6
+judgment = "Find (command.go:757) resolves the target command and execute (command.go:905) runs it."
+
+[[repository.anchor]]
+file = "command.go"
+line = 1084
+symbol = "ExecuteC"
+judgment = "command.go:1084 declares func (c *Command) ExecuteC()."
+
+[[repository.anchor]]
+file = "command.go"
+line = 905
+symbol = "execute"
+judgment = "command.go:905 declares func (c *Command) execute()."
+
+[[repository.anchor]]
+file = "command.go"
+line = 757
+symbol = "Find"
+judgment = "command.go:757 declares func (c *Command) Find()."
+
+[[repository]]
+name = "flask"
+language = "Python"
+url = "https://github.com/pallets/flask.git"
+commit = "d73fa1cdcbd8b1465c151db8924ba58b1dd14e35"
+
+[[repository.question]]
+id = "flask-explain-dispatch-request"
+kind = "explain"
+subject = "Flask.dispatch_request"
+compass = ["explain", "src.flask.app.Flask::dispatch_request", "--format", "agent-json"]
+graphify = ["explain", ".dispatch_request()"]
+expect = "answer"
+required = ["dispatch_request", "app.py", "969"]
+judgment = "src/flask/app.py:969 declares Flask.dispatch_request."
+
+[[repository.question]]
+id = "flask-callers-dispatch-request"
+kind = "callers"
+subject = "Flask.dispatch_request"
+compass = ["callers", "src.flask.app.Flask::dispatch_request", "--format", "agent-json"]
+graphify = ["affected", ".dispatch_request()", "--depth", "1"]
+expect = "answer"
+required = ["calls", "app.py", "1019"]
+judgment = "full_dispatch_request calls self.dispatch_request(ctx) at src/flask/app.py:1019; the answer must include that call edge."
+
+[[repository.question]]
+id = "flask-path-wsgi-dispatch"
+kind = "path"
+subject = "Flask.wsgi_app -> Flask.dispatch_request"
+compass = ["path", "src.flask.app.Flask::wsgi_app", "src.flask.app.Flask::dispatch_request", "--format", "agent-json"]
+graphify = ["path", ".wsgi_app()", ".dispatch_request()"]
+expect = "answer"
+required = ["wsgi_app", "dispatch_request"]
+judgment = "wsgi_app calls full_dispatch_request (src/flask/app.py:1600) which calls dispatch_request (line 1019)."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "flask-file-path"
+kind = "file_path"
+subject = "src/flask/app.py -> src/flask/ctx.py"
+compass = ["path", "src/flask/app.py", "src/flask/ctx.py", "--format", "agent-json"]
+graphify = ["path", "src/flask/app.py", "src/flask/ctx.py"]
+expect = "answer"
+required = ["app.py", "ctx.py"]
+judgment = "app.py imports AppContext from ctx.py (src/flask/app.py:34)."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "flask-ambiguous-dispatch-request"
+kind = "ambiguity"
+subject = "dispatch_request"
+compass = ["search", "dispatch_request", "--format", "agent-json"]
+graphify = ["query", "dispatch_request", "--budget", "600"]
+expect = "pick_list"
+required_one_of = ["app.py", "views.py"]
+min_one_of = 2
+judgment = "app.py:969 and views.py:78/182 each declare dispatch_request with different receivers."
+
+[[repository.question]]
+id = "flask-negative"
+kind = "negative"
+subject = "ZebraQuantumMissingHandler"
+compass = ["search", "ZebraQuantumMissingHandler", "--format", "agent-json"]
+graphify = ["query", "ZebraQuantumMissingHandler", "--budget", "600"]
+expect = "no_match"
+judgment = "The identifier is absent from the pinned checkout; returning candidates is a false positive."
+
+[[repository.question]]
+id = "flask-broad-request-dispatch"
+kind = "broad"
+subject = "how is an HTTP request dispatched to a view"
+compass = ["query", "how is an HTTP request dispatched to a view"]
+graphify = ["query", "how is an HTTP request dispatched to a view"]
+expect = "answer"
+required = ["dispatch_request"]
+budget_tokens = 400
+max_follow_ups = 6
+judgment = "wsgi_app -> full_dispatch_request -> dispatch_request is the dispatch chain."
+
+[[repository.question]]
+id = "flask-explain-source"
+kind = "explain_source"
+subject = "Flask.dispatch_request"
+compass = ["explain", "src.flask.app.Flask::dispatch_request", "--source", "--format", "agent-json"]
+graphify = ["explain", ".dispatch_request()"]
+expect = "answer"
+required = ["def dispatch_request(self, ctx: AppContext)"]
+judgment = "src/flask/app.py:969 declares Flask.dispatch_request."
+
+[[repository.anchor]]
+file = "src/flask/app.py"
+line = 969
+symbol = "dispatch_request"
+judgment = "src/flask/app.py:969 declares Flask.dispatch_request."
+
+[[repository.anchor]]
+file = "src/flask/app.py"
+line = 995
+symbol = "full_dispatch_request"
+judgment = "src/flask/app.py:995 declares Flask.full_dispatch_request."
+
+[[repository.anchor]]
+file = "src/flask/app.py"
+line = 1569
+symbol = "wsgi_app"
+judgment = "src/flask/app.py:1569 declares Flask.wsgi_app."
+
+[[repository]]
+name = "gson"
+language = "Java"
+url = "https://github.com/google/gson.git"
+commit = "15ca7360379cf3c1502b59981569050489f2d73e"
+
+[[repository.question]]
+id = "gson-explain-tojson"
+kind = "explain"
+subject = "Gson.toJson"
+compass = ["explain", "com.google.gson.Gson::toJson", "--format", "agent-json"]
+graphify = ["explain", ".toJson()"]
+expect = "answer"
+required = ["toJson", "Gson.java"]
+judgment = "Gson.java declares toJson(Object) at 565, toJson(Object, Type) at 590 and more overloads."
+
+[[repository.question]]
+id = "gson-callers-typeadapter-tojson"
+kind = "callers"
+subject = "TypeAdapter.toJson"
+compass = ["callers", "com.google.gson.TypeAdapter::toJson", "--format", "agent-json"]
+graphify = ["affected", ".toJson()", "--depth", "1"]
+expect = "pick_list"
+required_one_of = ["TypeAdapter.java", ".toJson()"]
+min_one_of = 1
+min_candidates = 2
+judgment = "TypeAdapter.java declares two toJson overloads (143 and 160); the answer must offer both."
+
+[[repository.question]]
+id = "gson-file-path"
+kind = "file_path"
+subject = "Gson.java -> JsonWriter.java"
+compass = ["path", "gson/src/main/java/com/google/gson/Gson.java", "gson/src/main/java/com/google/gson/stream/JsonWriter.java", "--format", "agent-json"]
+graphify = ["path", "gson/src/main/java/com/google/gson/Gson.java", "gson/src/main/java/com/google/gson/stream/JsonWriter.java"]
+expect = "answer"
+required = ["Gson.java", "JsonWriter.java"]
+judgment = "Gson.java constructs JsonWriter and TypeAdapter write paths reach it."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "gson-ambiguous-fromjson"
+kind = "ambiguity"
+subject = "fromJson"
+compass = ["search", "fromJson", "--format", "agent-json"]
+graphify = ["query", "fromJson", "--budget", "600"]
+expect = "pick_list"
+required_one_of = ["fromJson"]
+min_one_of = 1
+min_candidates = 3
+judgment = "Gson.java declares at least ten fromJson overloads; a pick list is required."
+
+[[repository.question]]
+id = "gson-negative"
+kind = "negative"
+subject = "ZebraQuantumMissingAdapter"
+compass = ["search", "ZebraQuantumMissingAdapter", "--format", "agent-json"]
+graphify = ["query", "ZebraQuantumMissingAdapter", "--budget", "600"]
+expect = "no_match"
+judgment = "The identifier is absent from the pinned checkout; returning candidates is a false positive."
+
+[[repository.question]]
+id = "gson-broad-serialize"
+kind = "broad"
+subject = "how does gson serialize an object to json"
+compass = ["query", "how does gson serialize an object to json"]
+graphify = ["query", "how does gson serialize an object to json"]
+expect = "answer"
+required = ["toJson", "Gson.java"]
+budget_tokens = 800
+max_follow_ups = 6
+judgment = "The reviewed entry point is Gson.toJson (Gson.java:565 Object, 590 Object+Type, 612 Object+Type+JsonWriter). The internal TypeAdapter/JsonWriter collaborators are additional detail rather than required content, so the oracle requires the entry point with its exact anchors."
+
+[[repository.question]]
+id = "gson-explain-source"
+kind = "explain_source"
+subject = "Gson.toJson"
+compass = ["explain", "sha256:e64ab7001f5ee8b0275e8c1b857280a9c621d38902a4ae0ac9754ed0f27aa075", "--source", "--format", "agent-json"]
+graphify = ["explain", ".toJson()"]
+expect = "answer"
+required = ["public String toJson(Object src)"]
+judgment = "Gson.java:565 declares the one-argument toJson serializer."
+
+[[repository.anchor]]
+file = "gson/src/main/java/com/google/gson/Gson.java"
+line = 565
+symbol = "toJson"
+judgment = "Gson.java:565 declares toJson(Object)."
+
+[[repository.anchor]]
+file = "gson/src/main/java/com/google/gson/TypeAdapter.java"
+line = 143
+symbol = "toJson"
+judgment = "TypeAdapter.java:143 declares final void toJson(Writer, T)."
+
+[[repository.anchor]]
+file = "gson/src/main/java/com/google/gson/stream/JsonWriter.java"
+line = 429
+symbol = "beginObject"
+judgment = "JsonWriter.java:429 declares beginObject()."
+
+[[repository]]
+name = "zod"
+language = "TypeScript"
+url = "https://github.com/colinhacks/zod.git"
+commit = "d2b135cfb7a3582b9eb515756b9166bcb9521f4a"
+
+[[repository.question]]
+id = "zod-explain-parse"
+kind = "explain"
+subject = "classic parse export"
+compass = ["explain", "parse.parse", "--format", "agent-json"]
+graphify = ["explain", "parse"]
+expect = "answer"
+required = ["parse.ts"]
+judgment = "packages/zod/src/v4/classic/parse.ts:8 exports parse delegating to core._parse."
+
+[[repository.question]]
+id = "zod-callers-safeparse"
+kind = "callers"
+subject = "classic safeParse export"
+compass = ["callers", "parse.safeParse", "--format", "agent-json"]
+graphify = ["affected", "safeParse()", "--depth", "1"]
+expect = "pick_list"
+required_one_of = ["parse.ts", "safeParse"]
+min_one_of = 1
+min_candidates = 2
+judgment = "classic/parse.ts:22, core/parse.ts:80 and mini/parse.ts:5 each declare safeParse; the answer must offer candidates."
+
+[[repository.question]]
+id = "zod-path-parse-safeparse"
+kind = "path"
+subject = "ZodType.parse -> ZodType.safeParse"
+compass = ["path", "schemas.ZodType.parse", "schemas.ZodType.safeParse", "--format", "agent-json"]
+graphify = ["path", ".parse()", ".safeParse()"]
+expect = "answer"
+required = ["parse", "safeParse"]
+judgment = "packages/zod/src/v4/classic/schemas.ts:71 declares ZodType.parse and line 72 declares ZodType.safeParse."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "zod-file-path"
+kind = "file_path"
+subject = "classic/schemas.ts -> classic/parse.ts"
+compass = ["path", "packages/zod/src/v4/classic/schemas.ts", "packages/zod/src/v4/classic/parse.ts", "--format", "agent-json"]
+graphify = ["path", "packages/zod/src/v4/classic/schemas.ts", "packages/zod/src/v4/classic/parse.ts"]
+expect = "answer"
+required = ["schemas.ts", "parse.ts"]
+judgment = "classic/schemas.ts imports ./parse.js at line 11."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "zod-ambiguous-parse"
+kind = "ambiguity"
+subject = "parse"
+compass = ["search", "parse", "--format", "agent-json"]
+graphify = ["query", "parse", "--budget", "600"]
+expect = "pick_list"
+required_one_of = ["classic/parse.ts", "core/parse.ts", "mini/parse.ts", "schemas.ts"]
+min_one_of = 2
+judgment = "At least four parse declarations exist across core, classic, mini and schemas modules."
+
+[[repository.question]]
+id = "zod-negative"
+kind = "negative"
+subject = "ZebraQuantumMissingParser"
+compass = ["search", "ZebraQuantumMissingParser", "--format", "agent-json"]
+graphify = ["query", "ZebraQuantumMissingParser", "--budget", "600"]
+expect = "no_match"
+judgment = "The identifier is absent from the pinned checkout; returning candidates is a false positive."
+
+[[repository.question]]
+id = "zod-broad-validation"
+kind = "broad"
+subject = "how does zod validate input data"
+compass = ["query", "how does zod validate input data"]
+graphify = ["query", "how does zod validate input data"]
+expect = "answer"
+required = []
+required_one_of = ["ZodType.validate", "validateInput", "safeParse", "classic/parse.ts", "core/parse.ts", "schemas.ts"]
+min_one_of = 1
+budget_tokens = 400
+max_follow_ups = 6
+judgment = "The pinned source offers three reviewed validation entry points: the public parse/safeParse methods (classic/schemas.ts:71-72), the classic/core parse exports (classic/parse.ts:8/22, core/parse.ts:39/80), and the validate family (classic/schemas.ts:82, core/parse.ts:137). Any one answers how zod validates input data."
+
+[[repository.question]]
+id = "zod-explain-source"
+kind = "explain_source"
+subject = "ZodType.parse declaration"
+compass = ["explain", "schemas.ZodType.parse", "--source", "--format", "agent-json"]
+graphify = ["explain", ".parse()"]
+expect = "answer"
+required = ["parse(data: unknown, params?: core.ParseContext"]
+judgment = "packages/zod/src/v4/classic/schemas.ts:71 declares the ZodType.parse signature."
+
+[[repository.anchor]]
+file = "packages/zod/src/v4/classic/parse.ts"
+line = 8
+symbol = "parse"
+judgment = "classic/parse.ts:8 declares the parse export."
+
+[[repository.anchor]]
+file = "packages/zod/src/v4/core/parse.ts"
+line = 39
+symbol = "parse"
+judgment = "core/parse.ts:39 declares the parse variable."
+
+[[repository.anchor]]
+file = "packages/zod/src/v4/classic/schemas.ts"
+line = 71
+symbol = "ZodType.parse"
+judgment = "classic/schemas.ts:71 declares ZodType.parse."
+
+[[repository]]
+name = "axum"
+language = "Rust"
+url = "https://github.com/tokio-rs/axum.git"
+commit = "af1345b53a259b0990be1ff853f9b56c05040ef7"
+
+[[repository.question]]
+id = "axum-explain-route"
+kind = "explain"
+subject = "Router::route"
+compass = ["explain", "axum::routing::Router::route", "--format", "agent-json"]
+graphify = ["explain", ".route()"]
+expect = "answer"
+required = ["route", "routing/mod.rs", "192"]
+judgment = "src/routing/mod.rs:192 declares Router::route."
+
+[[repository.question]]
+id = "axum-callers-route"
+kind = "callers"
+subject = "Router::route"
+compass = ["callers", "axum::routing::Router::route", "--format", "agent-json"]
+graphify = ["affected", ".route()", "--depth", "1"]
+expect = "answer"
+required = ["calls", "routing/tests"]
+judgment = "Router::route is called from the routing tests and internals; the answer must include those call edges."
+
+[[repository.question]]
+id = "axum-path-route-call"
+kind = "path"
+subject = "Router::route -> Router service call"
+compass = ["path", "axum::routing::Router::route", "axum::routing::Router::call_with_state", "--format", "agent-json"]
+graphify = ["path", ".route()", ".call_with_state()"]
+expect = "answer"
+required = ["route", "call_with_state"]
+judgment = "Router::route builds PathRouter state that Service::call and call_with_state consume."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "axum-file-path"
+kind = "file_path"
+subject = "routing/mod.rs -> routing/method_routing.rs"
+compass = ["path", "src/routing/mod.rs", "src/routing/method_routing.rs", "--format", "agent-json"]
+graphify = ["path", "src/routing/mod.rs", "src/routing/method_routing.rs"]
+expect = "answer"
+required = ["mod.rs", "method_routing.rs"]
+judgment = "Router (src/routing/mod.rs) stores MethodRouter values from src/routing/method_routing.rs."
+forbidden = ["NO PATH FOUND", "No directed path found"]
+
+[[repository.question]]
+id = "axum-ambiguous-route"
+kind = "ambiguity"
+subject = "route"
+compass = ["search", "route", "--format", "agent-json"]
+graphify = ["query", "route", "--budget", "600"]
+expect = "pick_list"
+required_one_of = ["routing/mod.rs", "method_routing.rs", "path_router.rs", "boxed.rs"]
+min_one_of = 2
+judgment = "Route-related declarations exist in routing/mod.rs, method_routing.rs, path_router.rs and boxed.rs."
+
+[[repository.question]]
+id = "axum-negative"
+kind = "negative"
+subject = "ZebraQuantumMissingRouter"
+compass = ["search", "ZebraQuantumMissingRouter", "--format", "agent-json"]
+graphify = ["query", "ZebraQuantumMissingRouter", "--budget", "600"]
+expect = "no_match"
+judgment = "The identifier is absent from the pinned checkout; returning candidates is a false positive."
+
+[[repository.question]]
+id = "axum-broad-routing"
+kind = "broad"
+subject = "how does axum route an incoming request"
+compass = ["query", "how does axum route an incoming request"]
+graphify = ["query", "how does axum route an incoming request"]
+expect = "answer"
+required = ["Router", "MethodRouter"]
+budget_tokens = 400
+max_follow_ups = 6
+judgment = "Router::route -> PathRouter -> MethodRouter is the routing chain in src/routing/."
+
+[[repository.question]]
+id = "axum-explain-source"
+kind = "explain_source"
+subject = "Router::route"
+compass = ["explain", "axum::routing::Router::route", "--source", "--format", "agent-json"]
+graphify = ["explain", ".route()"]
+expect = "answer"
+required = ["pub fn route(self, path: &str, method_router: MethodRouter<S>)"]
+judgment = "src/routing/mod.rs:192 declares Router::route."
+
+[[repository.question]]
+id = "axum-paged-callers"
+kind = "paged_callers"
+subject = "axum::routing::Router::route"
+compass = ["callers", "axum::routing::Router::route", "--format", "text"]
+graphify = ["affected", ".route()", "--depth", "1"]
+expect = "answer"
+required = ["routing/mod.rs", "routing/tests"]
+budget_tokens = 400
+max_follow_ups = 8
+judgment = "Router::route callers span src/routing/mod.rs and the routing test modules."
+
+[[repository.question]]
+id = "axum-brief-callers"
+kind = "brief_callers"
+subject = "axum::routing::Router::route"
+compass = ["callers", "axum::routing::Router::route", "--format", "agent-json", "--brief"]
+graphify = ["affected", ".route()", "--depth", "1"]
+expect = "answer"
+required = ["calls", "routing/mod.rs", "routing/tests"]
+judgment = "The compact projection must still lead with the reviewed call sites without audit-only detail."
+
+[[repository.anchor]]
+file = "src/routing/mod.rs"
+line = 192
+symbol = "Router::route"
+judgment = "src/routing/mod.rs:192 declares Router::route."
+
+[[repository.anchor]]
+file = "src/routing/mod.rs"
+line = 452
+symbol = "Router::call_with_state"
+judgment = "src/routing/mod.rs:452 declares Router::call_with_state."
+
+[[repository.anchor]]
+file = "src/routing/method_routing.rs"
+line = 1200
+symbol = "MethodRouter::call_with_state"
+judgment = "src/routing/method_routing.rs:1200 declares MethodRouter::call_with_state."

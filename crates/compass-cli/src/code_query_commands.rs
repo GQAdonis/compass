@@ -1,14 +1,18 @@
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use compass_model::query_contract::{
     CallRequest, CodeQueryLimits, CodeQueryResponse, ExploreRequest, ImpactRequest,
     NodeTrailRequest, SearchRequest,
 };
 use compass_output::{
-    AgentOperandRole, AgentQueryContext, build_code_query_view, render_agent_query_text,
+    AgentOperandRole, AgentQueryContext, AgentTextPageOptions, DEFAULT_AGENT_TEXT_PAGE_TOKENS,
+    build_code_query_brief, build_code_query_view, decode_agent_text_page_cursor,
+    render_code_query_text_page,
 };
 use compass_query::{
-    EngineSelection, NaturalQueryRequest, open_with_engine, open_with_verified_document,
+    EngineSelection, NaturalQueryRequest, QueryError, QueryErrorKind, open_with_engine,
+    open_with_verified_document,
 };
 #[cfg(any(
     feature = "surreal-surrealkv",
@@ -19,12 +23,17 @@ use compass_query::{SurrealQueryEngine, has_published_surreal};
 
 use crate::{Outcome, SharedOutputFormat, parse_shared_output_format};
 
+/// Default typed-query deadline.
+const DEFAULT_CODE_QUERY_TIMEOUT_MS: u64 = 60_000;
+/// Hard upper bound for `--timeout-ms` on typed queries.
+const MAX_CODE_QUERY_TIMEOUT_MS: u64 = 600_000;
+
 pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
     let (format, query_args) = match parse_shared_output_format(args, operation) {
         Ok(parsed) => parsed,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
-    if format == SharedOutputFormat::AgentJson
+    if format != SharedOutputFormat::Text
         && query_args.iter().any(|arg| {
             matches!(
                 arg.as_str(),
@@ -34,10 +43,37 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
         })
     {
         return Outcome::failure(
-            "error: --cursor, --text-budget, --evidence, and --result-envelope are text-only and cannot be used with --format agent-json".to_owned(),
+            "error: --cursor, --text-budget, --evidence, and --result-envelope are text-only and require --format text".to_owned(),
         );
     }
-    match execute(operation, &query_args) {
+    let text_budget = match number(&query_args, "--text-budget", DEFAULT_AGENT_TEXT_PAGE_TOKENS) {
+        Ok(budget) => budget,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    if text_budget == 0 {
+        return Outcome::failure("error: --text-budget requires a positive integer".to_owned());
+    }
+    let text_cursor = option(&query_args, "--cursor").map(str::to_owned);
+    if let Some(cursor) = text_cursor.as_deref()
+        && let Err(error) = decode_agent_text_page_cursor(cursor)
+    {
+        return Outcome::failure(format!("error: {error}"));
+    }
+    let timeout = match timeout(&query_args) {
+        Ok(timeout) => timeout,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    let deadline = Instant::now() + timeout;
+    let brief = query_args.iter().any(|argument| argument == "--brief");
+    if brief && format != SharedOutputFormat::AgentJson {
+        return Outcome::failure("error: --brief requires --format agent-json".to_owned());
+    }
+    let result = if format == SharedOutputFormat::Text {
+        execute_paged(operation, &query_args, deadline)
+    } else {
+        execute(operation, &query_args, 1, deadline)
+    };
+    match result {
         Ok(execution) => {
             if format == SharedOutputFormat::Json {
                 match serde_json::to_string_pretty(&execution.response) {
@@ -45,15 +81,27 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
             } else if format == SharedOutputFormat::AgentJson {
-                match build_code_query_view(&execution.response, execution.context)
-                    .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
-                {
+                let projected = if brief {
+                    build_code_query_brief(&execution.response, execution.context)
+                        .and_then(|view| serde_json::to_string(&view).map_err(Into::into))
+                } else {
+                    build_code_query_view(&execution.response, execution.context)
+                        .and_then(|view| serde_json::to_string_pretty(&view).map_err(Into::into))
+                };
+                match projected {
                     Ok(json) => Outcome::success(json),
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
             } else if format == SharedOutputFormat::Text {
-                match build_code_query_view(&execution.response, execution.context)
-                    .and_then(|view| render_agent_query_text(&view))
+                match render_code_query_text_page(
+                    &execution.response,
+                    execution.context,
+                    AgentTextPageOptions {
+                        token_budget: text_budget,
+                        cursor: text_cursor.as_deref(),
+                    },
+                )
+                .map(|page| page.text)
                 {
                     Ok(text) => Outcome::success(text),
                     Err(error) => Outcome::failure(format!("error: {error}")),
@@ -71,7 +119,39 @@ struct QueryExecution {
     context: AgentQueryContext,
 }
 
-fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
+/// Upper bound for the page-widening loop.
+///
+/// One widening step keeps the ledger stable across pages without paying for
+/// repeated full traversals on every page. A still-truncated response keeps the
+/// explicit bound footer so the caller can raise the record limits.
+const MAX_PAGE_WIDENING_SCALE: u32 = 4;
+
+/// Execute a paged text query with a stable ledger.
+///
+/// Every page re-runs the same widening sequence so the entry ledger does not
+/// change between pages: widen the record bounds until the response is
+/// complete or the widening ceiling is reached.
+fn execute_paged(
+    operation: &str,
+    args: &[String],
+    deadline: Instant,
+) -> Result<QueryExecution, String> {
+    let mut scale = 1_u32;
+    loop {
+        let execution = execute(operation, args, scale, deadline)?;
+        if !execution.response.truncated || scale >= MAX_PAGE_WIDENING_SCALE {
+            return Ok(execution);
+        }
+        scale = scale.saturating_mul(4);
+    }
+}
+
+fn execute(
+    operation: &str,
+    args: &[String],
+    page_scale: u32,
+    deadline: Instant,
+) -> Result<QueryExecution, String> {
     let positional = positional(args);
     let graph_option = option(args, "--graph");
     let revision = option(args, "--at");
@@ -112,7 +192,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
         .map(PathBuf::from)
         .map(resolve_snapshot_artifact)
         .transpose()?;
-    let limits = limits(args)?;
+    let limits = limits(args, page_scale)?;
     if revision.is_none() {
         let graph = if graph_option.is_some() {
             resolve_snapshot_artifact(requested_graph.clone())?
@@ -123,7 +203,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
         let use_surreal = engine == EngineSelection::Surreal
             || (engine == EngineSelection::Default && published_surreal(&graph));
         if use_surreal {
-            return execute_surreal(operation, args, &positional, &graph, limits);
+            return execute_surreal(operation, args, &positional, &graph, limits, deadline);
         }
     }
     let engine = if let Some(revision) = revision {
@@ -156,7 +236,8 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
         };
         open_with_engine(&graph, program.as_deref(), &cache, engine)
             .map_err(|error| error.to_string())?
-    };
+    }
+    .with_deadline(deadline);
     let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
     let (response, question, operands) = match operation {
         "ask" => {
@@ -167,7 +248,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
                     include_heuristic,
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             (
                 response,
                 Some(question.clone()),
@@ -181,7 +262,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
                     query: query.clone(),
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             (response, None, vec![(AgentOperandRole::Query, query)])
         }
         "callers" | "callees" | "impact" => {
@@ -204,7 +285,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
                 }),
                 _ => unreachable!(),
             }
-            .map_err(|error| error.to_string())?;
+            .map_err(query_error)?;
             (response, None, vec![(AgentOperandRole::Symbol, symbol)])
         }
         "explore" => {
@@ -216,7 +297,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
                     include_heuristic,
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             let mut operands = symbols
                 .into_iter()
                 .map(|symbol| (AgentOperandRole::Symbol, symbol))
@@ -236,7 +317,7 @@ fn execute(operation: &str, args: &[String]) -> Result<QueryExecution, String> {
                     include_heuristic,
                     limits,
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(query_error)?;
             (
                 response,
                 None,
@@ -291,6 +372,7 @@ fn execute_surreal(
     positional: &[String],
     graph: &std::path::Path,
     limits: CodeQueryLimits,
+    deadline: Instant,
 ) -> Result<QueryExecution, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -299,7 +381,8 @@ fn execute_surreal(
     runtime.block_on(async {
         let engine = SurrealQueryEngine::open(graph)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string())?
+            .with_deadline(deadline);
         let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
         let question = match operation {
             "ask" => Some(required(positional, 0, "ask <QUESTION>")?.to_owned()),
@@ -373,7 +456,7 @@ fn execute_surreal(
             }
             _ => unreachable!(),
         }
-        .map_err(|error| error.to_string())?;
+        .map_err(query_error)?;
         // Surreal reads are pinned to one immutable published generation, so
         // the reference carries the same identity the typed engines report.
         let reference = engine.reference();
@@ -444,6 +527,7 @@ fn execute_surreal(
     _positional: &[String],
     _graph: &std::path::Path,
     _limits: CodeQueryLimits,
+    _deadline: Instant,
 ) -> Result<QueryExecution, String> {
     Err("Surreal query support is unavailable in this Compass build".to_owned())
 }
@@ -452,17 +536,44 @@ fn resolve_snapshot_artifact(path: PathBuf) -> Result<PathBuf, String> {
     compass_files::BuildGuard::resolve_requested_artifact(&path).map_err(|error| error.to_string())
 }
 
-fn limits(args: &[String]) -> Result<CodeQueryLimits, String> {
+/// Build the effective typed-query limits.
+///
+/// A continuation page widens the record bounds by its page number so the
+/// requested slice is reachable while the returned page stays the same size.
+/// `max_response_bytes` still bounds what the query may materialize.
+fn limits(args: &[String], page_scale: u32) -> Result<CodeQueryLimits, String> {
     let defaults = CodeQueryLimits::default();
+    let scale = page_scale.max(1);
     Ok(CodeQueryLimits {
         max_depth: number(args, "--max-depth", defaults.max_depth)?,
-        max_nodes: number(args, "--max-nodes", defaults.max_nodes)?,
-        max_edges: number(args, "--max-edges", defaults.max_edges)?,
-        max_paths: number(args, "--max-paths", defaults.max_paths)?,
-        max_candidates: number(args, "--max-candidates", defaults.max_candidates)?,
+        max_nodes: number(args, "--max-nodes", defaults.max_nodes)?.saturating_mul(scale),
+        max_edges: number(args, "--max-edges", defaults.max_edges)?.saturating_mul(scale),
+        max_paths: number(args, "--max-paths", defaults.max_paths)?.saturating_mul(scale),
+        max_candidates: number(args, "--max-candidates", defaults.max_candidates)?
+            .saturating_mul(scale),
         max_source_bytes: number(args, "--max-source-bytes", defaults.max_source_bytes)?,
         max_response_bytes: number(args, "--max-response-bytes", defaults.max_response_bytes)?,
     })
+}
+
+/// Parse the bounded typed-query deadline.
+fn timeout(args: &[String]) -> Result<Duration, String> {
+    let value = number(args, "--timeout-ms", DEFAULT_CODE_QUERY_TIMEOUT_MS)?;
+    if value == 0 || value > MAX_CODE_QUERY_TIMEOUT_MS {
+        return Err(format!(
+            "--timeout-ms must be between 1 and {MAX_CODE_QUERY_TIMEOUT_MS}"
+        ));
+    }
+    Ok(Duration::from_millis(value))
+}
+
+/// Render a typed-query failure with an actionable timeout hint.
+fn query_error(error: QueryError) -> String {
+    if error.kind() == QueryErrorKind::Timeout {
+        format!("{error}; raise --timeout-ms or lower --max-nodes/--max-edges")
+    } else {
+        error.to_string()
+    }
 }
 
 fn number<T: std::str::FromStr + Copy>(
@@ -505,6 +616,9 @@ fn positional(args: &[String]) -> Vec<String> {
         "--max-candidates",
         "--max-source-bytes",
         "--max-response-bytes",
+        "--text-budget",
+        "--cursor",
+        "--timeout-ms",
     ];
     let mut values = Vec::new();
     let mut skip = false;

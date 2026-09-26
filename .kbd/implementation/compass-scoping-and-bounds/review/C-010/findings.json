@@ -1,0 +1,47 @@
+{
+  "mode": "diff",
+  "verdict": "PASS",
+  "judge_model": "k3",
+  "producer_model": "unknown",
+  "isolation_mode": "rest-gateway:http://localhost:4000/v1",
+  "cross_model_check": "unverified-producer-unknown",
+  "findings": [
+    {
+      "severity": "WARNING",
+      "file": ".refiner/artifacts/C-010/refinement_log.md",
+      "line": 0,
+      "claim": "The C-010 review surface is the repository's cumulative dirty diff, so this change's packet attributes substantial hunks belonging to other changes (C-001 through C-009, C-016, C-017) to C-010, violating the no-unrelated-diff-noise constraint.",
+      "evidence": "The CHANGELOG.md hunk in this diff adds entries for the compass agent CLI namespace, six focused skills, the compass.code_context.v1 envelope, the rmcp 2.2.0->3.1.4 upgrade, the compass-partition crate, COMPASS_MAX_GRAPH_BYTES, graph-size preflight, --exclude error text, and snapshot streaming \u2014 none of which are C-010's conformance/interop scope per its proposal; refinement_log.md Iteration 7 admits the reviewer otherwise sees 'the repository's cumulative dirty diff'; constraint 'no-unrelated-diff-noise': 'git diff and git status --short contain no unrelated or generated noise'.",
+      "suggested_fix": "Land the prerequisite changes' hunks in their own commits/changes first so the C-010 diff contains only conformance/CI/interop files; keep files.txt aligned with an actually isolated diff."
+    },
+    {
+      "severity": "WARNING",
+      "file": "crates/compass-mcp/src/transport.rs",
+      "line": 250,
+      "claim": "host_rejection/normalize_host reimplement rmcp's existing allowed-hosts endpoint check as a local variant, which the safe-primitives-reused constraint warns against and which can drift from rmcp's normalization semantics (e.g., trailing-dot hosts, bracket/IPv6 handling via trim_matches('[']).trim_matches(']')).",
+      "evidence": "transport.rs adds fn host_rejection(...) with the comment 'Mirror rmcp's effective-authority policy: an explicit Host header wins over URI authority, and a portless allowlist entry permits every port' while the router still sets config.with_allowed_hosts(...) so rmcp repeats the same check; constraint 'safe-primitives-reused': 'Existing ... endpoint checks ... are reused rather than reimplemented as weaker local variants.'",
+      "suggested_fix": "Rely on rmcp's with_allowed_hosts as the single enforcement point, or extract the exact comparison logic into one shared helper with parity tests against rmcp behavior (trailing dots, IPv6 literals, portless entries)."
+    },
+    {
+      "severity": "WARNING",
+      "file": "crates/compass-mcp/src/lib.rs",
+      "line": 37,
+      "claim": "The diff depends on rmcp 3.1.4-only APIs but contains no Cargo.toml/Cargo.lock hunks, so the locked-dependencies and build-passes blocking constraints cannot be verified from this change and the workspace breaks if the pin/lockfile update is not landed with it.",
+      "evidence": "lib.rs imports CallToolResponse, CacheScope, MetaObject, ProtocolVersion::V_2026_07_28 and transport.rs calls with_legacy_session_mode(false)/with_stateless_protocol_metadata_required(true) \u2014 none exist in rmcp 2.2.0; plan.md C-007 requires root Cargo.toml pin rmcp = \"=3.1.4\" and constraint 'locked-dependencies' requires Cargo.lock updates accompany dependency changes; neither manifest appears in the diff or in files.txt.",
+      "suggested_fix": "Include the root Cargo.toml pin and Cargo.lock hunks in the change's declared file set (or record the exact prerequisite commit that landed them) so the --locked build evidence is reproducible from the packet."
+    },
+    {
+      "severity": "SUGGESTION",
+      "file": "scripts/qualify_mcp_conformance.sh",
+      "line": 75,
+      "claim": "The readiness probe silently degenerates to a misleading 15-second 'server did not become ready' failure when curl is absent, because the curl call sits in an if-condition where set -e does not abort on command-not-found.",
+      "evidence": "'if curl --silent --output /dev/null --connect-timeout 1 \"http://127.0.0.1:$PORT/mcp\"; then' inside the retry loop \u2014 a missing curl returns 127 every iteration and the script reports a server readiness failure instead of the missing tool.",
+      "suggested_fix": "Add an explicit 'command -v curl >/dev/null || { echo curl required >&2; exit 1; }' preflight before the loop."
+    }
+  ],
+  "sycophancy_screen": {
+    "reject_cap": 2,
+    "cap_overridden": false,
+    "cap_default": 2
+  }
+}

@@ -39,6 +39,11 @@ test("workbench graph panels stay exclusive, bounded, and recover from empty fil
   await page.goto("/workbench.html");
 
   const navigation = page.getByRole("complementary", { name: "Compass navigation" });
+  // A workbench with a single view folds its rail to the graph; the reader can
+  // still open it, and closing it again keeps the stage wide.
+  await expect(navigation).toHaveAttribute("data-collapsed", "true");
+  await page.getByRole("button", { name: "Expand graph navigation" }).click();
+  await expect(navigation).toHaveAttribute("data-collapsed", "false");
   await page.getByRole("button", { name: "Collapse graph navigation" }).click();
   await expect(navigation).toHaveAttribute("data-collapsed", "true");
   await page.getByRole("button", { name: "Expand graph navigation" }).click();
@@ -48,10 +53,12 @@ test("workbench graph panels stay exclusive, bounded, and recover from empty fil
   const settings = page.getByRole("button", { name: "Graph settings" });
   await expect(settings.locator(".lucide-settings")).toHaveCount(1);
   await expect(filters.locator(".lucide-sliders-horizontal")).toHaveCount(1);
+  // The view's own control leads the rail, so a narrow header cannot scroll it
+  // behind the canvas controls that follow.
   expect(await settings.evaluate((element) => {
     const filter = document.querySelector('[aria-label="Graph filters"]');
     return filter !== null
-      && Boolean(element.compareDocumentPosition(filter) & Node.DOCUMENT_POSITION_FOLLOWING);
+      && Boolean(filter.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING);
   })).toBe(true);
   await settings.click();
   await expect(settings).toHaveAttribute("aria-expanded", "true");

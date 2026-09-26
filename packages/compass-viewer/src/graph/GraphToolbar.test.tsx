@@ -59,12 +59,14 @@ describe("GraphToolbar", () => {
 
   it("only fits a selected neighborhood when a node is selected", () => {
     const unavailable = renderToolbar();
+    fireEvent.click(screen.getByRole("button", { name: "Graph settings" }));
     expect(screen.getByRole("button", {
       name: "Fit selected neighborhood"
     })).toBeDisabled();
     cleanup();
 
     const available = renderToolbar({ hasSelection: true });
+    fireEvent.click(screen.getByRole("button", { name: "Graph settings" }));
     fireEvent.click(screen.getByRole("button", {
       name: "Fit selected neighborhood"
     }));
@@ -73,11 +75,13 @@ describe("GraphToolbar", () => {
     expect(available.onFitSelection).toHaveBeenCalledOnce();
   });
 
-  it("exposes node and relationship labels as independent toggles", () => {
+  it("keeps node and relationship labels as independent settings toggles", () => {
     const callbacks = renderToolbar({
       forceLabels: true,
       showEdgeLabels: true
     });
+    // Labels live in the graph settings panel so the toolbar row stays readable.
+    fireEvent.click(screen.getByRole("button", { name: "Graph settings" }));
     const nodeLabels = screen.getByRole("button", { name: "Hide labels" });
     const edgeLabels = screen.getByRole("button", {
       name: "Hide relationship labels"
@@ -134,7 +138,7 @@ describe("GraphToolbar", () => {
     expect(callbacks.onTogglePhysics).toHaveBeenCalledOnce();
   });
 
-  it("removes depth layers and places filters after Lucide settings", () => {
+  it("removes depth layers and leads with the host filters", () => {
     renderToolbar({
       leadingControls: (
         <button type="button" aria-label="Graph filters">
@@ -147,8 +151,12 @@ describe("GraphToolbar", () => {
     const settings = screen.getByRole("button", { name: "Graph settings" });
     const filters = screen.getByRole("button", { name: "Graph filters" });
     expect(settings.querySelector(".lucide-settings")).not.toBeNull();
-    expect(settings.compareDocumentPosition(filters) & Node.DOCUMENT_POSITION_FOLLOWING)
+    // The rail can scroll or wrap in a narrow host, so the view's own control
+    // leads it instead of hiding behind the trailing canvas controls.
+    expect(filters.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING)
       .not.toBe(0);
+    expect(filters.closest(".compass-toolbar-actions")?.firstElementChild)
+      .toBe(filters.closest(".compass-toolbar-leading"));
   });
 
   it("opens the shortcut guide with question mark", () => {
