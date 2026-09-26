@@ -11,6 +11,8 @@ ignore = [
   { id = "RUSTSEC-2026-0235", reason = "SurrealDB 3.2.4 reaches rkyv 0.7 only through its all-features rust_decimal graph; the official surreal-remote release does not enable that graph, so remove this exception when SurrealDB upgrades rkyv or removes the optional path" },
   { id = "RUSTSEC-2025-0141", reason = "SurrealDB 3.2.4's optional SurrealMX dependency uses bincode 2.0.1; this is an unmaintained advisory with no safe upgrade and is absent from the official surreal-remote release graph, so remove this exception when SurrealDB replaces SurrealMX or bincode" },
   { id = "RUSTSEC-2023-0071", reason = "SurrealDB 3.2.4 enables jsonwebtoken's RSA implementation, but Compass remote authentication only submits bearer tokens or username/password credentials and never loads or operates on an RSA private key; no patched rsa release exists, so remove this exception when SurrealDB or jsonwebtoken does" },
+  { id = "RUSTSEC-2026-0194", reason = "SurrealDB 3.3.0 pins object_store 0.13.2, whose vulnerable quick-xml is reachable only through cloud XML parsing; Compass enables remote SurrealDB transport and does not construct object_store cloud XML paths, so remove this exception when SurrealDB permits object_store 0.14.1 or later" },
+  { id = "RUSTSEC-2026-0195", reason = "SurrealDB 3.3.0 pins object_store 0.13.2, whose vulnerable quick-xml is reachable only through cloud XML parsing; Compass enables remote SurrealDB transport and does not construct object_store cloud XML paths, so remove this exception when SurrealDB permits object_store 0.14.1 or later" },
 ]
 
 [licenses]
@@ -40,16 +42,37 @@ exceptions = [
   # SurrealDB 3.2.4 uses ext-sort only in optional server-side surfaces. The
   # Unlicense is OSI-approved; scope the exception to the reviewed version.
   { allow = ["Unlicense"], crate = "ext-sort@0.1.5" },
-  # C-011 accepted the exact SurrealDB 3.2.4 artifact profiles under the
+  # C-011 accepted the exact SurrealDB 3.3.0 artifact profiles under the
   # retained tagged BUSL-1.1 license and notice conditions. Keep every
   # exception dependency/version scoped; upgrades require a fresh review.
-  { allow = ["BUSL-1.1"], crate = "surrealdb@3.2.4" },
-  { allow = ["BUSL-1.1"], crate = "surrealdb-collections@3.2.4" },
-  { allow = ["BUSL-1.1"], crate = "surrealdb-core@3.2.4" },
-  { allow = ["BUSL-1.1"], crate = "surrealdb-protocol@0.10.2" },
-  { allow = ["BUSL-1.1"], crate = "surrealdb-strand@3.2.4" },
-  { allow = ["BUSL-1.1"], crate = "surrealdb-types@3.2.4" },
-  { allow = ["BUSL-1.1"], crate = "surrealdb-types-derive@3.2.4" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-catalog@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-cnf@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-collections@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-common@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-core@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-datastore@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-engine-api@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-engine-local@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-expr@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-iam@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-idx@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-keyspace-macro@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-kvs@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-kvs-any@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-kvs-mem@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-kvs-rocksdb@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-kvs-surrealkv@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-observe@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-parse-common@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-protocol@0.13.1" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-rpc@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-runtime@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-sql@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-strand@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-syn@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-types@3.3.0" },
+  { allow = ["BUSL-1.1"], crate = "surrealdb-types-derive@3.3.0" },
 ]
 
 [bans]
