@@ -10,8 +10,10 @@ use crate::ranking::QUERY_RANKER_PROFILE_V1;
 use crate::telemetry::{ProfiledCodeQueryResponse, QueryInstrumentation};
 
 pub const QUERY_PLANNER_PROFILE_V1: &str = "query-planner/1";
+pub const QUERY_PLANNER_PROFILE_V2: &str = "query-planner/2";
 const MAX_NATURAL_QUERY_BYTES: usize = 4_096;
 const AUTO_ROUTE_CONFIDENCE: u8 = 90;
+pub(crate) type NaturalSelections = Vec<(String, String)>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NaturalQueryRequest {
@@ -26,6 +28,7 @@ pub enum NaturalQueryIntent {
     Search,
     Callers,
     Callees,
+    Dependencies,
     Impact,
     NodeTrail,
     Fallback,
@@ -38,9 +41,15 @@ pub struct NaturalQueryPlan {
     intent: NaturalQueryIntent,
     confidence: u8,
     operands: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    calls_only: bool,
 }
 
 impl NaturalQueryPlan {
+    #[must_use]
+    pub fn calls_only(&self) -> bool {
+        self.calls_only
+    }
     #[must_use]
     pub fn profile(&self) -> &str {
         &self.profile
@@ -73,35 +82,73 @@ impl CodeQueryEngine {
         request: NaturalQueryRequest,
     ) -> Result<CodeQueryResponse, QueryError> {
         self.execute_natural_query(request)
-            .map(|(response, _)| response)
+            .map(|(response, _, _)| response)
     }
 
     pub fn query_natural_profiled(
         &self,
         request: NaturalQueryRequest,
     ) -> Result<ProfiledCodeQueryResponse, QueryError> {
+        self.query_natural_with_selections(request)
+            .map(|(profiled, _)| profiled)
+    }
+
+    pub(crate) fn query_natural_with_selections(
+        &self,
+        request: NaturalQueryRequest,
+    ) -> Result<(ProfiledCodeQueryResponse, NaturalSelections), QueryError> {
         let total_started = Instant::now();
-        let (response, instrumentation) = self.execute_natural_query(request)?;
-        Ok(instrumentation.finish(
-            response,
-            total_started.elapsed(),
-            QUERY_PLANNER_PROFILE_V1,
-            QUERY_RANKER_PROFILE_V1,
+        let (response, instrumentation, selections) = self.execute_natural_query(request)?;
+        Ok((
+            instrumentation.finish(
+                response,
+                total_started.elapsed(),
+                QUERY_PLANNER_PROFILE_V2,
+                QUERY_RANKER_PROFILE_V1,
+            ),
+            selections,
         ))
     }
 
     fn execute_natural_query(
         &self,
         request: NaturalQueryRequest,
-    ) -> Result<(CodeQueryResponse, QueryInstrumentation), QueryError> {
+    ) -> Result<(CodeQueryResponse, QueryInstrumentation, NaturalSelections), QueryError> {
         self.check_deadline()?;
         validate_limits(&request.limits)?;
         let mut instrumentation = QueryInstrumentation::default();
         let intent_started = Instant::now();
         let plan = plan_natural_query(&request.question)?;
         instrumentation.intent += intent_started.elapsed();
-        let primary = plan.operands.first().cloned().unwrap_or_default();
-        let response = match plan.intent {
+        let mut operands = plan.operands.clone();
+        let mut selections = Vec::new();
+        let mut match_diagnostics = Vec::new();
+        let mut concept_matches = Vec::new();
+        let mut match_truncated = false;
+        if plan.routes_to_typed_query()
+            && !matches!(
+                plan.intent,
+                NaturalQueryIntent::Search | NaturalQueryIntent::Fallback
+            )
+        {
+            for operand in &mut operands {
+                let (selected, diagnostics, truncated, matched) = self.select_natural_symbol(
+                    operand,
+                    &request.question,
+                    &request.limits,
+                    &mut instrumentation,
+                )?;
+                if let Some(selected) = selected {
+                    selections.push((operand.clone(), selected.clone()));
+                    *operand = selected;
+                }
+                match_diagnostics.extend(diagnostics);
+                concept_matches.extend(matched);
+                match_truncated |= truncated;
+            }
+        }
+        let primary = operands.first().cloned().unwrap_or_default();
+        let mut response = match plan.intent {
             NaturalQueryIntent::Search | NaturalQueryIntent::Fallback => self.search_instrumented(
                 SearchRequest {
                     query: primary,
@@ -127,6 +174,12 @@ impl CodeQueryEngine {
                 false,
                 &mut instrumentation,
             ),
+            NaturalQueryIntent::Dependencies => self.natural_dependencies(
+                &primary,
+                request.include_heuristic,
+                request.limits,
+                &mut instrumentation,
+            ),
             NaturalQueryIntent::Impact => self.impact_instrumented(
                 ImpactRequest {
                     symbol: primary,
@@ -136,7 +189,7 @@ impl CodeQueryEngine {
                 &mut instrumentation,
             ),
             NaturalQueryIntent::NodeTrail => {
-                let target = plan.operands.get(1).cloned().ok_or_else(|| {
+                let target = operands.get(1).cloned().ok_or_else(|| {
                     QueryError::new(
                         QueryErrorKind::Internal,
                         "invalid_natural_query_plan",
@@ -145,6 +198,7 @@ impl CodeQueryEngine {
                 })?;
                 self.node_trail_instrumented(
                     NodeTrailRequest {
+                        calls_only: plan.calls_only,
                         source: primary,
                         target,
                         include_heuristic: request.include_heuristic,
@@ -154,7 +208,13 @@ impl CodeQueryEngine {
                 )
             }
         }?;
-        Ok((response, instrumentation))
+        concept_matches
+            .retain(|matched| response.nodes.iter().any(|node| node.id == matched.node_id));
+        response.concept_matches.extend(concept_matches);
+        response.diagnostics.extend(match_diagnostics);
+        response.truncated |= match_truncated;
+        let response = self.finish_natural_response(response)?;
+        Ok((response, instrumentation, selections))
     }
 }
 
@@ -171,10 +231,25 @@ pub fn plan_natural_query(question: &str) -> Result<NaturalQueryPlan, QueryError
 
 fn plan_validated_natural_query(question: &str) -> NaturalQueryPlan {
     let original = question.trim().trim_end_matches(['?', '!', '.']).trim();
+    let lower = original.to_ascii_lowercase();
+    let original = [" in tests", " in test code", " in production code"]
+        .iter()
+        .find(|suffix| lower.ends_with(**suffix))
+        .map_or(original, |suffix| {
+            original[..original.len() - suffix.len()].trim()
+        });
     if original.is_empty() {
         return plan(NaturalQueryIntent::Fallback, 0, [String::new()]);
     }
     let lower = original.to_ascii_lowercase();
+
+    for prefix in ["call path from ", "call chain from "] {
+        if let Some((source, target)) = split_operands(original, &lower, prefix, " to ") {
+            let mut result = plan(NaturalQueryIntent::NodeTrail, 100, [source, target]);
+            result.calls_only = true;
+            return result;
+        }
+    }
 
     for prefix in [
         "shortest path from ",
@@ -194,6 +269,9 @@ fn plan_validated_natural_query(question: &str) -> NaturalQueryPlan {
     if let Some((source, target)) = split_operands(original, &lower, "how is ", " connected to ") {
         return plan(NaturalQueryIntent::NodeTrail, 100, [source, target]);
     }
+    if let Some((source, target)) = split_operands(original, &lower, "how does ", " relate to ") {
+        return plan(NaturalQueryIntent::NodeTrail, 100, [source, target]);
+    }
 
     for prefix in [
         "find callers of ",
@@ -201,6 +279,8 @@ fn plan_validated_natural_query(question: &str) -> NaturalQueryPlan {
         "callers of ",
         "who calls ",
         "what calls ",
+        "who uses ",
+        "what uses ",
         "what functions call ",
         "what methods call ",
         "which functions call ",
@@ -211,6 +291,9 @@ fn plan_validated_natural_query(question: &str) -> NaturalQueryPlan {
         }
     }
     if let Some(symbol) = operand_between(original, &lower, "where is ", " called") {
+        return plan(NaturalQueryIntent::Callers, 95, [symbol]);
+    }
+    if let Some(symbol) = operand_between(original, &lower, "where is ", " used") {
         return plan(NaturalQueryIntent::Callers, 95, [symbol]);
     }
 
@@ -230,6 +313,14 @@ fn plan_validated_natural_query(question: &str) -> NaturalQueryPlan {
                 return plan(NaturalQueryIntent::Callees, 100, [symbol]);
             }
         }
+        for suffix in [" depend on", " depends on", " use", " uses"] {
+            if let Some(symbol) = operand_between(original, &lower, prefix, suffix) {
+                return plan(NaturalQueryIntent::Dependencies, 100, [symbol]);
+            }
+        }
+    }
+    if let Some(symbol) = operand_after_prefix(original, &lower, "dependencies of ") {
+        return plan(NaturalQueryIntent::Dependencies, 100, [symbol]);
     }
 
     // Contradictory direction words are deliberately not resolved by choosing
@@ -321,11 +412,16 @@ fn plan(
     operands: impl IntoIterator<Item = String>,
 ) -> NaturalQueryPlan {
     NaturalQueryPlan {
-        profile: QUERY_PLANNER_PROFILE_V1.to_owned(),
+        profile: QUERY_PLANNER_PROFILE_V2.to_owned(),
         intent,
         confidence,
         operands: operands.into_iter().collect(),
+        calls_only: false,
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 fn fallback_plan(query: &str) -> NaturalQueryPlan {

@@ -3,7 +3,7 @@ use compass_model::query_contract::{
     DiscoveryQueryRequest, DiscoveryQueryResponse, DiscoveryScope, DiscoveryScopeKind,
     DiscoveryTraversal, ExploreRequest, ImpactRequest, NodeTrailRequest, SearchRequest,
 };
-use compass_query::{CodeQueryEngine, NaturalQueryRequest, QueryErrorKind};
+use compass_query::{CodeQueryEngine, ExactSearchFilter, NaturalQueryRequest, QueryErrorKind};
 use serde_json::{Map, Value, json};
 
 pub(super) fn schema(required: &[&str]) -> Value {
@@ -55,6 +55,26 @@ pub(super) async fn invoke_with_surreal(
     arguments: &Map<String, Value>,
     engine: &compass_query::SurrealQueryEngine,
 ) -> Result<CodeQueryResponse, super::InvocationError> {
+    // The Surreal engine does not implement these typed refinements. Reject
+    // them rather than answer a different question than the other engines.
+    for key in [
+        "exact",
+        "source_file",
+        "start_line",
+        "kind",
+        "relations",
+        "semantic_search",
+        "calls_only",
+    ] {
+        if arguments
+            .get(key)
+            .is_some_and(|value| !value.is_null() && *value != Value::Bool(false))
+        {
+            return Err(super::InvocationError::InvalidParams(format!(
+                "{key} is not supported by the Surreal query engine; query a JSON or SQLite graph"
+            )));
+        }
+    }
     let limits = limits(arguments)?;
     let response = match name {
         "query_graph" => {
@@ -129,6 +149,7 @@ pub(super) async fn invoke_with_surreal(
         "get_node" => {
             engine
                 .node_trail(NodeTrailRequest {
+                    calls_only: false,
                     source: required_string(arguments, "source")?,
                     target: required_string(arguments, "target")?,
                     include_heuristic: boolean(arguments, "include_heuristic")?,
@@ -146,11 +167,59 @@ pub(super) async fn invoke_with_surreal(
     Ok(response)
 }
 
+pub(super) fn search_schema() -> Value {
+    let mut result = schema(&["query"]);
+    result["properties"]["semantic_search"] = json!({"type":"boolean","default":false,"description":"Optional offline local-LSA fallback; cannot be combined with exact."});
+    result["properties"]["exact"] = json!({"type":"boolean","default":false,"description":"Only exact ID or normalized name matches; no lexical fallback."});
+    result["properties"]["source_file"] = json!({"type":"string","minLength":1,"maxLength":4096,"description":"Exact stored source path; requires exact=true."});
+    result["properties"]["start_line"] = json!({"type":"integer","minimum":1,"maximum":u32::MAX,"description":"Declaration start line; requires exact=true and source_file."});
+    result["properties"]["kind"] = json!({"type":"string","description":"Stored node kind (for example function, class, struct); requires exact=true."});
+    result
+}
+
+pub(super) fn impact_schema() -> Value {
+    let mut result = schema(&["symbol"]);
+    result["properties"]["relations"] = json!({"type":"array","minItems":1,"maxItems":32,"items":{"type":"string"},"description":"Stored relationship types to follow in reverse, such as calls, instantiates, references, extends, type_of, returns, or imports. Omit for the full dependency default."});
+    result
+}
+
+pub(super) fn trail_schema() -> Value {
+    let mut result = schema(&["source", "target"]);
+    result["properties"]["calls_only"] = json!({"type":"boolean","default":false,"description":"Only directed calls edges; excludes structural shortcuts and applies to direction diagnostics too."});
+    result
+}
+
 pub(super) fn invoke_with_engine(
     name: &str,
     arguments: &Map<String, Value>,
     engine: &CodeQueryEngine,
 ) -> Result<CodeQueryResponse, super::InvocationError> {
+    if name != "get_node" && arguments.contains_key("calls_only") {
+        return Err(super::InvocationError::InvalidParams(
+            "calls_only requires get_node".to_owned(),
+        ));
+    }
+    if name != "search_symbols"
+        && ["exact", "source_file", "start_line", "kind"]
+            .iter()
+            .any(|key| arguments.contains_key(*key))
+    {
+        return Err(super::InvocationError::InvalidParams(
+            "exact symbol filters require search_symbols".to_owned(),
+        ));
+    }
+    if name != "get_impact" && arguments.contains_key("relations") {
+        return Err(super::InvocationError::InvalidParams(
+            "relations requires get_impact".to_owned(),
+        ));
+    }
+    if arguments.contains_key("semantic_search")
+        && !matches!(name, "query_graph" | "search_symbols")
+    {
+        return Err(super::InvocationError::InvalidParams(
+            "semantic_search requires query_graph or search_symbols".to_owned(),
+        ));
+    }
     let limits = limits(arguments)?;
     let response = match name {
         "query_graph" => engine.query_natural(NaturalQueryRequest {
@@ -158,10 +227,56 @@ pub(super) fn invoke_with_engine(
             include_heuristic: false,
             limits,
         }),
-        "search_symbols" => engine.search(SearchRequest {
-            query: required_string(arguments, "query")?,
-            limits,
-        }),
+        "search_symbols" => {
+            let request = SearchRequest {
+                query: required_string(arguments, "query")?,
+                limits,
+            };
+            let exact = boolean(arguments, "exact")?;
+            if exact && boolean(arguments, "semantic_search")? {
+                return Err(super::InvocationError::InvalidParams(
+                    "semantic_search cannot be combined with exact".to_owned(),
+                ));
+            }
+            if !exact
+                && ["source_file", "start_line", "kind"]
+                    .iter()
+                    .any(|key| arguments.contains_key(*key))
+            {
+                return Err(super::InvocationError::InvalidParams(
+                    "source_file, start_line and kind require exact=true".to_owned(),
+                ));
+            }
+            if exact {
+                let source_file = arguments
+                    .get("source_file")
+                    .map(|_| required_string(arguments, "source_file"))
+                    .transpose()?;
+                let start_line = arguments
+                    .get("start_line")
+                    .map(|_| u32_value(arguments, "start_line", 0))
+                    .transpose()?;
+                let kind = arguments
+                    .get("kind")
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|_| {
+                            "kind must be a stored node kind such as function, class, or struct"
+                                .to_owned()
+                        })
+                    })
+                    .transpose()?;
+                engine.search_exact(
+                    request,
+                    ExactSearchFilter {
+                        source_file,
+                        start_line,
+                        kind,
+                    },
+                )
+            } else {
+                engine.search(request)
+            }
+        }
         "get_callers" => engine.callers(CallRequest {
             symbol: required_string(arguments, "symbol")?,
             include_heuristic: boolean(arguments, "include_heuristic")?,
@@ -172,11 +287,32 @@ pub(super) fn invoke_with_engine(
             include_heuristic: boolean(arguments, "include_heuristic")?,
             limits,
         }),
-        "get_impact" => engine.impact(ImpactRequest {
-            symbol: required_string(arguments, "symbol")?,
-            include_heuristic: boolean(arguments, "include_heuristic")?,
-            limits,
-        }),
+        "get_impact" => {
+            let request = ImpactRequest {
+                symbol: required_string(arguments, "symbol")?,
+                include_heuristic: boolean(arguments, "include_heuristic")?,
+                limits,
+            };
+            if let Some(value) = arguments.get("relations") {
+                let values = value
+                    .as_array()
+                    .filter(|values| !values.is_empty() && values.len() <= 32)
+                    .ok_or_else(|| {
+                        "relations must contain 1 to 32 stored relationship types".to_owned()
+                    })?;
+                let relations = values
+                    .iter()
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|_| {
+                            "relations contains an unknown stored relationship type".to_owned()
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                engine.impact_with_relations(request, &relations)
+            } else {
+                engine.impact(request)
+            }
+        }
         "explore_code" => engine.explore(ExploreRequest {
             symbols: arguments
                 .get("symbols")
@@ -199,6 +335,7 @@ pub(super) fn invoke_with_engine(
             limits,
         }),
         "get_node" => engine.node_trail(NodeTrailRequest {
+            calls_only: boolean(arguments, "calls_only")?,
             source: required_string(arguments, "source")?,
             target: required_string(arguments, "target")?,
             include_heuristic: boolean(arguments, "include_heuristic")?,
@@ -244,6 +381,7 @@ pub(super) fn validate_query_graph_arguments(
 ) -> Result<(), super::InvocationError> {
     const ALLOWED: &[&str] = &[
         "question",
+        "semantic_search",
         "project_path",
         "mode",
         "depth",
@@ -274,6 +412,11 @@ pub(super) fn validate_query_graph_arguments(
     let legacy = ["mode", "depth", "token_budget", "context_filter"]
         .iter()
         .any(|name| arguments.contains_key(*name));
+    if legacy && arguments.contains_key("semantic_search") {
+        return Err(super::InvocationError::InvalidParams(
+            "semantic_search requires bounded discovery; omit legacy traversal controls".to_owned(),
+        ));
+    }
     if legacy && has_discovery_arguments(arguments) {
         return Err(super::InvocationError::InvalidParams(
             "legacy traversal controls cannot be combined with discovery controls".to_owned(),

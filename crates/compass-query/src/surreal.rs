@@ -182,6 +182,19 @@ impl SurrealQueryEngine {
                 })
                 .await
             }
+            NaturalQueryIntent::Dependencies => {
+                let include_heuristic = request.include_heuristic;
+                let limits = request.limits;
+                self.typed_query(move |engine| {
+                    engine.natural_dependencies(
+                        &primary,
+                        include_heuristic,
+                        limits,
+                        &mut crate::telemetry::QueryInstrumentation::default(),
+                    )
+                })
+                .await
+            }
             NaturalQueryIntent::Impact => {
                 self.impact(ImpactRequest {
                     symbol: primary,
@@ -199,6 +212,7 @@ impl SurrealQueryEngine {
                     )
                 })?;
                 self.node_trail(NodeTrailRequest {
+                    calls_only: plan.calls_only(),
                     source: primary,
                     target,
                     include_heuristic: request.include_heuristic,
@@ -295,6 +309,8 @@ impl SurrealQueryEngine {
                 build_generation_identity,
                 search_query_cache: std::sync::Mutex::new(Default::default()),
                 fuzzy_lookup_cache: std::sync::Mutex::new(Default::default()),
+                semantic_search: false,
+                semantic_index: std::sync::Mutex::new(None),
                 deadline,
             };
             operation(&engine)

@@ -53,6 +53,7 @@ mkdir -p "$TARGET"
 }
 
 cd "$ROOT"
+node --test "$ROOT/scripts/tests/react_route_hierarchy_oracle.test.mjs"
 BUILD_REVISION="$(git rev-parse HEAD)"
 echo "[react-frontend] build release production binary ($MODE mode)"
 PROJECT_ROOT="$PARSER_ROOT" TSLP_OFFLINE=1 CARGO_TARGET_DIR="$TARGET" \

@@ -186,6 +186,7 @@ async fn native_and_json_structural_operations_are_semantically_identical()
         );
 
         let trail = NodeTrailRequest {
+            calls_only: false,
             source: source.clone(),
             target: target.clone(),
             include_heuristic,

@@ -329,6 +329,7 @@ async fn medium_and_large_scale_samples_are_dual_engine_equivalent() -> Result<(
 
             let first = ordinal.saturating_sub(3);
             let trail = NodeTrailRequest {
+                calls_only: false,
                 source: node_id(first),
                 target: symbol.clone(),
                 include_heuristic: false,
@@ -462,6 +463,7 @@ async fn full_medium_dual_engine_measurement_emits_raw_evidence() -> Result<(), 
         },
     };
     let trail = NodeTrailRequest {
+        calls_only: false,
         source: "qualification::Node0000000".to_owned(),
         target: "qualification::Node0000009".to_owned(),
         include_heuristic: false,

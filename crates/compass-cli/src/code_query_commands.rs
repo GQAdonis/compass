@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use compass_model::code_graph::EdgeKind;
 use compass_model::query_contract::{
     CallRequest, CodeQueryLimits, CodeQueryResponse, ExploreRequest, ImpactRequest,
     NodeTrailRequest, SearchRequest,
@@ -11,8 +12,8 @@ use compass_output::{
     render_code_query_text_page,
 };
 use compass_query::{
-    EngineSelection, NaturalQueryRequest, QueryError, QueryErrorKind, open_with_engine,
-    open_with_verified_document,
+    EngineSelection, ExactSearchFilter, NaturalQueryIntent, NaturalQueryRequest, QueryError,
+    QueryErrorKind, open_with_engine, open_with_verified_document, plan_natural_query,
 };
 #[cfg(any(
     feature = "surreal-surrealkv",
@@ -139,7 +140,10 @@ fn execute_paged(
     let mut scale = 1_u32;
     loop {
         let execution = execute(operation, args, scale, deadline)?;
-        if !execution.response.truncated || scale >= MAX_PAGE_WIDENING_SCALE {
+        if !execution.response.truncated
+            || scale >= MAX_PAGE_WIDENING_SCALE
+            || args.iter().any(|arg| arg == "--exact")
+        {
             return Ok(execution);
         }
         scale = scale.saturating_mul(4);
@@ -152,7 +156,53 @@ fn execute(
     page_scale: u32,
     deadline: Instant,
 ) -> Result<QueryExecution, String> {
+    let calls_only = args.iter().any(|arg| arg == "--calls-only");
+    if args.iter().any(|arg| arg.starts_with("--calls-only=")) {
+        return Err("--calls-only is a flag and does not accept a value".to_owned());
+    }
+    if calls_only && operation != "node" {
+        return Err("--calls-only requires node".to_owned());
+    }
+    if args.iter().filter(|arg| *arg == "--calls-only").count() > 1 {
+        return Err("--calls-only may be supplied only once".to_owned());
+    }
+    let exact = args.iter().any(|arg| arg == "--exact");
+    let mut exact_filter = ExactSearchFilter::default();
+    for name in ["--file", "--line", "--kind"] {
+        let present = args
+            .iter()
+            .any(|arg| arg == name || arg.starts_with(&format!("{name}=")));
+        if present && (!exact || operation != "search") {
+            return Err(format!("{name} requires search --exact"));
+        }
+        if present {
+            let value = option(args, name)
+                .filter(|value| !value.starts_with("--"))
+                .ok_or_else(|| format!("{name} requires a value"))?;
+            match name {
+                "--file" => exact_filter.source_file = Some(value.to_owned()),
+                "--line" => {
+                    exact_filter.start_line = Some(
+                        value
+                            .parse()
+                            .map_err(|_| "--line requires a positive integer")?,
+                    )
+                }
+                "--kind" => exact_filter.kind =
+                    Some(serde_json::from_value(serde_json::json!(value)).map_err(
+                        |_| "--kind requires a stored node kind such as function, class, or struct",
+                    )?),
+                _ => {}
+            }
+        }
+    }
+    if exact && operation != "search" {
+        return Err("--exact requires search".to_owned());
+    }
     let positional = positional(args);
+    if calls_only && positional.len() != 2 {
+        return Err("node --calls-only requires exactly SOURCE and TARGET".to_owned());
+    }
     let graph_option = option(args, "--graph");
     let revision = option(args, "--at");
     if graph_option.is_some() && revision.is_some() {
@@ -203,6 +253,18 @@ fn execute(
         let use_surreal = engine == EngineSelection::Surreal
             || (engine == EngineSelection::Default && published_surreal(&graph));
         if use_surreal {
+            // The Surreal engine does not implement these typed refinements.
+            // Reject them rather than answer a different question.
+            for flag in ["--exact", "--calls-only", "--semantic-search", "--relation"] {
+                if args
+                    .iter()
+                    .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+                {
+                    return Err(format!(
+                        "{flag} is not supported by the Surreal query engine; use --engine json or --engine store"
+                    ));
+                }
+            }
             return execute_surreal(operation, args, &positional, &graph, limits, deadline);
         }
     }
@@ -237,11 +299,45 @@ fn execute(
         open_with_engine(&graph, program.as_deref(), &cache, engine)
             .map_err(|error| error.to_string())?
     }
-    .with_deadline(deadline);
+    .with_deadline(deadline)
+    .with_semantic_search(args.iter().any(|arg| arg == "--semantic-search"));
     let include_heuristic = args.iter().any(|arg| arg == "--include-heuristic");
+    if args.iter().any(|arg| arg == "--semantic-search") && !matches!(operation, "ask" | "search") {
+        return Err("--semantic-search is supported by compass ask and search".to_owned());
+    }
+    if args.iter().any(|arg| arg == "--semantic-search") && args.iter().any(|arg| arg == "--exact")
+    {
+        return Err("--semantic-search cannot be combined with --exact".to_owned());
+    }
+    let relations = impact_relations(operation, args)?;
     let (response, question, operands) = match operation {
         "ask" => {
             let question = required(&positional, 0, "ask <QUESTION>")?.to_owned();
+            let plan = plan_natural_query(&question).map_err(query_error)?;
+            // The renderer needs the same operands the query engine executes.
+            // The full question is retained separately as request metadata.
+            let operands = if plan.routes_to_typed_query() {
+                plan.operands()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        let role = match plan.intent() {
+                            NaturalQueryIntent::Callers
+                            | NaturalQueryIntent::Callees
+                            | NaturalQueryIntent::Dependencies
+                            | NaturalQueryIntent::Impact => AgentOperandRole::Symbol,
+                            NaturalQueryIntent::NodeTrail if index == 0 => AgentOperandRole::Source,
+                            NaturalQueryIntent::NodeTrail => AgentOperandRole::Target,
+                            NaturalQueryIntent::Search | NaturalQueryIntent::Fallback => {
+                                AgentOperandRole::Query
+                            }
+                        };
+                        (role, value.clone())
+                    })
+                    .collect()
+            } else {
+                vec![(AgentOperandRole::Query, question.clone())]
+            };
             let response = engine
                 .query_natural(NaturalQueryRequest {
                     question: question.clone(),
@@ -249,20 +345,20 @@ fn execute(
                     limits,
                 })
                 .map_err(query_error)?;
-            (
-                response,
-                Some(question.clone()),
-                vec![(AgentOperandRole::Query, question)],
-            )
+            (response, Some(question), operands)
         }
         "search" => {
             let query = required(&positional, 0, "search <QUERY>")?.to_owned();
-            let response = engine
-                .search(SearchRequest {
-                    query: query.clone(),
-                    limits,
-                })
-                .map_err(query_error)?;
+            let request = SearchRequest {
+                query: query.clone(),
+                limits,
+            };
+            let response = if exact {
+                engine.search_exact(request, exact_filter)
+            } else {
+                engine.search(request)
+            }
+            .map_err(query_error)?;
             (response, None, vec![(AgentOperandRole::Query, query)])
         }
         "callers" | "callees" | "impact" => {
@@ -278,11 +374,18 @@ fn execute(
                     include_heuristic,
                     limits,
                 }),
-                "impact" => engine.impact(ImpactRequest {
-                    symbol: symbol.clone(),
-                    include_heuristic,
-                    limits,
-                }),
+                "impact" => {
+                    let request = ImpactRequest {
+                        symbol: symbol.clone(),
+                        include_heuristic,
+                        limits,
+                    };
+                    if relations.is_empty() {
+                        engine.impact(request)
+                    } else {
+                        engine.impact_with_relations(request, &relations)
+                    }
+                }
                 _ => unreachable!(),
             }
             .map_err(query_error)?;
@@ -312,6 +415,7 @@ fn execute(
             let target = required(&positional, 1, "node <SOURCE> <TARGET>")?.to_owned();
             let response = engine
                 .node_trail(NodeTrailRequest {
+                    calls_only,
                     source: source.clone(),
                     target: target.clone(),
                     include_heuristic,
@@ -320,7 +424,7 @@ fn execute(
                 .map_err(query_error)?;
             (
                 response,
-                None,
+                calls_only.then(|| format!("call path from {source} to {target}")),
                 vec![
                     (AgentOperandRole::Source, source),
                     (AgentOperandRole::Target, target),
@@ -447,6 +551,7 @@ fn execute_surreal(
             "node" => {
                 engine
                     .node_trail(NodeTrailRequest {
+                        calls_only: false,
                         source: required(positional, 0, "node <SOURCE> <TARGET>")?.to_owned(),
                         target: required(positional, 1, "node <SOURCE> <TARGET>")?.to_owned(),
                         include_heuristic,
@@ -619,6 +724,10 @@ fn positional(args: &[String]) -> Vec<String> {
         "--text-budget",
         "--cursor",
         "--timeout-ms",
+        "--file",
+        "--line",
+        "--kind",
+        "--relation",
     ];
     let mut values = Vec::new();
     let mut skip = false;
@@ -632,6 +741,37 @@ fn positional(args: &[String]) -> Vec<String> {
         }
     }
     values
+}
+
+fn impact_relations(operation: &str, args: &[String]) -> Result<Vec<EdgeKind>, String> {
+    let mut relations = Vec::new();
+    let mut values = args.iter();
+    while let Some(arg) = values.next() {
+        let value = if arg == "--relation" {
+            Some(
+                values
+                    .next()
+                    .ok_or("--relation requires a relationship type")?
+                    .as_str(),
+            )
+        } else {
+            arg.strip_prefix("--relation=")
+        };
+        if let Some(value) = value {
+            if operation != "impact" {
+                return Err("--relation is supported only by compass impact".to_owned());
+            }
+            let relation = serde_json::from_value::<EdgeKind>(serde_json::Value::String(value.to_owned()))
+                .map_err(|_| format!("unknown impact relationship {value:?}; use a stored graph type such as calls, instantiates, references, extends, or imports"))?;
+            if relations.len() >= 32 {
+                return Err("--relation exceeds the 32-type bound".to_owned());
+            }
+            if !relations.contains(&relation) {
+                relations.push(relation);
+            }
+        }
+    }
+    Ok(relations)
 }
 
 fn required<'a>(values: &'a [String], index: usize, usage: &str) -> Result<&'a str, String> {

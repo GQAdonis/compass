@@ -597,6 +597,19 @@ pub struct SymbolNodeDetails {
     pub implementation_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_digest: Option<String>,
+    /// Source-observed invocations, including calls whose target could not be
+    /// resolved. Absent on older graphs and producers without this coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_sites: Option<CallSiteInventory>,
+}
+
+pub const MAX_SYMBOL_CALL_SITES: usize = 4_096;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallSiteInventory {
+    pub sites: Vec<SourceAnchor>,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -821,6 +834,9 @@ pub struct ResourceNodeDetails {
     pub uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
+    /// Source-backed document or rationale excerpt, bounded to 4 KiB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1712,63 +1728,7 @@ impl GraphDocument {
     }
 
     fn load_strict(path: &Path) -> Result<Self, GraphError> {
-        if !path.exists() {
-            return Err(GraphError::NotFound(crate::graph::absolute_path(path)));
-        }
-        crate::artifact_compatibility::validate_graph_path_preamble(path)?;
-        if let Some((size, cap)) = Self::size_cap_exceeded(path) {
-            return Err(GraphError::TooLarge {
-                path: crate::graph::absolute_path(path),
-                size,
-                cap,
-            });
-        }
-        let digest = file_digest(path)?;
-        if let Some(document) = load_content_cache(path, &digest) {
-            crate::validate_query_builder_version(
-                &document.graph.build.builder_version,
-                Some(path),
-            )?;
-            validate_code_graph(&document)?;
-            return Ok(document);
-        }
-
-        #[derive(Deserialize)]
-        struct SchemaEnvelope {
-            #[serde(default)]
-            graph: Option<SchemaHeader>,
-        }
-
-        #[derive(Deserialize)]
-        struct SchemaHeader {
-            #[serde(default)]
-            schema: Option<String>,
-        }
-
-        // Inspect the version without first allocating a complete generic JSON
-        // tree. Serde skips the large node and edge arrays while retaining the
-        // explicit unsupported-schema diagnostic.
-        let schema_file = File::open(path).map_err(|source| GraphError::Read {
-            path: crate::graph::absolute_path(path),
-            source,
-        })?;
-        let found = serde_json::from_reader::<_, SchemaEnvelope>(BufReader::new(schema_file))
-            .map_err(GraphError::Corrupt)?
-            .graph
-            .and_then(|graph| graph.schema);
-        if found.as_deref() != Some(CODE_GRAPH_SCHEMA_V1) {
-            return Err(GraphError::UnsupportedGraphSchema { found });
-        }
-        let mut document_file = File::open(path).map_err(|source| GraphError::Read {
-            path: crate::graph::absolute_path(path),
-            source,
-        })?;
-        crate::artifact_compatibility::validate_opened_graph_preamble(&mut document_file, path)?;
-        let document =
-            serde_json::from_reader(BufReader::new(document_file)).map_err(GraphError::Corrupt)?;
-        validate_code_graph(&document)?;
-        let _ = write_content_cache(path, &digest, &document);
-        Ok(document)
+        crate::GraphArtifact::load_for_recluster(path)?.typed_document()
     }
 }
 
@@ -2137,30 +2097,39 @@ fn corrupt_projection(message: &str) -> GraphError {
     )))
 }
 
-fn file_digest(path: &Path) -> Result<String, GraphError> {
-    let file = File::open(path).map_err(|source| GraphError::Read {
-        path: crate::graph::absolute_path(path),
-        source,
-    })?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|source| GraphError::Read {
-                path: crate::graph::absolute_path(path),
-                source,
-            })?;
-        if read == 0 {
-            break;
+impl crate::GraphArtifact {
+    /// Decode and validate a typed graph using the same bytes as other views.
+    pub fn typed_document(&self) -> Result<GraphDocument, GraphError> {
+        let digest = self.artifact_digest();
+        if let Some(document) = load_content_cache(self.path(), &digest, self.signature.len) {
+            validate_code_graph(&document)?;
+            return Ok(document);
         }
-        hasher.update(&buffer[..read]);
+        #[derive(Deserialize)]
+        struct SchemaEnvelope {
+            #[serde(default)]
+            graph: Option<SchemaHeader>,
+        }
+        #[derive(Deserialize)]
+        struct SchemaHeader {
+            #[serde(default)]
+            schema: Option<String>,
+        }
+        let found = serde_json::from_slice::<SchemaEnvelope>(&self.bytes)
+            .map_err(GraphError::Corrupt)?
+            .graph
+            .and_then(|graph| graph.schema);
+        if found.as_deref() != Some(CODE_GRAPH_SCHEMA_V1) {
+            return Err(GraphError::UnsupportedGraphSchema { found });
+        }
+        let document = serde_json::from_slice(&self.bytes).map_err(GraphError::Corrupt)?;
+        validate_code_graph(&document)?;
+        let _ = write_content_cache(self.path(), &digest, &document);
+        Ok(document)
     }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
-const CONTENT_CACHE_MAGIC: &[u8; 8] = b"CGRPHV01";
+const CONTENT_CACHE_MAGIC: &[u8; 8] = b"CGRPHV02";
 static CONTENT_CACHE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn content_cache_path(graph_path: &Path, digest: &str) -> PathBuf {
@@ -2172,11 +2141,16 @@ fn content_cache_path(graph_path: &Path, digest: &str) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("cache")
-        .join(format!("{file_name}.{digest}.content-v1.cache"))
+        .join(format!("{file_name}.{digest}.content-v2.cache"))
 }
 
-fn load_content_cache(path: &Path, digest: &str) -> Option<GraphDocument> {
-    let mut reader = BufReader::new(File::open(content_cache_path(path, digest)).ok()?);
+fn load_content_cache(path: &Path, digest: &str, source_bytes: u64) -> Option<GraphDocument> {
+    let file = File::open(content_cache_path(path, digest)).ok()?;
+    let maximum = source_bytes.saturating_mul(2).saturating_add(1024 * 1024);
+    if file.metadata().ok()?.len() > maximum {
+        return None;
+    }
+    let mut reader = BufReader::new(file.take(maximum));
     let mut magic = [0_u8; CONTENT_CACHE_MAGIC.len()];
     std::io::Read::read_exact(&mut reader, &mut magic).ok()?;
     if &magic != CONTENT_CACHE_MAGIC {
@@ -2253,7 +2227,7 @@ mod tests {
     fn content_cache_path_is_visible_and_scoped() {
         assert_eq!(
             content_cache_path(Path::new("compass-out/graph.json"), "abc123"),
-            Path::new("compass-out/cache/graph.json.abc123.content-v1.cache")
+            Path::new("compass-out/cache/graph.json.abc123.content-v2.cache")
         );
     }
 

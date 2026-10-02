@@ -383,6 +383,40 @@ operation and returns `compass.query/1`. `--at REV` reads one immutable trusted
 revision graph; it does not fall back to a legacy projection. Rebuild a revision
 whose realization does not contain the current trusted graph contract.
 
+Concept recall is enabled for `ask`, non-exact `search`, and bounded MCP
+`query_graph` / `search_symbols`. Engineering synonyms such as authorization →
+authz/permission/policy are ranked alternatives. Matching Markdown sections
+follow published containment and reference edges to code; missing or ambiguous
+mentions never invent a target. The optional `conceptMatches` array in
+`compass.query/1` records `nodeId`, `method`, `query`, `matched`, and the document
+ID path `via`. Text headlines label these results approximate. Strict
+`search --exact` and exact structured symbol resolution retain their contracts.
+
+`compass ask QUESTION --semantic-search` and `compass search QUERY
+--semantic-search` opt into an offline latent-semantic fallback after name and
+synonym recall fail. MCP uses `semantic_search: true` on `query_graph` or
+`search_symbols`; each request defaults to false. This cannot be combined with
+exact lookup or legacy traversal controls. The graph's names, retained
+Python rationale/docstring excerpts, and document excerpts provide the corpus.
+TF-IDF and deterministic truncated-SVD embeddings are learned locally and cached
+for that immutable engine. There is no model download, credential, network call,
+or vector database. It can bridge vocabulary that co-occurs in the graph; an
+unknown corpus term has no semantic match. Results use `semantic_lsa` provenance
+and never change structural evidence confidence.
+
+Synonym recall uses at most 12 alternatives and 768 posting candidates per
+alternative, with a shared indexed-read ceiling. Ranking precedes the retained
+candidate cap; truncation is reported. Compact code names, matching filenames,
+question context and implementation kinds are ranking hints, not proof of
+meaning. Data-transfer/error declarations and test code rank lower.
+
+Semantic construction fails explicitly above 32,768 nodes, 64 MiB of canonical
+node payload, 8,192 terms, or one million sparse entries. Build a smaller scoped
+graph or omit the flag when a limit is reached. Document/rationale excerpts are
+bounded to 4 KiB; prose indexes retain at most 512 normalized terms per node.
+Older graphs retain their existing names/links until rebuilt; see
+[MIGRATION.md](../../MIGRATION.md).
+
 CompassQL:
 
 ```text
@@ -428,6 +462,49 @@ compass impact "<symbol>"      [--format text|agent-json|json]
 compass explore "<symbol>" ... [--format text|agent-json|json]
 compass node "<source>" "<target>" [--format text|agent-json|json]
 ```
+
+When the symbol name and source location are known, use exact lookup:
+
+```bash
+compass search createStore --exact --file src/createStore.ts --line 86 --kind function --format json
+```
+
+The file, line and kind constraints are optional and conjunctive. A line requires
+a file; all three filters require `--exact`. File paths match the stored
+repository-relative spelling. Exact IDs take precedence; names use Compass's
+normalized exact comparison. Every matching record is returned, including
+overloads and export bindings, with no lexical fallback or guessed winner.
+The candidate bound applies before filtering: a truncated one-result response
+does not prove uniqueness, and a truncated empty response does not prove
+absence. Exact text requests keep the supplied bounds without automatic widening.
+
+MCP exposes the same operation through `search_symbols` with `exact: true` and
+optional `source_file`, `start_line` and `kind` fields. The raw response stays
+`compass.query/1`; ordinary ranked search remains the default.
+
+For typed relationship and trail questions, an owner-qualified operand such as
+`APIRoute.get_route_handler` or `APIRoute::get_route_handler` can identify a stored
+`fastapi.routing.APIRoute::get_route_handler` without the module prefix.
+Compass verifies the suffix against the bounded exact method-name candidates.
+If several declarations share that owner/member suffix, retry with the full
+qualified name or an exact ID; a truncated candidate set never proves a unique
+match. A nonexistent owner does not select another class's same-named method.
+This also applies to `ask` questions that route to a typed operation; it does
+not change the separate `search --exact` contract.
+
+Use `compass node SOURCE TARGET --calls-only` to find a directed call chain.
+The equivalent natural forms are `compass ask "call path from SOURCE to TARGET"`
+and `compass ask "call chain from SOURCE to TARGET"`. MCP `get_node` accepts
+boolean `calls_only` (default false). Only stored `calls` relationships qualify;
+containment, instantiation, return-type and other structural edges cannot form
+shortcuts. All existing limits, ambiguity and heuristic policies still apply.
+Call chains may be conditional; their existence does not guarantee execution.
+The CLI flag takes no value, may appear once, and is valid only for `node`.
+
+`node` searches directed, weighted trails within `--max-depth`. It retains
+shorter and cheaper prefixes when either can affect reachability within that
+hop limit. Node and edge work limits still apply: a truncated result is not
+proof that no path exists.
 
 `explore --format text` closes its bounded page with a `SOURCE` section: the
 recorded line range of each primary anchor, rendered from the digest-verified
@@ -502,7 +579,30 @@ other format. On the evaluation corpus the same caller answers cost 1.7k-2.0k
 tokens in brief form instead of 6.3k-6.8k.
 
 `callers` returns incoming relationship evidence: calls, routes, references,
-imports, exports, and aliases. `callees` remains the direct outgoing call view.
+imports, exports, and aliases. `callees` returns outgoing calls and constructions. For a class/type, it includes
+calls owned by contained methods while preserving their actual source endpoints.
+Python graphs rebuilt with AST cache version 14 retain source-call inventories;
+`callSummary` distinguishes resolved call sites, unresolved invocations and
+inventory completeness. Older graphs report unavailable coverage instead of
+assuming their absent inventory means zero calls.
+
+`impact --relation TYPE` accepts repeatable stored relationship names and replaces
+the default dependency policy. The default includes calls, constructions,
+inheritance/conformance, type and return contracts, references, imports/exports,
+aliases, overrides/decorators and stored effect/routing relations. Containment and
+document mentions are not traversed by default. Heuristic edges still require
+`--include-heuristic`. MCP `get_impact` accepts the same policy as a `relations`
+array. `impactSummary` groups retained direct and transitive dependents by file
+and parent module. Paged text prints these groups before paths and relationships.
+
+Impact independently audits distinct incoming and outgoing neighbors, matching
+`explain` connection units. It reports outgoing review context and incoming
+policy/confidence exclusions rather than presenting them as affected nodes.
+Missing selected direct dependents fail a complete query with a typed consistency
+error; budgets instead mark direct coverage incomplete. Partial source graphs retain a
+separate incomplete-source-coverage caveat; the direct audit covers published
+adjacency. Use
+larger `--max-nodes`/`--max-edges` bounds to inspect a bounded audit.
 When an import or reference ends at a containing module rather than the
 selected declaration, `callers`, `impact`, and `affected` retain the real
 owner-targeted edge and emit an `incomplete_coverage` precision warning.
@@ -524,7 +624,22 @@ The text form is answer-first and names the graph totals, groups, routes,
 diagnostics, and any omitted groups. `agent-json` adds the versioned
 `compass.architecture.agent-view/1` envelope while preserving coverage counts
 and witness group IDs, so an empty displayed section cannot be mistaken for an
-empty architecture.
+empty architecture. If a declared projection limit prevents the detailed view,
+the command returns exact graph totals and the exceeded bound as a summary
+instead of failing. JSON uses `compass.architecture.summary/1`; agent JSON uses
+`compass.architecture.summary-agent-view/1`. The summary explicitly marks
+details as omitted and does not claim groups or routes are empty. Detailed
+output is capped at 5,000 nodes or 20,000 relationships. The bounded summary
+includes node-kind and relationship-kind counts, then samples at most 12
+communities ranked by descending member count and ascending community ID, with
+up to 3 nodes per community in ascending node-ID order. Each kind map has at
+most 64 safe names in ascending order as described by `kindCountPolicy`;
+`otherNodes` and `otherRelationships` give the exact counts for kinds outside
+those maps. Sample IDs are limited to 1,024 bytes. Sample
+labels, kinds, paths, and community labels are limited to 512 characters and
+escape control and bidirectional-text characters; `boundedFields` records
+which sample fields were changed, and `omittedSampleNodes` counts selected IDs
+that could not be included.
 
 ### `path`
 
@@ -533,16 +648,24 @@ compass path "<source>" "<target>" [--max-depth N]
   [--format text|json|agent-json] [--graph PATH | --at REV]
 ```
 
-Resolves both endpoints by exact node ID, name, or qualified name before doing
-any graph search; missing and ambiguous endpoints fail explicitly. The text path
-search is bounded to eight hops by default and ranks structural relationships
+Resolves both endpoints by exact node ID, name, full qualified name, or a
+unique owner/member suffix before doing any graph search; missing and ambiguous
+endpoints fail explicitly. The text path search is bounded to eight hops by
+default and ranks structural relationships
 such as calls, containment, imports, and dependencies ahead of weak references
 or documentation links. When a meaningfully weaker route is up to two hops
-shorter, Compass shows it separately. Output names the resolved target ID, and
+shorter, Compass shows it separately. Output names the resolved target, and
 an unreachable target is reported as `NO PATH FOUND` with the depth bound and
 visited-node count. Relationship arrows always preserve their stored direction.
 Traversal may follow a relationship in either direction; the arrows make that
 choice visible rather than rewriting the graph.
+
+Costlier, shorter prefixes are retained when they can reach the target within
+`--max-depth`. Each weighted or alternative search permits at most 1,000,000
+adjacency entries and 16 MiB of cumulative path-key bytes. Work exhaustion
+returns a nonzero error; it is not reported as `NO PATH FOUND`. Retry with a
+smaller depth or graph. A depth-bounded no-path result does not prove that no
+longer path exists.
 
 Both endpoints accept a file path as well as a symbol. When a language
 publishes an isolated metadata `file` node beside the `module` node that
@@ -552,23 +675,30 @@ module that owns the same source file and the answer names both
 candidate modules, or a name that matches several declarations, still fails
 closed with the candidate list instead of guessing.
 
+A repository-relative source path also resolves directly to a unique
+source-backed module when the graph has no separate `file` node. Multiple
+modules or declarations for that path remain explicit ambiguous candidates.
+Source-path endpoint matching is bounded to 4096 input bytes; longer paths
+return a limit error.
+
 ### `explain`
 
 ```text
 compass explain "<node>"
   [--budget N]
   [--page N]
-  [--source]
+  [--source | --no-source]
   [--root PATH]
   [--max-source-bytes N]
   [--format text|json|agent-json]
   [--graph PATH | --at REV]
 ```
 
-Shows one node and incoming/outgoing connections. An exact node ID or unique
-exact qualified name resolves directly. When a label or qualified name names
-multiple source-backed declarations, Compass lists the candidates and their
-source ranges and asks for the full node ID instead of silently selecting one.
+Shows one node and incoming/outgoing connections. An exact node ID, unique
+full qualified name, or unique owner/member suffix resolves directly. When a
+label or qualified name names multiple source-backed declarations, Compass
+lists the candidates and their source ranges and asks for the full node ID
+instead of silently selecting one.
 Connection lines include the stored relationship site; extraction is the
 graph's default provenance, so `[EXTRACTED]` is stated once in the
 `Connections (N, extracted unless marked):` header and a line carries a
@@ -577,18 +707,17 @@ Connections and ambiguous candidates use the same bounded, deterministic
 pagination contract as natural-language queries instead of silently cutting off
 after the first group.
 
-`--source` appends the declaration text for a uniquely resolved, source-backed
-node. The excerpt is read below `--root` (default: the current directory),
-limited to `--max-source-bytes` (default: 4096), and verified against the
-symbol digest recorded in the graph before it is printed. A rewritten file
-fails closed with `SOURCE unavailable: ... does not match ...`; an ambiguous or
-unsourced target keeps the candidate list instead of guessing. The declaration
-is what a `--source` request is for, so the connection list beside it is
-bounded to its strongest entries by default: the `Pagination:` footer still
-reports the list's true total and `--page 2` continues it, while an explicit
-`--budget` lists as much of the list as that budget reaches. On the reviewed
-corpora this removes about a third of a source answer without putting any
-connection out of reach.
+Source is included by default for a uniquely resolved, source-backed node;
+`--source` keeps that behavior explicit and `--no-source` omits the excerpt.
+The excerpt is read below `--root` (default: the current directory), limited to
+`--max-source-bytes` (default: 4096), and verified against the symbol digest
+recorded in the graph before it is printed. A rewritten file fails closed with
+`SOURCE unavailable: ... does not match ...`; an ambiguous or unsourced target
+keeps the candidate list instead of guessing. When source is included, the
+connection list is bounded to its strongest entries by default: the
+`Pagination:` footer still reports the list's true total and `--page 2`
+continues it, while an explicit `--budget` lists as much of the list as that
+budget reaches.
 
 ### `affected`
 
