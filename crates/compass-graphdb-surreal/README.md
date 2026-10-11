@@ -15,7 +15,7 @@ you need:
 - `rocksdb` for an embedded RocksDB database;
 - `remote` for a standalone server over WS/WSS (combinable with embedded modes).
 
-These features resolve exactly `surrealdb` 3.2.4. That dependency and its core
+These features resolve exactly `surrealdb` 3.3.0. That dependency and its core
 are licensed under Business Source License 1.1 before conversion, with a
 Database Service restriction, Change Date 2030-01-01, and Apache-2.0 Change
 License. Surreal-enabled binaries, libraries, containers, and archives must

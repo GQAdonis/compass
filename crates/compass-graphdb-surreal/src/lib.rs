@@ -44,4 +44,4 @@ pub const PROJECTION_SCHEMA_V1: &str = "compass.graph.surreal/1";
 pub const PROJECTION_SCHEMA_V2: &str = "compass.graph.surreal/2";
 
 /// Exact reviewed SurrealDB release selected by every engine feature.
-pub const SURREALDB_VERSION: &str = "3.2.4";
+pub const SURREALDB_VERSION: &str = "3.3.0";
