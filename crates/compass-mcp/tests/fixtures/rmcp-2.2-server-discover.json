@@ -1,15 +1,23 @@
 {
-  "serverInfo": { "name": "compass", "version": "0.3.29" },
+  "serverInfo": {
+    "name": "compass",
+    "version": "0.4.1"
+  },
   "capabilities": {
     "experimental": {},
-    "resources": { "subscribe": false, "listChanged": false },
-    "tools": { "listChanged": false }
+    "resources": {
+      "subscribe": false,
+      "listChanged": false
+    },
+    "tools": {
+      "listChanged": false
+    }
   },
   "tools": [
     {
       "name": "search_symbols",
-      "description": "Search Compass code symbols with the trusted FTS5 index.",
-      "inputSchemaSha256": "d1f3238324fd8428a3c4e14a1926bc57c32517409523ad88dca4e1a542694ec2",
+      "description": "Search Compass code symbols. Set exact=true for bounded exact ID/name candidates with optional source_file, start_line and kind filters; all matching records and truncation remain visible.",
+      "inputSchemaSha256": "24778b8c6ee4b1487bdee283afccbcc04d3f4e04cb41719c9e506cf6398becc0",
       "outputSchemaSha256": null,
       "meta": null
     },
@@ -29,8 +37,8 @@
     },
     {
       "name": "get_impact",
-      "description": "Return the bounded transitive impact radius for a symbol.",
-      "inputSchemaSha256": "2a679457987aeec5fb670727893d6549ccf68e77445fc19aae59b91f313f6072",
+      "description": "Return direct and transitive dependents grouped by file/module, with a direct-connection coverage audit.",
+      "inputSchemaSha256": "41cb53ff6f7ed6713ed92699ddfba15b7a431ae126373f0c2940b7c694ececf7",
       "outputSchemaSha256": null,
       "meta": null
     },
@@ -44,72 +52,107 @@
     {
       "name": "get_node",
       "description": "Return the trusted evidence trail between two code-graph nodes.",
-      "inputSchemaSha256": "4bd9879da5ab2b6a9c6f841d2969f2d8a0f8c95f9861f41b25708fbe26a1048d",
+      "inputSchemaSha256": "7bc234d0eca695ee58d32cfedff6e44e8ba0eb0161f418c31eec8bccd99341c7",
       "outputSchemaSha256": null,
       "meta": null
     },
     {
       "name": "query_graph",
       "description": "Run bounded structured discovery for natural-language questions; explicit legacy traversal fields preserve compatibility text context.",
-      "inputSchemaSha256": "a3496d1fb3a6119b1f3b1676b518b1529a0ff1cda441b77d6fc762c582c2ecf6",
+      "inputSchemaSha256": "379ea1d55e4428543d2f81df4cbc8f2c8478aa918259079793170a601ff17120",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecatedTextMode": true, "compass/deprecatedSince": "0.4.0"}
+      "meta": {
+        "compass/deprecatedTextMode": true,
+        "compass/deprecatedSince": "0.4.0"
+      }
     },
     {
       "name": "get_neighbors",
-      "description": "DEPRECATED text result: get direct neighbors of a node with edge details; use typed navigation tools for machine-readable evidence.",
+      "description": "Get bounded direct neighbors with exact destination IDs, definition anchors and all matching relationship records. Directions describe stored endpoints; limit exhaustion fails explicitly.",
       "inputSchemaSha256": "5f7e71a566afa7c8e13824c31a55a7837616eb3453f7d7e9297121746ee69417",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "get_community",
       "description": "DEPRECATED text result: get nodes in a community; a typed replacement is pending.",
       "inputSchemaSha256": "4eab3b967d2c2840b66d636298930917f115c591a1da1a38fbb05ab471f41312",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "god_nodes",
-      "description": "DEPRECATED text result: return the most connected nodes; a typed replacement is pending.",
+      "description": "Return connected hub candidates with exact IDs, source anchors, degree, node kind, and bounded incoming/outgoing relation-record counts. Connectivity is a topology observation, not proof of excessive responsibility.",
       "inputSchemaSha256": "cceff20f4c1edbfe2c1ac46115d3777aa0aa7de772053e526c9f5bc2580a3571",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "graph_stats",
       "description": "DEPRECATED text result: return graph summary statistics; a typed replacement is pending.",
       "inputSchemaSha256": "12d182d55670ab04f907026a45a0075e908dd082145a6ad171a4b97baf200281",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "shortest_path",
-      "description": "DEPRECATED text result: find a shortest path; use get_node for typed directed evidence.",
-      "inputSchemaSha256": "ce16a33870471c0840a0d68213aa16a6b6fbfc84548faf54b7ba11b3693f46bb",
+      "description": "Find a bounded minimum-hop undirected navigation path between exact node identities. Ambiguous names require disambiguation. Structured results retain node and edge identities; equal-hop routes prefer structural relations.",
+      "inputSchemaSha256": "522a55f14c2eb771f4e2e3d4adcba646b106b3ce5dbf819cc5ead6ade4459e62",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "list_prs",
       "description": "DEPRECATED text result: list open GitHub PRs with CI, review, and graph-impact context; a typed replacement is pending.",
       "inputSchemaSha256": "3fceb0d8e271a2c083ffbedd57b08ccd2eb46eed501edec7942b631a7cd2af66",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "get_pr_impact",
       "description": "DEPRECATED text result: get graph impact for a pull request; use get_impact for typed symbol impact or await the typed PR replacement.",
       "inputSchemaSha256": "20b320daa0e466734c61a6589c0f1253cfa0face628545a7e8377368dd56be9f",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "triage_prs",
       "description": "DEPRECATED text result: triage actionable open pull requests; a typed replacement is pending.",
       "inputSchemaSha256": "3fceb0d8e271a2c083ffbedd57b08ccd2eb46eed501edec7942b631a7cd2af66",
       "outputSchemaSha256": null,
-      "meta": {"compass/deprecated": true, "compass/deprecatedSince": "0.4.0", "compass/deprecationReason": "legacy text result; use a typed navigation result"}
+      "meta": {
+        "compass/deprecated": true,
+        "compass/deprecatedSince": "0.4.0",
+        "compass/deprecationReason": "legacy text result; use a typed navigation result"
+      }
     },
     {
       "name": "review_pull_request",
@@ -134,13 +177,53 @@
     }
   ],
   "resources": [
-    { "uri": "compass://orientation", "name": "Agent Orientation", "description": "Versioned bounded orientation from the selected graph generation", "mimeType": "application/json" },
-    { "uri": "compass://report", "name": "Graph Report", "description": "Bounded report rendered from orientation validated against the selected graph", "mimeType": "text/markdown" },
-    { "uri": "compass://stats", "name": "Graph Stats", "description": "Node/edge/community counts and confidence breakdown", "mimeType": "text/plain" },
-    { "uri": "compass://god-nodes", "name": "God Nodes", "description": "Top 10 most-connected nodes", "mimeType": "text/plain" },
-    { "uri": "compass://surprises", "name": "Surprising Connections", "description": "Cross-community surprising connections", "mimeType": "text/plain" },
-    { "uri": "compass://audit", "name": "Confidence Audit", "description": "EXTRACTED/INFERRED/AMBIGUOUS edge breakdown", "mimeType": "text/plain" },
-    { "uri": "compass://questions", "name": "Suggested Questions", "description": "Suggested questions for this codebase", "mimeType": "text/plain" },
-    { "uri": "compass://graph-insights", "name": "Graph Insights", "description": "Typed structural gaps, disconnected components, witnesses, and limits", "mimeType": "application/json" }
+    {
+      "uri": "compass://orientation",
+      "name": "Agent Orientation",
+      "description": "Versioned bounded orientation from the selected graph generation",
+      "mimeType": "application/json"
+    },
+    {
+      "uri": "compass://report",
+      "name": "Graph Report",
+      "description": "Bounded report rendered from orientation validated against the selected graph",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "compass://stats",
+      "name": "Graph Stats",
+      "description": "Node/edge/community counts and confidence breakdown",
+      "mimeType": "text/plain"
+    },
+    {
+      "uri": "compass://god-nodes",
+      "name": "God Nodes",
+      "description": "Top 10 most-connected nodes",
+      "mimeType": "text/plain"
+    },
+    {
+      "uri": "compass://surprises",
+      "name": "Surprising Connections",
+      "description": "Cross-community surprising connections",
+      "mimeType": "text/plain"
+    },
+    {
+      "uri": "compass://audit",
+      "name": "Confidence Audit",
+      "description": "EXTRACTED/INFERRED/AMBIGUOUS edge breakdown",
+      "mimeType": "text/plain"
+    },
+    {
+      "uri": "compass://questions",
+      "name": "Suggested Questions",
+      "description": "Suggested questions for this codebase",
+      "mimeType": "text/plain"
+    },
+    {
+      "uri": "compass://graph-insights",
+      "name": "Graph Insights",
+      "description": "Typed structural gaps, disconnected components, witnesses, and limits",
+      "mimeType": "application/json"
+    }
   ]
 }

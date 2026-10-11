@@ -75,26 +75,26 @@ use compass_model::query_contract::{
 use compass_output::{
     AffectedLensOptions, AgentOperandRole, AgentOperation, AgentOrientation, AgentQueryContext,
     ArchitectureOverlay, ArchitectureOverlayGroup, ArchitectureProjectionInput,
-    ArchitectureProjectionOptions, ArtifactLens, CallflowOptions, CallflowSection, CanvasOptions,
-    HtmlOptions, ObsidianOptions, SourceNavigation, SvgOptions, TreeOptions, WikiOptions,
-    WorkbenchCoverage, WorkbenchCoverageStatus, WorkbenchModel, WorkbenchView,
-    WorkbenchViewContent, affected_lens_view_model, artifact_lens_view_model,
+    ArchitectureProjectionOptions, ArchitectureProjectionOutput, ArtifactLens, CallflowOptions,
+    CallflowSection, CanvasOptions, HtmlOptions, ObsidianOptions, SourceNavigation, SvgOptions,
+    TreeOptions, WikiOptions, WorkbenchCoverage, WorkbenchCoverageStatus, WorkbenchModel,
+    WorkbenchView, WorkbenchViewContent, affected_lens_view_model, artifact_lens_view_model,
     build_code_query_view, build_discovery_query_view, export_obsidian, export_wiki,
-    graph_artifact_identity, graph_community_view_model_document,
+    graph_artifact_identity, graph_community_view_model_document, graph_search_index,
     graph_view_model_bundle_document_with_hierarchy, graph_view_model_document, node_filenames,
-    project_architecture, render_agent_query_continuation_header, render_agent_query_header_lines,
-    render_agent_query_text, render_orientation_json, validate_orientation_graph_identity,
-    write_callflow_html, write_canvas, write_cypher, write_graphml, write_svg, write_tree_html,
-    write_workbench_html_with_source_navigation,
+    project_architecture, project_architecture_or_summary, render_agent_query_continuation_header,
+    render_agent_query_header_lines, render_agent_query_text, render_orientation_json,
+    validate_orientation_graph_identity, write_callflow_html, write_canvas, write_cypher,
+    write_graphml, write_svg, write_tree_html, write_workbench_html_with_source_navigation,
 };
 use compass_prs::{ProcessRunner, SystemRunner};
 use compass_query::{
     DEFAULT_AFFECTED_RELATIONS, DEFAULT_DISCOVERY_TEXT_TOKEN_BUDGET, DEFAULT_PATH_DEPTH_LIMIT,
-    DEFAULT_TEXT_TOKEN_BUDGET, DiscoveryTextPageOptions, TextPageOptions, TraversalMode,
-    discovery_request_digest, explanation_source, format_affected, format_benchmark,
-    open as open_code_query, open_with_verified_document, query_graph_text_page,
-    render_discovery_text_page_with_prefix, render_explanation_page,
-    render_shortest_path_with_limit, run_benchmark,
+    DEFAULT_TEXT_TOKEN_BUDGET, DiscoveryTextPageOptions, ExplanationMemberFocus, TextPageOptions,
+    TraversalMode, discovery_request_digest, explanation_member_sources_with_focus,
+    explanation_source, format_affected, format_benchmark, open as open_code_query,
+    open_with_verified_document, query_graph_text_page, render_discovery_text_page_with_prefix,
+    render_explanation_page, render_shortest_path_with_limit, run_benchmark,
 };
 use compass_semantic::{
     CachedCorpusExtractionOptions, CorpusExtractionOptions, PreparedDocumentInputs,
@@ -4605,6 +4605,24 @@ fn build_export_workbench(
                     hierarchy_level,
                 )
                 .map_err(|error| error.to_string())?;
+                let preview_ids = bundle
+                    .overview
+                    .nodes
+                    .iter()
+                    .chain(
+                        bundle
+                            .community_details
+                            .values()
+                            .flat_map(|detail| detail.nodes.iter()),
+                    )
+                    .map(|node| node.id.clone())
+                    .collect::<BTreeSet<_>>();
+                let search_index = graph_search_index(
+                    &inputs.document,
+                    &inputs.communities,
+                    &html_options,
+                    &preview_ids,
+                );
                 let coverage = if bundle.truncated {
                     WorkbenchCoverage::bounded(
                         bundle.overview.stats.nodes,
@@ -4629,6 +4647,7 @@ fn build_export_workbench(
                         content: WorkbenchViewContent::Code {
                             model: bundle.overview,
                             community_details: bundle.community_details,
+                            search_index: Some(search_index),
                             hierarchy: bundle.hierarchy,
                         },
                     },
@@ -6401,6 +6420,8 @@ fn discovery_query(
                 open_code_query(&graph, None, &cache).map_err(|error| error.to_string())?;
             let graph_identity = engine.build_generation_identity().to_owned();
             let graph_digest = engine.graph_identity().to_owned();
+            let engine = engine
+                .with_deadline(Instant::now() + Duration::from_millis(request.limits.timeout_ms));
             let response = engine
                 .discover(request)
                 .map_err(|error| error.to_string())?;
@@ -6433,6 +6454,8 @@ fn discovery_query(
             .map_err(|error| error.to_string())?;
             let graph_identity = engine.build_generation_identity().to_owned();
             let graph_digest = engine.graph_identity().to_owned();
+            let engine = engine
+                .with_deadline(Instant::now() + Duration::from_millis(request.limits.timeout_ms));
             let response = engine
                 .discover(request)
                 .map_err(|error| error.to_string())?;
@@ -6583,11 +6606,43 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
         }
     }
     let title = export_project_title(&inputs, &graph_path);
-    let model = match architecture_view_model(&inputs, &graph_path, &title) {
-        Ok(model) => model,
+    let overlay = match load_architecture_overlay(None, &graph_path) {
+        Ok(overlay) => overlay,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
-    let text = render_architecture_text(&model);
+    let projection = match project_architecture_or_summary(
+        ArchitectureProjectionInput {
+            document: &inputs.document,
+            communities: &inputs.communities,
+            community_labels: (!inputs.labels.is_empty()).then_some(&inputs.labels),
+            overlay: overlay.as_ref(),
+            project_name: &title,
+            built_at_commit: graph_source_commit(&inputs.document),
+            generated_at: None,
+        },
+        &architecture_cli_projection_options(),
+    ) {
+        Ok(projection) => projection,
+        Err(error) => {
+            return Outcome::failure(format!(
+                "error: could not build architecture view for {}: {error}",
+                graph_path.display()
+            ));
+        }
+    };
+    match projection {
+        ArchitectureProjectionOutput::Detailed(model) => render_architecture_output(format, &model),
+        ArchitectureProjectionOutput::Summary(summary) => {
+            render_architecture_summary_output(format, &summary)
+        }
+    }
+}
+
+fn render_architecture_output(
+    format: SharedOutputFormat,
+    model: &compass_output::ArchitectureViewModel,
+) -> Outcome {
+    let text = render_architecture_text(model);
     match format {
         SharedOutputFormat::Text => Outcome::success(text),
         SharedOutputFormat::Json => serde_json::to_string_pretty(&model).map_or_else(
@@ -6599,7 +6654,7 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
             Outcome::success,
         ),
         SharedOutputFormat::AgentJson => {
-            let mut value = match serde_json::to_value(&model) {
+            let mut value = match serde_json::to_value(model) {
                 Ok(serde_json::Value::Object(value)) => value,
                 Ok(_) => {
                     return Outcome::failure(
@@ -6631,6 +6686,157 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
             )
         }
     }
+}
+
+fn render_architecture_summary_output(
+    format: SharedOutputFormat,
+    summary: &compass_output::ArchitectureSummary,
+) -> Outcome {
+    let text = render_architecture_summary_text(summary);
+    match format {
+        SharedOutputFormat::Text => Outcome::success(text),
+        SharedOutputFormat::Json => serde_json::to_string_pretty(summary).map_or_else(
+            |error| {
+                Outcome::failure(format!(
+                    "error: could not render architecture summary JSON: {error}"
+                ))
+            },
+            Outcome::success,
+        ),
+        SharedOutputFormat::AgentJson => {
+            let mut value = match serde_json::to_value(summary) {
+                Ok(serde_json::Value::Object(value)) => value,
+                Ok(_) => {
+                    return Outcome::failure(
+                        "error: architecture summary is not an object".to_owned(),
+                    );
+                }
+                Err(error) => {
+                    return Outcome::failure(format!(
+                        "error: could not render architecture summary agent JSON: {error}"
+                    ));
+                }
+            };
+            value.insert(
+                "summarySchema".to_owned(),
+                serde_json::Value::String(compass_output::ARCHITECTURE_SUMMARY_SCHEMA.to_owned()),
+            );
+            value.insert(
+                "schema".to_owned(),
+                serde_json::Value::String("compass.architecture.summary-agent-view/1".to_owned()),
+            );
+            value.insert("answer".to_owned(), serde_json::Value::String(text));
+            value.insert(
+                "nextActions".to_owned(),
+                serde_json::Value::Array(Vec::new()),
+            );
+            serde_json::to_string_pretty(&serde_json::Value::Object(value)).map_or_else(
+                |error| {
+                    Outcome::failure(format!(
+                        "error: could not render architecture summary agent JSON: {error}"
+                    ))
+                },
+                Outcome::success,
+            )
+        }
+    }
+}
+
+fn render_architecture_summary_text(summary: &compass_output::ArchitectureSummary) -> String {
+    let mut lines = vec![
+        format!("Architecture summary: {}", summary.title),
+        format!(
+            "Graph: {} nodes, {} relationships, {} communities",
+            summary.statistics.nodes,
+            summary.statistics.relationships,
+            summary.statistics.communities
+        ),
+        format!(
+            "Detailed projection omitted: {} required {}, limit {}.",
+            summary.limit_hit.name, summary.limit_hit.required, summary.limit_hit.limit
+        ),
+        format!("Sample policy: {}", summary.sample_policy),
+        format!("Kind-count policy: {}", summary.kind_count_policy),
+        "Largest communities (bounded sample):".to_owned(),
+    ];
+    if summary.statistics.other_nodes > 0 || summary.statistics.other_relationships > 0 {
+        lines.push(format!(
+            "Other kind counts: {} nodes, {} relationships.",
+            summary.statistics.other_nodes, summary.statistics.other_relationships
+        ));
+    }
+    if !summary.statistics.node_kinds.is_empty() {
+        lines.push("Node kinds:".to_owned());
+        lines.extend(
+            summary
+                .statistics
+                .node_kinds
+                .iter()
+                .map(|(kind, count)| format!("  {kind}: {count}")),
+        );
+    }
+    if !summary.statistics.relationship_kinds.is_empty() {
+        lines.push("Relationship kinds:".to_owned());
+        lines.extend(
+            summary
+                .statistics
+                .relationship_kinds
+                .iter()
+                .map(|(kind, count)| format!("  {kind}: {count}")),
+        );
+    }
+    if summary.sampled_communities.is_empty() {
+        lines.push("  No community membership sample is available.".to_owned());
+    }
+    for community in &summary.sampled_communities {
+        lines.push(format!(
+            "  {} (community {}, {} members){}",
+            community.label,
+            community.id,
+            community.member_count,
+            if community.bounded_fields.is_empty() {
+                String::new()
+            } else {
+                format!(" · bounded fields: {}", community.bounded_fields.join(", "))
+            }
+        ));
+        if community.omitted_sample_nodes > 0 {
+            lines.push(format!(
+                "    {} selected sample node(s) omitted because their graph record could not be represented within summary bounds.",
+                community.omitted_sample_nodes
+            ));
+        }
+        for node in &community.sampled_nodes {
+            lines.push(format!(
+                "    {} [{}]{}{}",
+                node.label,
+                node.kind,
+                node.source_file
+                    .as_deref()
+                    .map(|path| format!(" · {path}"))
+                    .unwrap_or_default(),
+                if node.bounded_fields.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · bounded fields: {}", node.bounded_fields.join(", "))
+                }
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+const ARCHITECTURE_DETAIL_NODE_LIMIT: usize = 5_000;
+const ARCHITECTURE_DETAIL_RELATIONSHIP_LIMIT: usize = 20_000;
+
+fn architecture_cli_projection_options() -> ArchitectureProjectionOptions {
+    let mut options = ArchitectureProjectionOptions::default();
+    options.limits.max_nodes = options.limits.max_nodes.min(ARCHITECTURE_DETAIL_NODE_LIMIT);
+    options.limits.max_relationships = options
+        .limits
+        .max_relationships
+        .min(ARCHITECTURE_DETAIL_RELATIONSHIP_LIMIT);
+    options
 }
 
 fn render_architecture_text(model: &compass_output::ArchitectureViewModel) -> String {
@@ -6701,14 +6907,44 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
     let mut budget = DEFAULT_TEXT_TOKEN_BUDGET;
     let mut budget_given = false;
     let mut page = 1_usize;
-    let mut with_source = false;
+    let mut with_source = true;
+    let mut with_member_source = false;
+    let mut member_focus = None;
     let mut source_root = std::path::PathBuf::from(".");
     let mut max_source_bytes = DEFAULT_EXPLAIN_SOURCE_BYTES;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
+            "--source-members" => {
+                with_member_source = true;
+                index += 1;
+            }
+            value if value == "--member-focus" || value.starts_with("--member-focus=") => {
+                if member_focus.is_some() {
+                    return Outcome::failure(
+                        "error: --member-focus may be supplied only once".to_owned(),
+                    );
+                }
+                let (text, consumed) = if value == "--member-focus" {
+                    let Some(text) = args.get(index + 1) else {
+                        return Outcome::failure("error: --member-focus requires text".to_owned());
+                    };
+                    (text.as_str(), 2)
+                } else {
+                    (&value[15..], 1)
+                };
+                member_focus = match ExplanationMemberFocus::new(text) {
+                    Ok(focus) => Some(focus),
+                    Err(error) => return Outcome::failure(format!("error: {error}")),
+                };
+                index += consumed;
+            }
             "--source" => {
                 with_source = true;
+                index += 1;
+            }
+            "--no-source" => {
+                with_source = false;
                 index += 1;
             }
             "--root" => {
@@ -6796,6 +7032,18 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
             }
         }
     }
+    if with_member_source && !with_source {
+        return Outcome::failure("error: --source-members conflicts with --no-source".to_owned());
+    }
+    if member_focus.is_some() && !with_member_source {
+        return Outcome::failure("error: --member-focus requires --source-members".to_owned());
+    }
+    if with_member_source && (max_source_bytes > 1_048_576 || label.len() > 4096) {
+        return Outcome::failure(
+            "error: member source accepts at most 1048576 source bytes and a 4096-byte selector"
+                .to_owned(),
+        );
+    }
     if let Err(error) = validate_text_pagination(budget, page) {
         return Outcome::failure(format!("error: {error}"));
     }
@@ -6821,7 +7069,16 @@ fn command_explain(frontend: Frontend, args: &[String]) -> Outcome {
         Ok(output) => output,
         Err(error) => return Outcome::failure(format!("error: {error}")),
     };
-    let output = if with_source {
+    let output = if with_member_source {
+        append_explanation_member_sources(
+            output,
+            &loaded.graph,
+            label,
+            &source_root,
+            max_source_bytes,
+            member_focus.as_ref(),
+        )
+    } else if with_source {
         append_explanation_source(output, &loaded.graph, label, &source_root, max_source_bytes)
     } else {
         output
@@ -6850,21 +7107,7 @@ fn append_explanation_source(
 ) -> String {
     match explanation_source(graph, label, root, max_source_bytes) {
         Ok(excerpt) => {
-            output.push_str("\n\nSOURCE ");
-            output.push_str(&excerpt.file);
-            output.push_str(&format!(
-                " L{}-L{} (digest-verified)\n",
-                excerpt.start_line, excerpt.end_line
-            ));
-            for (offset, line) in excerpt.source.lines().enumerate() {
-                let number = excerpt.start_line as usize + offset;
-                output.push_str(&format!("  {number:>6}: {line}\n"));
-            }
-            if excerpt.truncated {
-                output.push_str(&format!(
-                    "  [truncated: excerpt limited to {max_source_bytes} bytes; pass --max-source-bytes for more]\n"
-                ));
-            }
+            append_explained_source(&mut output, &excerpt, max_source_bytes);
             output.trim_end().to_owned()
         }
         Err(error) => {
@@ -6872,6 +7115,86 @@ fn append_explanation_source(
             output
         }
     }
+}
+
+fn append_explained_source(
+    output: &mut String,
+    excerpt: &compass_query::ExplainedSource,
+    max_source_bytes: u64,
+) {
+    output.push_str("\n\nSOURCE ");
+    output.push_str(&excerpt.file);
+    let verification = if excerpt.digest_verified {
+        "digest-verified"
+    } else {
+        "unverified: no recorded source digest"
+    };
+    output.push_str(&format!(
+        " L{}-L{} ({verification})\n",
+        excerpt.start_line, excerpt.end_line
+    ));
+    for (offset, line) in excerpt.source.lines().enumerate() {
+        let number = excerpt.start_line as usize + offset;
+        output.push_str(&format!("  {number:>6}: {line}\n"));
+    }
+    if excerpt.truncated {
+        output.push_str(&format!(
+            "  [truncated: excerpt limited to {max_source_bytes} bytes; pass --max-source-bytes for more]\n"
+        ));
+    }
+}
+
+fn append_explanation_member_sources(
+    mut output: String,
+    graph: &compass_model::Graph,
+    label: &str,
+    root: &std::path::Path,
+    max_source_bytes: u64,
+    focus: Option<&ExplanationMemberFocus>,
+) -> String {
+    match explanation_member_sources_with_focus(graph, label, root, max_source_bytes, focus) {
+        Ok(report) => {
+            let unavailable = report.members.iter().filter(|m| m.source.is_err()).count();
+            let order = if focus.is_some() {
+                "member-name focus, then source order"
+            } else {
+                "source order"
+            };
+            output.push_str(&format!(
+                "\n\nMEMBER SOURCES owner={} retained={} omitted={} unavailable={} source_bytes={} truncated={}\nRecorded containment; {order}; shared {}-byte source budget.",
+                serde_json::json!(report.root.id), report.members.len(), report.omitted_members,
+                unavailable, report.source_bytes, report.truncated, max_source_bytes,
+            ));
+            if focus.is_some() {
+                output.push_str(&format!(
+                    "\nFocus terms: {} (lexical name matches; not behavioral evidence).",
+                    serde_json::json!(report.focus_terms)
+                ));
+            }
+            for member in report.members {
+                output.push_str(&format!(
+                    "\n\nMEMBER {} {}",
+                    serde_json::json!(member.node.id),
+                    serde_json::json!(member.node.label())
+                ));
+                if focus.is_some() {
+                    output.push_str(&format!(
+                        "\nMatched focus terms: {}",
+                        serde_json::json!(member.matched_focus_terms)
+                    ));
+                }
+                match member.source {
+                    Ok(excerpt) => {
+                        let retained_bytes = excerpt.source.len() as u64;
+                        append_explained_source(&mut output, &excerpt, retained_bytes);
+                    }
+                    Err(error) => output.push_str(&format!("\nSOURCE unavailable: {error}")),
+                }
+            }
+        }
+        Err(error) => output.push_str(&format!("\n\nMEMBER SOURCES unavailable: {error}")),
+    }
+    output.trim_end().to_owned()
 }
 
 fn validate_text_pagination(token_budget: usize, page: usize) -> Result<(), String> {
@@ -7217,7 +7540,7 @@ fn touch_selected_query_stamp(selection: &GraphSelection) {
 fn query_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
     let help = format!(
-        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--evidence] [--format text|agent-json|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --evidence                        Include full provenance and typed detail in text\n  --format <text|agent-json|json>   Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 8000]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Approximate tokens per page [default: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text-only pagination/evidence controls. Legacy --traverse, --budget, and --page cannot be mixed with discovery controls."
+        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--evidence] [--format text|agent-json|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --evidence                        Include full provenance and typed detail in text\n  --format <text|agent-json|json>   Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 800]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Approximate tokens per page [default: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text-only pagination/evidence controls. Legacy --traverse, --budget, and --page cannot be mixed with discovery controls."
     );
     let help = help
         .replace(
@@ -7329,7 +7652,84 @@ fn apply_build_quality_outcome(result: &BuildResult, outcome: &mut Outcome) {
 #[cfg(test)]
 mod mcp_option_tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::io::Cursor;
+
+    #[test]
+    fn architecture_summary_formats_keep_a_distinct_schema()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let summary = compass_output::ArchitectureSummary {
+            schema: compass_output::ARCHITECTURE_SUMMARY_SCHEMA,
+            title: "Fixture — Architecture".to_owned(),
+            statistics: compass_output::ArchitectureSummaryStatistics {
+                nodes: 2,
+                relationships: 1,
+                communities: 1,
+                node_kinds: BTreeMap::from([("function".to_owned(), 2)]),
+                other_nodes: 0,
+                relationship_kinds: BTreeMap::from([("calls".to_owned(), 1)]),
+                other_relationships: 0,
+            },
+            limit_hit: compass_output::ArchitectureProjectionLimitHit {
+                name: "max_nodes",
+                required: 2,
+                limit: 1,
+            },
+            sample_policy: compass_output::ARCHITECTURE_SUMMARY_SAMPLE_POLICY,
+            kind_count_policy: compass_output::ARCHITECTURE_SUMMARY_KIND_COUNT_POLICY,
+            sampled_communities: vec![compass_output::ArchitectureSummaryCommunity {
+                id: 0,
+                label: "Core".to_owned(),
+                bounded_fields: Vec::new(),
+                member_count: 2,
+                sampled_nodes: vec![compass_output::ArchitectureSummaryNode {
+                    id: "node-a".to_owned(),
+                    label: "A".to_owned(),
+                    kind: "function".to_owned(),
+                    source_file: Some("src/a.rs".to_owned()),
+                    bounded_fields: Vec::new(),
+                }],
+                omitted_sample_nodes: 0,
+            }],
+            details_omitted: true,
+        };
+        let json = render_architecture_summary_output(SharedOutputFormat::Json, &summary);
+        assert_eq!(json.code, 0);
+        let json_value: serde_json::Value = serde_json::from_str(&json.stdout)?;
+        assert_eq!(json_value["schema"], "compass.architecture.summary/1");
+        assert_eq!(json_value["detailsOmitted"], true);
+        assert_eq!(json_value["sampledCommunities"][0]["label"], "Core");
+        assert_eq!(json_value["statistics"]["relationshipKinds"]["calls"], 1);
+        assert_eq!(json_value["statistics"]["otherRelationships"], 0);
+        assert_eq!(
+            json_value["sampledCommunities"][0]["boundedFields"],
+            serde_json::json!([])
+        );
+        assert_eq!(json_value["sampledCommunities"][0]["omittedSampleNodes"], 0);
+        assert_eq!(
+            json_value["kindCountPolicy"],
+            compass_output::ARCHITECTURE_SUMMARY_KIND_COUNT_POLICY
+        );
+
+        let agent = render_architecture_summary_output(SharedOutputFormat::AgentJson, &summary);
+        assert_eq!(agent.code, 0);
+        let agent_value: serde_json::Value = serde_json::from_str(&agent.stdout)?;
+        assert_eq!(
+            agent_value["schema"],
+            "compass.architecture.summary-agent-view/1"
+        );
+        assert_eq!(
+            agent_value["summarySchema"],
+            "compass.architecture.summary/1"
+        );
+        assert_eq!(agent_value["detailsOmitted"], true);
+        assert!(
+            agent_value["answer"]
+                .as_str()
+                .is_some_and(|answer| { answer.contains("Core") && answer.contains("src/a.rs") })
+        );
+        Ok(())
+    }
 
     fn sample_build_result(outputs_changed: bool, html_written: bool) -> BuildResult {
         BuildResult {

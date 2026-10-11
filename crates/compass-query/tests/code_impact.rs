@@ -477,3 +477,184 @@ fn impact_includes_inbound_renderers_without_promoting_them_to_callers()
     );
     Ok(())
 }
+
+#[test]
+fn partial_owner_coverage_does_not_stop_the_witnessed_direct_frontier()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("graph.json");
+    support::write_graph(&path)?;
+    let mut graph = GraphDocument::load(&path)?;
+    graph
+        .nodes
+        .push(support::node("n:owner", NodeKind::Class, "Store", "Store"));
+    graph.nodes.push(support::node(
+        "n:file",
+        NodeKind::File,
+        "lib.rs",
+        "src/lib.rs",
+    ));
+    graph.links.extend([
+        edge("n:file", EdgeKind::Contains, "n:owner"),
+        edge("n:owner", EdgeKind::Contains, "n:callee"),
+        // Three edges through the file and class exceed the requested depth.
+        edge("n:dependent", EdgeKind::Imports, "n:file"),
+    ]);
+    fs::write(&path, serde_json::to_vec(&graph)?)?;
+    let engine = open(&path, None, &directory.path().join("cache"))?;
+    let response = engine.impact(ImpactRequest {
+        symbol: "n:callee".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits {
+            max_depth: 2,
+            ..CodeQueryLimits::default()
+        },
+    })?;
+    assert!(
+        response.truncated,
+        "the excluded owner trail must stay disclosed"
+    );
+    assert!(
+        response.nodes.iter().any(|node| node.id == "n:caller"),
+        "the second-hop direct caller must remain reachable"
+    );
+    assert!(
+        response
+            .edges
+            .iter()
+            .any(|edge| edge.source == "n:caller" && edge.target == "n:list")
+    );
+    Ok(())
+}
+#[test]
+fn impact_includes_inheritance_construction_and_type_contracts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("graph.json");
+    support::write_graph(&path)?;
+    let mut graph = GraphDocument::load(&path)?;
+    for (index, (kind, source_kind, target_kind)) in [
+        (EdgeKind::Extends, NodeKind::Class, NodeKind::Class),
+        (EdgeKind::Implements, NodeKind::Class, NodeKind::Trait),
+        (EdgeKind::MixesIn, NodeKind::Class, NodeKind::Trait),
+        (EdgeKind::Instantiates, NodeKind::Function, NodeKind::Class),
+        (EdgeKind::TypeOf, NodeKind::Parameter, NodeKind::Class),
+        (EdgeKind::Returns, NodeKind::Function, NodeKind::Class),
+        (EdgeKind::Overrides, NodeKind::Method, NodeKind::Method),
+        (EdgeKind::Decorates, NodeKind::Annotation, NodeKind::Method),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("n:dependent-type-{index}");
+        let target = format!("n:target-type-{index}");
+        graph.nodes.push(support::node(
+            &id,
+            source_kind,
+            &format!("Dependent{index}"),
+            &format!("Dependent{index}"),
+        ));
+        graph.nodes.push(support::node(
+            &target,
+            target_kind,
+            &format!("Target{index}"),
+            &format!("Target{index}"),
+        ));
+        graph.links.push(edge(&id, kind, &target));
+    }
+    fs::write(&path, serde_json::to_vec(&graph)?)?;
+    let engine = open(&path, None, &directory.path().join("cache"))?;
+    for index in 0..8 {
+        let response = engine.impact(ImpactRequest {
+            symbol: format!("n:target-type-{index}"),
+            include_heuristic: false,
+            limits: CodeQueryLimits::default(),
+        })?;
+        assert!(
+            response
+                .nodes
+                .iter()
+                .any(|node| node.id == format!("n:dependent-type-{index}")),
+            "missing dependent {index}: {response:#?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn impact_audits_direct_contacts_and_groups_layers_even_when_paths_are_capped()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let engine = open(&graph_path, None, &directory.path().join("cache"))?;
+    let request = ImpactRequest {
+        symbol: "n:callee".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits {
+            max_paths: 1,
+            ..CodeQueryLimits::default()
+        },
+    };
+    let result = engine.impact(request.clone())?;
+    let summary = result
+        .impact_summary
+        .as_ref()
+        .ok_or("missing impact summary")?;
+    assert!(summary.direct_coverage_complete);
+    assert!(summary.direct_dependents.iter().any(|id| id == "n:list"));
+    assert_eq!(
+        summary
+            .groups
+            .iter()
+            .map(|group| group.direct.len())
+            .sum::<usize>(),
+        summary.direct_dependents.len()
+    );
+    assert_eq!(
+        summary
+            .groups
+            .iter()
+            .map(|group| group.transitive.len())
+            .sum::<usize>(),
+        summary.transitive_dependents.len()
+    );
+    let filtered = engine.impact_with_relations(request, &[EdgeKind::Imports])?;
+    let filtered_summary = filtered.impact_summary.ok_or("missing filtered summary")?;
+    assert!(filtered_summary.direct_dependents.is_empty());
+    assert!(filtered_summary.excluded_direct_connections > 0);
+    assert_eq!(
+        summary.observed_direct_connections,
+        filtered_summary.observed_direct_connections
+    );
+    Ok(())
+}
+
+#[test]
+fn impact_accounts_for_self_references_without_counting_the_seed_as_affected()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("graph.json");
+    support::write_graph(&path)?;
+    let mut graph = GraphDocument::load(&path)?;
+    graph
+        .links
+        .push(edge("n:callee", EdgeKind::Calls, "n:callee"));
+    fs::write(&path, serde_json::to_vec(&graph)?)?;
+    let engine = open(&path, None, &directory.path().join("cache"))?;
+    let result = engine.impact(ImpactRequest {
+        symbol: "n:callee".to_owned(),
+        include_heuristic: false,
+        limits: CodeQueryLimits::default(),
+    })?;
+    let summary = result.impact_summary.ok_or("impact summary")?;
+    assert!(summary.direct_coverage_complete);
+    assert!(!summary.direct_dependents.iter().any(|id| id == "n:callee"));
+    assert_eq!(
+        summary.observed_direct_connections as usize,
+        summary.direct_dependents.len()
+            + summary.outgoing_context.len()
+            + summary.excluded_direct_connections as usize
+    );
+    Ok(())
+}

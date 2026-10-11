@@ -90,18 +90,6 @@ pub(crate) fn validate_opened_graph_preamble(
     result
 }
 
-pub(crate) fn validate_graph_path_preamble(path: &Path) -> Result<(), GraphError> {
-    let mut file = File::open(path).map_err(|source| {
-        let path = crate::graph::absolute_path(path);
-        if source.kind() == std::io::ErrorKind::NotFound {
-            GraphError::NotFound(path)
-        } else {
-            GraphError::Read { path, source }
-        }
-    })?;
-    validate_opened_graph_preamble(&mut file, path)
-}
-
 struct HeaderSeed<'a> {
     keys: &'a [&'a str],
     found: &'a mut Option<String>,

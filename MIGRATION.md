@@ -75,7 +75,114 @@ closed until that reference is present and valid.
 The fully wired projection is `compass.graph.surreal/2`. Existing
 library-only `compass.graph.surreal/1` generations are not migrated in place;
 rerun the forced update above to create a new typed/indexed generation.
-## Query text and path resolution
+
+## Graph rebuilds and query resolution
+
+To enable full bounded document/prose recall, rebuild with
+`compass extract <root> --force`. Document/rationale resources now carry optional
+`details.data.content` (up to 4 KiB), and strict query consumers must admit
+optional `conceptMatches` and its closed match-method enum. AST cache v15 and
+JSON query-index format v2 invalidate older disposable entries automatically.
+Rebuild existing SQLite sidecars from the new graph to get prose postings;
+historical realizations retain their original content and indexes. Default
+concept recall needs no credentials; corpus-LSA search remains explicit opt-in.
+
+Rebuild Python graphs with `compass extract <root> --code-only --force` to obtain
+receiver-chain resolution and source-call inventories. AST cache version 14
+recomputes older entries automatically. Add `--inference-level max` to retain
+inferred deferred receiver edges; the source inventory remains available at low
+inference. Older/historical graphs remain readable but unresolved-call coverage
+is explicitly unavailable until a new graph is built. Strict machine consumers
+must admit optional `details.callSites`, `callSummary`, and `impactSummary`.
+Impact's broader default may return more dependents; use repeatable
+`compass impact <symbol> --relation calls` (or MCP `relations`) for a narrower
+policy. Counts distinguish incoming dependents from outgoing review context.
+
+Disposable graph query/impact/traversal and typed content caches are rebuilt
+automatically when read by this version. No source graph rebuild or historical
+rewrite is needed for cache freshness. An in-flight MCP request retains its
+loaded graph snapshot; subsequent requests read the current content and reject
+missing or corrupt replacements.
+
+Rebuild Java graphs to resolve imported nested nominal receiver names for field
+and enum references. The resolver now joins dotted source type names to canonical
+nested declarations, retaining duplicate-owner ambiguity. This correction reuses
+version-10 AST facts; it does not change schemas or rewrite historical graphs.
+
+Rebuild Java graphs to receive source-proven field and enum-constant references,
+including supported enum switch labels and constant-specific body ownership.
+AST cache semantics version 10 automatically
+invalidates earlier extraction facts. Existing stored/historical graphs are not
+rewritten; unsupported receivers and inherited/anonymous/local-class cases
+remain gaps. These references do not classify read/write effects or establish
+class cohesion or god-object defects.
+
+Rebuild Rust graphs to receive newly emitted field-access references. AST cache
+semantics version 8 invalidates earlier facts automatically; stored graphs and
+historical realizations are not rewritten. The added `member-access` references
+preserve source occurrences but do not classify reads/writes or prove cohesion.
+
+MCP neighbor responses now include exact destination records in
+`structuredContent.result` with schema `compass.query.neighbors/1`. Consumers
+that need machine identities should read those records instead of parsing text
+labels. The text adds identity/source lines and orders groups deterministically.
+If a large neighbor request exceeds the new adjacency, record or 1 MiB semantic
+response limit, it fails explicitly; narrow `relation_filter` or use the bounded
+typed caller/callee queries. An empty successful result means no matching
+records. No graph rebuild is required for this output change.
+
+Rebuild Java graphs to receive corrected varargs signatures, array argument
+types, and overload targets. Spread parameters now retain their declared array
+type; calls may gain targets or select a different, source-supported overload.
+Normal builds discard AST cache versions older than 6. Existing historical
+graphs and the graph schema remain unchanged.
+
+Name-based queries can now resolve a coincident export binding to its proven
+declaration. Use the exact export node ID when you want the binding record.
+This query correction works on existing graphs. Older traversal caches rebuild
+automatically to retain mixed-confidence and deferred relationship evidence;
+graph re-extraction is not required for that cache correction.
+
+Rebuild Java graphs to receive the constructor-receiver correction. Direct
+constructor method calls can gain source-proven targets; invented external
+targets and unrelated imported-class construction edges can disappear. Normal
+builds discard AST cache versions older than 5. This does not rewrite historical
+graphs or change the graph schema.
+
+Rebuild graphs with programmatic framework routes to remove filesystem-derived
+containment between independent routers and unsupported file-route parents.
+Framework-pack semantics version 8
+invalidates prior build profiles and build-state seals; disposable framework
+facts can be rebuilt from source. Hub rankings, navigation paths, and communities
+can change. Existing historical realizations remain unchanged.
+
+Version 8 corrects the directory-order parent rule introduced before version 7.
+File-route siblings, standalone endpoints, and page files without a layout
+parent may lose containment edges. Source-proven nested layouts and flat-route
+parents can gain the correct edges. The graph schema is unchanged.
+
+Rebuild existing Go graphs to receive the control-initializer and receiver
+shadowing corrections. Normal builds automatically discard AST cache versions
+older than 4. Source-proven calls can appear and incorrectly attributed calls
+can disappear; existing historical realizations are not rewritten.
+
+For MCP `shortest_path`, replace partial keywords with exact IDs or complete
+symbol/qualified names. Handle ambiguity candidates before retrying. Use
+`structuredContent.result` (`compass.mcp.path/1`) for ordered identities and
+statuses. `depth_limit` and work-limit errors are incomplete searches, not
+proof of disconnection. `max_hops` is limited to 0–64. Equal-hop routes may
+change because structural relation cost now breaks ties; the operation remains
+undirected navigation.
+
+MCP callers of `get_neighbors` must handle an `Ambiguous` candidate list and
+retry with a returned exact node ID. Earlier versions silently chose one match.
+Labeled community IDs are restored by automatic traversal-cache rebuilding;
+existing graph files can be queried directly.
+
+`ask` agent output now records parsed operands in `request.operands` and the
+original question in `request.question`. Consumers needing the question should
+read that dedicated field. If an existing text cursor fails its prefix check
+after the corrected subject ordering, reissue the question to start a new page.
 
 Plain `compass query` output is now concise by default and its page budget is
 8,000 approximate tokens. Scripts or review workflows that need the previous
@@ -90,8 +197,14 @@ with a suggested exact ID when exact identity is required. `compass path` no
 longer promotes a fuzzy symbol candidate into an endpoint; it is
 weighted toward structural relations, defaults to an eight-hop bound, and
 reports `NO PATH FOUND` separately when both endpoints exist but are
-unreachable. Consumers that parsed the prior human path prose should migrate to
-these explicit signals; machine-query schema versions are unchanged.
+unreachable within the requested hop bound. Consumers that parsed the prior
+human path prose should migrate to these explicit signals; machine-query schema
+versions are unchanged.
+
+`path` now fails with a nonzero work-limit error if either its weighted or
+alternative search exceeds 1,000,000 adjacency entries or 16 MiB of cumulative
+path-key bytes. Treat this as an incomplete search, not proof of disconnection;
+reduce `--max-depth` or query a smaller graph before retrying.
 
 Typed relationship commands now share source-backed import/reference
 resolution. `callers`, `impact`, and typed `affected` may therefore return
@@ -105,6 +218,14 @@ should inspect the structured `truncated` flag and diagnostics.
 accept the shared `--format text|json|agent-json` contract where applicable.
 Use `compass architecture --format agent-json` for a bounded repository
 overview with omission counts and witness IDs.
+
+## Rebuild cached AST facts after receiver corrections
+
+AST cache semantics version 3 invalidates older cached extractions, including
+Rust calls incorrectly attributed to an outer variable shadowed by a local
+binding. The next extraction rebuilds these facts automatically and can take
+longer. Re-extract existing graphs to receive the correction; historical
+realizations remain immutable. No source or configuration migration is needed.
 
 ## Rebuild SQLite adjacency sidecars
 
@@ -669,3 +790,18 @@ equivalent exists. Compass has not scheduled removal before typed replacements
 are available and separately reviewed.
 
 Keep the old Graphify installation and `graphify-out/` directory until the new `compass-out/` graph has passed your project checks. The two tools don't share runtime output paths.
+
+## Natural-language candidate selection
+
+`compass query` and `compass ask` now continue with a ranked symbol when a
+natural-language operand has multiple matches. Review the auto-picked or
+approximate label and the alternatives before attributing the result to the
+original question. Use an exact node ID to override the choice. Explicit
+structured commands retain their strict matching behavior. No graph rebuild
+is needed for this query change; cursors created for a different semantic
+answer fail explicitly and must be restarted.
+
+Discovery text cursors now use version 3 because compact pages show relationships
+before declarations. Restart a query if a saved version 2 cursor is rejected.
+Natural discovery pages default to 800 tokens. Increase `--text-budget` or
+follow the printed `--cursor` to retrieve more of the same bounded answer.

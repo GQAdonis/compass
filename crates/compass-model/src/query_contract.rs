@@ -543,7 +543,14 @@ pub struct NodeTrailRequest {
     pub source: String,
     pub target: String,
     pub include_heuristic: bool,
+    /// Restrict both traversal and direction diagnostics to call relationships.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub calls_only: bool,
     pub limits: CodeQueryLimits,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -559,6 +566,69 @@ pub struct CodeQueryResponse {
     pub diagnostics: Vec<QueryDiagnostic>,
     pub limits: CodeQueryLimits,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_summary: Option<CallSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub impact_summary: Option<ImpactSummary>,
+    /// Approximate concept recall; never changes structural edge evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concept_matches: Vec<ConceptMatch>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConceptMatchMethod {
+    Synonym,
+    DocumentLink,
+    SemanticLsa,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConceptMatch {
+    pub node_id: String,
+    pub method: ConceptMatchMethod,
+    pub query: String,
+    pub matched: String,
+    /// Published document/section path used to reach code, empty for name recall.
+    pub via: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImpactSummary {
+    pub relations: Vec<EdgeKind>,
+    /// All observed neighbors, distinguished by stored direction, as explain
+    /// does. Parallel relationship records do not inflate this count.
+    pub observed_direct_connections: u64,
+    pub direct_dependents: Vec<String>,
+    pub transitive_dependents: Vec<String>,
+    pub outgoing_context: Vec<String>,
+    pub excluded_direct_connections: u64,
+    /// All selected direct neighbors in the published graph were retained.
+    /// Repository/source completeness remains in response diagnostics.
+    pub direct_coverage_complete: bool,
+    pub groups: Vec<ImpactFileGroup>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImpactFileGroup {
+    pub file: Option<String>,
+    pub module: String,
+    pub direct: Vec<String>,
+    pub transitive: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallSummary {
+    pub resolved_calls: u64,
+    /// Source-observed calls lacking an exact graph target. None means the
+    /// producer or historical graph did not retain a call-site inventory.
+    pub unresolved_calls: Option<u64>,
+    pub observed_calls: Option<u64>,
+    pub inventory_complete: bool,
 }
 
 impl CodeQueryResponse {
@@ -575,6 +645,9 @@ impl CodeQueryResponse {
             diagnostics: Vec::new(),
             limits,
             truncated: false,
+            call_summary: None,
+            impact_summary: None,
+            concept_matches: Vec::new(),
         }
     }
 
@@ -585,6 +658,15 @@ impl CodeQueryResponse {
                 .total_cmp(&left.score)
                 .then_with(|| left.node_id.cmp(&right.node_id))
         });
+        self.concept_matches.sort_by(|left, right| {
+            left.node_id
+                .cmp(&right.node_id)
+                .then_with(|| left.method.cmp(&right.method))
+                .then_with(|| left.query.cmp(&right.query))
+                .then_with(|| left.matched.cmp(&right.matched))
+                .then_with(|| left.via.cmp(&right.via))
+        });
+        self.concept_matches.dedup();
         self.nodes.sort_by(|left, right| left.id.cmp(&right.id));
         self.edges.sort_by(|left, right| left.id.cmp(&right.id));
         self.files.sort_by(|left, right| left.path.cmp(&right.path));

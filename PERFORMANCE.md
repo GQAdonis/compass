@@ -93,6 +93,33 @@ Compare a proposed change with a previously approved Compass result captured on
 the same runner and corpus. A median regression above 10% requires explicit
 review and evidence explaining the tradeoff.
 
+## Natural-language answer cost qualification
+
+The developer-side [agent query harness](benchmarks/agent_query/README.md)
+qualifies answer recall and output cost separately from runtime performance.
+Run `suite_natural.toml` on its five pinned repositories with the same question
+and an 800-token first page for each tool; no follow-up pages are counted.
+The harness records binary identities, source revisions, bounded stdout,
+source-reviewed oracle results, and query wall time. Token estimates use
+UTF-8 output bytes divided by four, rather than a model tokenizer.
+
+On 2026-09-30, a macOS debug build of Compass 0.3.29 with natural-language
+candidate selection passed 24 of 25 questions, compared with 17 of 25 for
+Graphify 0.9.67. Mean output cost across all questions was 544 versus 757
+estimated tokens. On the 17 questions both tools answered, median output cost
+was 746 versus 754 estimated tokens. One broad Cobra question still omitted
+a required anchor from its first page.
+
+These measurements precede integration with the Compass 0.4.0 main branch;
+they remain historical evidence for that candidate binary, not measurements
+of the merged build.
+
+This focused anchor-recall check is not an independent precision oracle or a
+population-wide accuracy claim. Compass's median query wall time was 3,843 ms,
+compared with 532 ms for Graphify. This run does not qualify a latency
+improvement, cold/warm cache behavior, peak RSS, or a production performance
+baseline; those remain governed by the baseline policy above.
+
 ## Community detection performance
 
 The 2026-09-12 Leiden hot-path qualification used Compass `0.3.24` candidate
@@ -1373,6 +1400,14 @@ controls, the static layout, the 200-row community DOM bound, and the visible
 edge disclosure to appear within three seconds. These are runner-specific
 diagnostic observations, not a cross-platform latency guarantee.
 
+Browser wall-clock qualification runs in the single-worker
+`chromium-performance` Playwright project after the functional Chromium tests
+finish, so concurrent test pages cannot consume its startup budget. The
+one-second small-graph and three-second large-graph limits and readiness
+assertions remain unchanged. Run only this qualification with
+`npm run test:performance -w @compass/viewer-tests`; the normal `npm run test:js`
+includes both projects in order.
+
 ### Django parallel fact-state qualification
 
 The 2026-08-05 large-repository fact-state hardening was measured from Compass
@@ -1476,3 +1511,107 @@ aarch64 macOS host initialized the statically linked runtime and processed its
 blank plus clean synthetic-English rasters in 1.77 seconds under a debug test
 build. The clean sample had 0 CER. This single smoke result is not a production
 latency, memory, degraded-input, cross-architecture, or multilingual claim.
+
+## SQL prefix guard: matched development-build diagnosis
+
+A registered CloudStack SQL diagnosis compared frozen unoptimized binaries with
+matching build settings on four complete source files, three alternating runs
+per binary. Fresh outputs did not imply cold OS caches. Background host work
+was not isolated.
+
+| SQL bytes | Baseline completed | Candidate completed | Baseline median | Candidate median | Full old/new graph equality |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 938 | 3/3 | 3/3 | 1.010 s | 1.152 s | Yes, all six graphs |
+| 1,949 | 3/3 | 3/3 | 1.004 s | 1.077 s | Yes, all six graphs |
+| 10,288 | 3/3 | 3/3 | 2.462 s | 2.284 s | Yes, all six graphs |
+| 411,080 | 0/3 | 3/3 | unavailable | 174.175 s | Unproven: unavailable baseline output |
+
+This is not release-performance qualification. Keep timeouts and small-file
+regressions visible; do not infer an overall speedup or a Graphify performance
+ranking. Complete graph equality holds only where both versions produced all
+registered outputs. The smallest-file median regression exceeds 10%, requiring
+review; this diagnostic is not an approved performance baseline.
+
+See [`sql_prefix_scan_review.json`](benchmarks/agent_query/sql_prefix_scan_review.json)
+for every outcome, hashes, peak RSS, load observations and verification, and the
+[code-graph audit](docs/implementation/code-graph-intelligence-audit-2026-09-26.md)
+for scope and native checks. The normal release qualification policy above still
+applies.
+
+## SQL access-regex cache: matching release comparison
+
+The SQL extractor now compiles its fixed access regexes—one read pattern and five
+write patterns—once per process. The patterns, iteration order, captures and alias/CTE handling
+are unchanged. A new native regression checks that every pattern is retained in
+order and repeated calls reuse the same compiled storage. Public commands,
+graph schemas and version 0.3.30 are unchanged.
+
+The registered diagnosis uses the same four complete CloudStack SQL inputs,
+three repetitions per binary, alternating order and fresh outputs. Both binaries
+use matching release settings: one codegen unit, thin LTO, abort-on-panic and
+stripped symbols. An unchanged release rebuild confirmed the frozen baseline
+hash before the cache edit. Build manifests, lockfile, toolchain and repository
+configuration are unchanged. Ordinary OS caches and unrelated host work remain
+limitations; timestamps, load averages and peak RSS are retained.
+
+| SQL bytes | Baseline median | Cached-regex median | Candidate / baseline | Full graph equality |
+| ---: | ---: | ---: | ---: | --- |
+| 938 | 0.596 s | 0.570 s | 0.956 | All six graphs |
+| 1,949 | 0.580 s | 0.594 s | 1.024 | All six graphs |
+| 10,288 | 0.657 s | 0.666 s | 1.014 | All six graphs |
+| 411,080 | 13.121 s | 1.650 s | 0.126 | All six graphs |
+
+All 24 observations succeeded, and the complete graph JSON is equal across all
+six runs of each input, with no excluded fields and preserved array order.
+These are four development files selected during an earlier diagnosis. The
+observed medians do not establish a confidence interval, whole-product release
+qualification, a Graphify speed ranking or independent confirmation. Earlier
+unoptimized observations, small-file regressions and whole-repository timeouts
+remain unchanged.
+
+See [`sql_regex_cache_review.json`](benchmarks/agent_query/sql_regex_cache_review.json)
+for every observation and matching-build provenance. Normal release performance
+qualification remains required; this four-file diagnosis cannot replace it.
+
+## Complete-source SQL-cache follow-up
+
+The same frozen release binaries completed the entire pinned CloudStack tree
+with identical 671,502,979-byte partial-graph artifacts. The pre-cache binary
+took 193.966 seconds; the cache candidate took 280.053 seconds. The candidate
+was slower in this single observation, and the cause is unproven. Do not
+promote the four-file result to a whole-repository speedup or explain the longer
+observation as host noise without further evidence.
+
+Both graphs exceed the original 256 MiB admission bound and fit the separately
+declared 1 GiB bound. Both report one omitted node and 45 omitted edges. The
+release baseline's success also prevents attributing recovery solely to the
+cache. Earlier debug-build timeouts and all artifact-admission failures remain
+unchanged.
+
+[`sql_regex_cache_whole_review.json`](benchmarks/agent_query/sql_regex_cache_whole_review.json)
+contains both observations and repeated provenance/artifact verification.
+[`sql_regex_cache_whole_repeat_registration.json`](benchmarks/agent_query/sql_regex_cache_whole_repeat_registration.json)
+registers a separate three-repetition alternating comparison with CPU time and
+peak RSS. All six runs completed and reproduced the original graph bytes:
+
+| Repetition | Execution order | Baseline wall | Candidate wall |
+| ---: | --- | ---: | ---: |
+| 0 | Baseline, candidate | 235.574 s | 204.082 s |
+| 1 | Candidate, baseline | 215.288 s | 210.928 s |
+| 2 | Baseline, candidate | 213.526 s | 203.430 s |
+| Median | — | 215.288 s | 204.082 s |
+
+The candidate/baseline median ratio is 0.948, below the registered 1.10
+regression-review threshold. Median user CPU is 260.56 seconds for baseline and
+227.06 seconds for candidate; median system CPU is 23.68 and 23.12 seconds,
+respectively. Peak RSS, UTC timestamps and host load for every run are retained
+in [`sql_regex_cache_whole_repeat_review.json`](benchmarks/agent_query/sql_regex_cache_whole_repeat_review.json).
+Two complete verifier passes produced identical reports.
+
+The initial contrary observation remains unchanged above. This panel does not
+identify the cause of timing variation. Our compilation, query captures, other
+extractions and large-graph verification were paused during the timed runs;
+unrelated host work and ordinary OS caches remained uncontrolled. Three runs
+per binary on one known repository do not establish general performance or an
+approved release baseline. All six graphs still omit one node and 45 edges;
+normal release qualification remains required.

@@ -327,6 +327,7 @@ async fn exercise(backend: Backend) -> Result<(), Box<dyn std::error::Error>> {
             .node_trail_at(
                 &first_ref,
                 NodeTrailRequest {
+                    calls_only: false,
                     source: caller.clone(),
                     target: leaf,
                     include_heuristic: false,

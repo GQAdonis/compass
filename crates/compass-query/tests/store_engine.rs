@@ -1220,6 +1220,7 @@ fn store_engine_reads_the_immutable_phase2_snapshot_for_all_code_queries()
         serde_json::to_value(json.explore(explore)?)?,
     );
     let trail = NodeTrailRequest {
+        calls_only: false,
         source: "Api.caller".to_owned(),
         target: "Store.callee".to_owned(),
         include_heuristic: false,
@@ -1380,6 +1381,7 @@ fn redb_store_runs_the_same_typed_queries_as_json() -> Result<(), Box<dyn std::e
         serde_json::to_value(json.explore(explore)?)?,
     );
     let trail = NodeTrailRequest {
+        calls_only: false,
         source: "Api.caller".to_owned(),
         target: "Store.callee".to_owned(),
         include_heuristic: false,
@@ -1576,7 +1578,7 @@ fn explicit_json_selection_survives_a_corrupt_store_sidecar()
 }
 
 #[test]
-fn provisional_json_index_is_rebuilt_to_v1() -> Result<(), Box<dyn std::error::Error>> {
+fn unknown_json_index_is_rebuilt_to_current_format() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let graph_path = directory.path().join("graph.json");
     support::write_graph(&graph_path)?;
@@ -1599,7 +1601,7 @@ fn provisional_json_index_is_rebuilt_to_v1() -> Result<(), Box<dyn std::error::E
         connection.query_row("SELECT value FROM metadata WHERE key='format'", [], |row| {
             row.get(0)
         })?;
-    assert_eq!(format, "compass-code-index/1");
+    assert_eq!(format, "compass-code-index/2");
     Ok(())
 }
 
@@ -1621,5 +1623,32 @@ fn a_present_malformed_store_reference_fails_closed() -> Result<(), Box<dyn std:
         Err(error) => error,
     };
     assert_eq!(error.code(), "store_ref_decode_failed");
+    Ok(())
+}
+
+#[test]
+fn valid_fts_index_is_reused_on_reopen() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let graph_path = directory.path().join("graph.json");
+    support::write_graph(&graph_path)?;
+    let cache = directory.path().join("cache");
+    let engine = open_with_engine(&graph_path, None, &cache, EngineSelection::Json)?;
+    let index_path = engine.index_path().to_path_buf();
+    drop(engine);
+    let connection = rusqlite::Connection::open(&index_path)?;
+    connection.execute(
+        "INSERT INTO metadata VALUES('reuse_marker', 'preserved')",
+        [],
+    )?;
+    drop(connection);
+    let reopened = open_with_engine(&graph_path, None, &cache, EngineSelection::Json)?;
+    assert_eq!(reopened.index_path(), index_path);
+    let connection = rusqlite::Connection::open(index_path)?;
+    let marker: String = connection.query_row(
+        "SELECT value FROM metadata WHERE key='reuse_marker'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(marker, "preserved");
     Ok(())
 }

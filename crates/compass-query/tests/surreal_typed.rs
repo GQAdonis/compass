@@ -216,6 +216,7 @@ async fn every_typed_operation_preserves_values_ranking_limits_and_diagnostics()
                     )?;
                 }
                 let request = NodeTrailRequest {
+                    calls_only: false,
                     source: "Api.caller".to_owned(),
                     target: "Store.callee".to_owned(),
                     include_heuristic,

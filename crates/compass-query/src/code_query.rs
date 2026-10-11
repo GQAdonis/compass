@@ -1,3 +1,5 @@
+mod impact_summary;
+
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -12,11 +14,11 @@ use compass_ir::ProgramBundle;
 use compass_model::code_graph::{
     BuildMetadata, EdgeKind, EdgeRecord, FileRecord, GraphDocument, NodeKind, NodeRecord,
 };
-use compass_model::provenance::EvidenceConfidence;
+use compass_model::provenance::{EvidenceConfidence, ResolutionState};
 use compass_model::query_contract::{
-    CallRequest, CodeQueryOperation, CodeQueryResponse, DiscoveryScopeKind, ExploreRequest,
-    ImpactRequest, NodeTrailRequest, QueryDiagnostic, QueryDiagnosticCode, QueryEdge, QueryFile,
-    QueryNode, QueryPath, SearchHit, SearchRequest, discovery_scope_postings,
+    CallRequest, CodeQueryLimits, CodeQueryOperation, CodeQueryResponse, DiscoveryScopeKind,
+    ExploreRequest, ImpactRequest, NodeTrailRequest, QueryDiagnostic, QueryDiagnosticCode,
+    QueryEdge, QueryFile, QueryNode, QueryPath, SearchHit, SearchRequest, discovery_scope_postings,
     normalize_query_symbol, query_edge_from_record, query_node_from_record,
     query_path_from_records,
 };
@@ -36,6 +38,9 @@ use crate::text::{canonical_query_token, query_recall_terms, strip_diacritics};
 
 type GraphPath = (Vec<String>, Vec<String>);
 type BoundedPathResult = (Option<GraphPath>, bool);
+// A cheaper arrival at a node may consume more hops. Retain separate states
+// so it cannot erase a costlier arrival that still fits the remaining depth.
+type TrailState = (String, usize);
 const MAX_CODE_QUERY_CANDIDATES: u32 = 256;
 const MAX_RECALL_FUZZY_VARIANTS_PER_TERM: usize = 192;
 const MAX_RECALL_FUZZY_VARIANTS_TOTAL: usize = 256;
@@ -60,6 +65,12 @@ const RELATIONSHIP_OWNER_SCOPE_LIMIT: usize = 32;
 const RELATIONSHIP_TERM_LIMIT: usize = 128;
 const RELATIONSHIP_SOURCE_EDGE_SCAN_LIMIT: usize = 256;
 type ContainmentPath = (Vec<String>, Vec<EdgeRecord>);
+
+pub(crate) struct OwnerQualifiedCandidates {
+    pub(crate) nodes: Vec<NodeRecord>,
+    pub(crate) truncated: bool,
+    pub(crate) has_leaf_candidates: bool,
+}
 
 const ALL_EDGE_KINDS: &[EdgeKind] = &[
     EdgeKind::Contains,
@@ -102,6 +113,7 @@ pub(crate) enum StructuralOperandRole {
     ImpactTarget,
     TrailSource,
     TrailTarget,
+    CallTrailTarget,
 }
 
 impl StructuralOperandRole {
@@ -112,6 +124,7 @@ impl StructuralOperandRole {
             Self::ImpactTarget => (true, IMPACT_KINDS),
             Self::TrailSource => (false, ALL_EDGE_KINDS),
             Self::TrailTarget => (true, ALL_EDGE_KINDS),
+            Self::CallTrailTarget => (true, &[EdgeKind::Calls]),
         }
     }
 }
@@ -233,6 +246,12 @@ impl CandidateReadBudget {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TrailPolicy {
+    directed: bool,
+    calls_only: bool,
+}
+
 struct TraversalBudget {
     remaining_nodes: usize,
     remaining_edges: usize,
@@ -304,7 +323,28 @@ const IMPACT_KINDS: &[EdgeKind] = &[
     EdgeKind::Triggers,
     EdgeKind::MapsTo,
     EdgeKind::Renders,
+    EdgeKind::Extends,
+    EdgeKind::Implements,
+    EdgeKind::MixesIn,
+    EdgeKind::TypeOf,
+    EdgeKind::Returns,
+    EdgeKind::Instantiates,
+    EdgeKind::Overrides,
+    EdgeKind::Decorates,
+    EdgeKind::Embeds,
+    EdgeKind::Registers,
+    EdgeKind::Handles,
+    EdgeKind::Tests,
 ];
+
+/// Optional conjunctive filters for exact symbol lookup. Paths are compared to
+/// stored repository-relative paths; they are never opened or canonicalized.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExactSearchFilter {
+    pub source_file: Option<String>,
+    pub start_line: Option<u32>,
+    pub kind: Option<NodeKind>,
+}
 
 pub struct CodeQueryEngine {
     pub(crate) backend: CodeGraphBackend,
@@ -319,6 +359,8 @@ pub struct CodeQueryEngine {
     pub(crate) search_query_cache: Mutex<SearchQueryCache>,
     pub(crate) fuzzy_lookup_cache: Mutex<FuzzyLookupCache>,
     pub(crate) deadline: Option<Instant>,
+    pub(crate) semantic_search: bool,
+    pub(crate) semantic_index: Mutex<Option<crate::semantic_search::SemanticIndex>>,
 }
 
 impl CodeQueryEngine {
@@ -967,7 +1009,7 @@ impl CodeGraphBackend {
         }
     }
 
-    fn store_term_candidates(
+    pub(crate) fn store_term_candidates(
         &self,
         terms: &[String],
         limit: usize,
@@ -1327,7 +1369,14 @@ impl PinnedDiscoveryBackend<'_> {
                 })
             }
             Self::Store(reader) => {
-                let read_limits = snapshot_limits(limit)?;
+                // Store postings are encoded in chunks. Decode at least one
+                // whole chunk, then apply the caller's logical candidate cap.
+                // A sub-chunk cap otherwise reports truncation even when the
+                // posting does not exist, prematurely stopping impact walks.
+                let read_envelope = limit
+                    .div_ceil(GRAPH_TERM_POSTING_CHUNK_ITEMS)
+                    .saturating_mul(GRAPH_TERM_POSTING_CHUNK_ITEMS);
+                let read_limits = snapshot_limits(read_envelope)?;
                 let (mut source_ids, truncated, work) = if reader
                     .supports_relationship_search_terms()
                     .map_err(snapshot_error)?
@@ -1641,6 +1690,45 @@ fn sort_edge_indices(edges: &mut [usize], graph: &GraphDocument) {
 }
 
 impl CodeQueryEngine {
+    pub(crate) fn finish_natural_response(
+        &self,
+        mut response: CodeQueryResponse,
+    ) -> Result<CodeQueryResponse, QueryError> {
+        response.sort_stable();
+        self.enforce_graph_bounds(&mut response);
+        if response.truncated
+            && !response
+                .diagnostics
+                .iter()
+                .any(|d| d.code == QueryDiagnosticCode::BoundedTruncation)
+        {
+            response.diagnostics.push(QueryDiagnostic {
+                code: QueryDiagnosticCode::BoundedTruncation,
+                message: "Natural-language candidate or response bounds withheld results"
+                    .to_owned(),
+                node_id: None,
+                path: None,
+            });
+        }
+        response.sort_stable();
+        response.diagnostics.dedup();
+        enforce_response_size(&mut response)?;
+        Ok(response)
+    }
+
+    /// Enable local corpus-trained latent-semantic fallback. No network or model
+    /// download is performed; exact structured lookup remains unchanged.
+    #[must_use]
+    pub fn with_semantic_search(mut self, enabled: bool) -> Self {
+        self.semantic_search = enabled;
+        self
+    }
+
+    /// Configure one request while holding exclusive access to a cached engine.
+    pub fn set_semantic_search(&mut self, enabled: bool) {
+        self.semantic_search = enabled;
+    }
+
     /// Bound every following typed query with an absolute deadline.
     ///
     /// The CLI arms one deadline per command and reuses it across retries so a
@@ -1670,7 +1758,105 @@ impl CodeQueryEngine {
         self.search_instrumented(request, &mut QueryInstrumentation::default())
     }
 
-    pub(crate) fn search_instrumented(
+    /// Return every bounded exact ID/name candidate satisfying explicit filters.
+    /// Name normalization matches typed symbol resolution. No lexical fallback,
+    /// ranking-based selection or export-binding elimination is performed.
+    /// The candidate bound applies before filtering: a filtered prefix never
+    /// establishes uniqueness or absence when exact lookup was truncated.
+    pub fn search_exact(
+        &self,
+        request: SearchRequest,
+        filter: ExactSearchFilter,
+    ) -> Result<CodeQueryResponse, QueryError> {
+        self.check_deadline()?;
+        validate_limits(&request.limits)?;
+        let valid_text = |value: &str| {
+            !value.trim().is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control)
+        };
+        if !valid_text(&request.query)
+            || filter
+                .source_file
+                .as_deref()
+                .is_some_and(|value| !valid_text(value))
+            || filter.start_line == Some(0)
+            || (filter.start_line.is_some() && filter.source_file.is_none())
+        {
+            return Err(QueryError::new(
+                QueryErrorKind::InvalidParameter,
+                "invalid_exact_search",
+                "exact search requires 1..4096 non-control selector/file bytes; start line must be positive and requires a source file",
+            ));
+        }
+        let bound = usize::try_from(request.limits.max_candidates).unwrap_or(usize::MAX);
+        let exact_id = self.backend.node_by_id(&request.query)?;
+        let id_match = exact_id.is_some();
+        let (mut candidates, truncated) = if let Some(node) = exact_id {
+            (vec![node], false)
+        } else {
+            self.backend
+                .nodes_by_normalized_name(&normalize_symbol(&request.query), bound)?
+        };
+        self.check_deadline()?;
+        candidates.retain(|node| {
+            filter.kind.is_none_or(|kind| node.kind == kind)
+                && filter.source_file.as_deref().is_none_or(|file| {
+                    node.source
+                        .as_ref()
+                        .is_some_and(|source| source.file == file)
+                })
+                && filter.start_line.is_none_or(|line| {
+                    node.source
+                        .as_ref()
+                        .is_some_and(|source| source.start_line == line)
+                })
+        });
+        candidates.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut response = CodeQueryResponse::empty(CodeQueryOperation::Search, request.limits);
+        response.truncated = truncated;
+        if truncated {
+            response.diagnostics.push(QueryDiagnostic {
+                code: QueryDiagnosticCode::BoundedTruncation,
+                message: format!("Exact-name lookup exceeded {bound} candidates before filtering; returned matches do not establish uniqueness or absence"),
+                node_id: None,
+                path: None,
+            });
+        } else if candidates.is_empty() {
+            response.diagnostics.push(QueryDiagnostic {
+                code: QueryDiagnosticCode::NoMatch,
+                message: "No exact symbol satisfies the supplied filters".to_owned(),
+                node_id: None,
+                path: None,
+            });
+        }
+        let max_nodes = usize::try_from(response.limits.max_nodes).unwrap_or(usize::MAX);
+        if candidates.len() > max_nodes {
+            response.truncated = true;
+            candidates.truncate(max_nodes);
+        }
+        for node in candidates {
+            let matched_fields = if id_match {
+                vec!["id".to_owned()]
+            } else {
+                [
+                    ("name", &node.name),
+                    ("qualified_name", &node.qualified_name),
+                ]
+                .into_iter()
+                .filter(|(_, value)| normalize_symbol(value) == normalize_symbol(&request.query))
+                .map(|(field, _)| field.to_owned())
+                .collect()
+            };
+            response.results.push(SearchHit {
+                node_id: node.id.clone(),
+                score: 1.0,
+                matched_fields,
+            });
+            response.nodes.push(query_node(&node));
+        }
+        self.finish_response(&mut response)
+    }
+
+    pub(crate) fn search_lexical_instrumented(
         &self,
         request: SearchRequest,
         instrumentation: &mut QueryInstrumentation,
@@ -1698,7 +1884,7 @@ impl CodeQueryEngine {
         }
         let candidate_limit = usize::try_from(request.limits.max_candidates).unwrap_or(usize::MAX);
         let admit = |_: &NodeRecord| true;
-        let mut check = || Ok(());
+        let mut check = || self.check_deadline();
         let assembly = self.assemble_search_candidates(
             &request.query,
             &terms,
@@ -1707,7 +1893,8 @@ impl CodeQueryEngine {
                 max_candidates: candidate_limit,
                 source_lookup_limit: candidate_limit,
                 max_candidate_reads: usize::try_from(
-                    compass_model::query_contract::MAX_INDEXED_CANDIDATE_NODES_READ,
+                    compass_model::query_contract::MAX_INDEXED_CANDIDATE_NODES_READ
+                        .saturating_sub(instrumentation.work.candidates_read),
                 )
                 .unwrap_or(usize::MAX),
                 max_candidate_probes: usize::try_from(
@@ -2869,12 +3056,8 @@ impl CodeQueryEngine {
             return response;
         };
         let execution_started = Instant::now();
-        let kinds: &[EdgeKind] = if inbound {
-            CALLER_KINDS
-        } else {
-            &[EdgeKind::Calls]
-        };
         let max_edges = usize::try_from(request.limits.max_edges).unwrap_or(usize::MAX);
+        let mut call_owners = BTreeSet::from([seed.clone()]);
         let (selected_edges, truncated, observed_importers, observed_importers_truncated) =
             if inbound {
                 self.resolved_incoming_relationships(
@@ -2884,13 +3067,12 @@ impl CodeQueryEngine {
                     max_edges,
                 )?
             } else {
-                let (edges, truncated) = self.backend.matching_bounded(
+                let (edges, truncated, owners) = self.owned_callee_relationships(
                     &seed,
-                    inbound,
-                    kinds,
                     request.include_heuristic,
-                    max_edges,
+                    &request.limits,
                 )?;
+                call_owners = owners;
                 (edges, truncated, 0, false)
             };
         instrumentation.work.nodes_expanded = instrumentation.work.nodes_expanded.saturating_add(1);
@@ -2915,21 +3097,183 @@ impl CodeQueryEngine {
                 Self::owner_level_relationship_diagnostic(&mut response, &seed);
             }
         }
-        let mut ids = HashSet::from([seed.clone()]);
+        let mut ids = call_owners.iter().cloned().collect::<HashSet<_>>();
         for edge in &selected_edges {
             ids.insert(edge.source.clone());
             ids.insert(edge.target.clone());
             response.edges.push(query_edge(edge));
         }
         self.add_nodes(&ids, &mut response)?;
-        let response = self.finish_response(&mut response);
+        let mut response = self.finish_response(&mut response)?;
+        let has_call_inventory = response.nodes.iter().any(|node| {
+            call_owners.contains(&node.id)
+                && matches!(&node.details,
+                    Some(compass_model::code_graph::NodeDetails::Symbol(details))
+                        if details.call_sites.is_some())
+        });
+        let python_seed = response
+            .nodes
+            .iter()
+            .any(|node| node.id == seed && node.language.as_deref() == Some("python"));
+        if !inbound && (python_seed || has_call_inventory) {
+            Self::summarize_calls(&mut response, &call_owners);
+            if self.partial_graph_message.is_some()
+                && let Some(summary) = &mut response.call_summary
+            {
+                summary.inventory_complete = false;
+            }
+            enforce_response_size(&mut response)?;
+        }
         instrumentation.execution += execution_started.elapsed();
-        response
+        Ok(response)
+    }
+
+    /// A class's executable calls belong to its contained methods. Retain the
+    /// actual method endpoint instead of inventing class-to-callee edges.
+    fn owned_callee_relationships(
+        &self,
+        seed: &str,
+        include_heuristic: bool,
+        limits: &CodeQueryLimits,
+    ) -> Result<(Vec<EdgeRecord>, bool, BTreeSet<String>), QueryError> {
+        let max_edges = usize::try_from(limits.max_edges).unwrap_or(usize::MAX);
+        let max_nodes = usize::try_from(limits.max_nodes).unwrap_or(usize::MAX);
+        let aggregate = self.backend.node_by_id(seed)?.is_some_and(|node| {
+            matches!(
+                node.kind,
+                NodeKind::Class | NodeKind::Struct | NodeKind::Interface | NodeKind::Trait
+            ) || (node.language.as_deref() == Some("python") && node.kind.is_callable())
+        });
+        let mut pending = VecDeque::from([(seed.to_owned(), 0_u32)]);
+        let mut owners = BTreeSet::new();
+        let mut selected = BTreeMap::new();
+        let mut truncated = false;
+        while let Some((owner, depth)) = pending.pop_front() {
+            self.check_deadline()?;
+            if !owners.insert(owner.clone()) {
+                continue;
+            }
+            let (calls, limited) = self.backend.matching_bounded(
+                &owner,
+                false,
+                &[EdgeKind::Calls, EdgeKind::Instantiates],
+                include_heuristic,
+                max_edges.saturating_sub(selected.len()),
+            )?;
+            truncated |= limited;
+            for edge in calls {
+                selected.insert(edge.id.clone(), edge);
+            }
+            if !aggregate {
+                continue;
+            }
+            let (members, limited) = self.backend.matching_bounded(
+                &owner,
+                false,
+                &[EdgeKind::Contains],
+                false,
+                max_nodes,
+            )?;
+            truncated |= limited;
+            for member in members {
+                let Some(node) = self.backend.node_by_id(&member.target)? else {
+                    continue;
+                };
+                // Initializers belong to their enclosing callable. A nested
+                // function's body does not execute merely because its owner does.
+                let owner_is_callable = self
+                    .backend
+                    .node_by_id(&owner)?
+                    .is_some_and(|owner| owner.kind.is_callable());
+                let is_initializer = matches!(
+                    node.kind,
+                    NodeKind::Field | NodeKind::Variable | NodeKind::Constant | NodeKind::Parameter
+                );
+                let is_executable_member = matches!(
+                    node.kind,
+                    NodeKind::Method | NodeKind::Function | NodeKind::Constructor | NodeKind::Class
+                );
+                if !is_initializer && (owner_is_callable || !is_executable_member) {
+                    continue;
+                }
+                if depth >= limits.max_depth
+                    || owners.len().saturating_add(pending.len()) >= max_nodes
+                {
+                    truncated = true;
+                    continue;
+                }
+                pending.push_back((node.id, depth + 1));
+            }
+        }
+        Ok((selected.into_values().collect(), truncated, owners))
+    }
+
+    fn summarize_calls(response: &mut CodeQueryResponse, owners: &BTreeSet<String>) {
+        use compass_model::code_graph::NodeDetails;
+        use compass_model::query_contract::CallSummary;
+        let mut observed = BTreeSet::new();
+        let mut missing = owners
+            .iter()
+            .any(|id| !response.nodes.iter().any(|node| &node.id == id));
+        let mut complete = !response.truncated;
+        for node in &response.nodes {
+            if !owners.contains(&node.id) {
+                continue;
+            }
+            if let Some(NodeDetails::Symbol(details)) = &node.details
+                && let Some(inventory) = &details.call_sites
+            {
+                complete &= !inventory.truncated;
+                observed.extend(inventory.sites.iter().cloned());
+            } else {
+                missing = true;
+            }
+        }
+        let resolved = response
+            .edges
+            .iter()
+            .filter(|edge| {
+                matches!(edge.kind, EdgeKind::Calls | EdgeKind::Instantiates)
+                    && !edge.evidence.is_empty()
+                    && edge.evidence.iter().all(|evidence| {
+                        evidence.resolution == ResolutionState::Exact
+                            && evidence.confidence == EvidenceConfidence::Exact
+                    })
+            })
+            .filter_map(|edge| edge.relationship_site.clone())
+            .collect::<BTreeSet<_>>();
+        response.call_summary = Some(CallSummary {
+            resolved_calls: u64::try_from(resolved.len()).unwrap_or(u64::MAX),
+            unresolved_calls: (complete && !missing)
+                .then(|| u64::try_from(observed.difference(&resolved).count()).unwrap_or(u64::MAX)),
+            observed_calls: (!missing).then(|| u64::try_from(observed.len()).unwrap_or(u64::MAX)),
+            inventory_complete: complete && !missing,
+        });
     }
 
     pub fn impact(&self, request: ImpactRequest) -> Result<CodeQueryResponse, QueryError> {
         self.check_deadline()?;
         self.impact_instrumented(request, &mut QueryInstrumentation::default())
+    }
+
+    /// Restrict dependent traversal to an explicit relationship family. Direct
+    /// coverage is checked against that same family, never an unrelated count.
+    pub fn impact_with_relations(
+        &self,
+        request: ImpactRequest,
+        relations: &[EdgeKind],
+    ) -> Result<CodeQueryResponse, QueryError> {
+        if relations.is_empty() || relations.len() > ALL_EDGE_KINDS.len() {
+            return Err(QueryError::new(
+                QueryErrorKind::InvalidParameter,
+                "invalid_impact_relations",
+                "provide one or more known impact relationship types",
+            ));
+        }
+        let mut kinds = relations.to_vec();
+        kinds.sort_by_key(|kind| kind.as_str());
+        kinds.dedup();
+        self.impact_instrumented_with_kinds(request, &kinds, &mut QueryInstrumentation::default())
     }
 
     /// Resolve inbound dependency relationships for the compatibility
@@ -3108,7 +3452,10 @@ impl CodeQueryEngine {
                     queue.push_back((edge.source.clone(), nodes, edges));
                 }
             }
-            if response.truncated {
+            // A withheld owner-level posting or over-depth trail does not
+            // exhaust the graph budget. Continue the already witnessed direct
+            // frontier so unrelated partial coverage cannot hide its callers.
+            if selected_edges.len() >= max_edges || included_nodes.len() >= max_nodes {
                 break;
             }
         }
@@ -3117,9 +3464,15 @@ impl CodeQueryEngine {
             .edges
             .extend(selected_edges.values().map(query_edge));
         self.apply_path_bound(&mut response);
-        let response = self.finish_response(&mut response);
+        let mut response = self.finish_response(&mut response)?;
+        self.summarize_impact(
+            &mut response,
+            &seed,
+            relationship_kinds,
+            request.include_heuristic,
+        )?;
         instrumentation.execution += execution_started.elapsed();
-        response
+        Ok(response)
     }
 
     pub fn explore(&self, request: ExploreRequest) -> Result<CodeQueryResponse, QueryError> {
@@ -3187,20 +3540,24 @@ impl CodeQueryEngine {
                 response.truncated = true;
                 break;
             }
-            if let [source, target] = pair
-                && let (Some((nodes, edges)), truncated) = self.shortest_path(
+            if let [source, target] = pair {
+                let (path, truncated) = self.shortest_path(
                     source,
                     target,
                     request.include_heuristic,
                     &request.limits,
                     &mut budget,
-                    false,
-                )?
-            {
+                    TrailPolicy {
+                        directed: false,
+                        calls_only: false,
+                    },
+                )?;
                 response.truncated |= truncated;
-                ids.extend(nodes.iter().cloned());
-                edge_ids.extend(edges.iter().cloned());
-                response.paths.push(self.path_record(&nodes, &edges)?);
+                if let Some((nodes, edges)) = path {
+                    ids.extend(nodes.iter().cloned());
+                    edge_ids.extend(edges.iter().cloned());
+                    response.paths.push(self.path_record(&nodes, &edges)?);
+                }
             }
         }
         self.add_nodes(&ids, &mut response)?;
@@ -3233,7 +3590,11 @@ impl CodeQueryEngine {
         let source = self.resolve_symbol(
             &request.source,
             &mut response,
-            Some(StructuralOperandRole::TrailSource),
+            Some(if request.calls_only {
+                StructuralOperandRole::CalleesSource
+            } else {
+                StructuralOperandRole::TrailSource
+            }),
             request.include_heuristic,
             instrumentation,
         )?;
@@ -3247,7 +3608,11 @@ impl CodeQueryEngine {
         let target = self.resolve_symbol(
             &request.target,
             &mut response,
-            Some(StructuralOperandRole::TrailTarget),
+            Some(if request.calls_only {
+                StructuralOperandRole::CallTrailTarget
+            } else {
+                StructuralOperandRole::TrailTarget
+            }),
             request.include_heuristic,
             instrumentation,
         )?;
@@ -3266,7 +3631,10 @@ impl CodeQueryEngine {
             request.include_heuristic,
             &request.limits,
             &mut budget,
-            true,
+            TrailPolicy {
+                directed: true,
+                calls_only: request.calls_only,
+            },
         )?;
         response.truncated |= truncated;
         let Some((nodes, edges)) = path else {
@@ -3282,15 +3650,19 @@ impl CodeQueryEngine {
                 request.include_heuristic,
                 &request.limits,
                 &mut budget,
-                false,
+                TrailPolicy {
+                    directed: false,
+                    calls_only: request.calls_only,
+                },
             )?;
             budget.record_work(instrumentation);
             response.truncated |= mismatch_truncated;
+            let qualifier = if request.calls_only { "call " } else { "" };
             if undirected_path.is_some() {
                 response.diagnostics.push(QueryDiagnostic {
                     code: QueryDiagnosticCode::DirectionMismatch,
                     message: format!(
-                        "A trail connects {source} and {target}, but not in the requested source-to-target direction"
+                        "A {qualifier}trail connects {source} and {target}, but not in the requested source-to-target direction"
                     ),
                     node_id: Some(source),
                     path: None,
@@ -3298,7 +3670,9 @@ impl CodeQueryEngine {
             } else if !mismatch_truncated {
                 response.diagnostics.push(QueryDiagnostic {
                     code: QueryDiagnosticCode::NoMatch,
-                    message: format!("No bounded directed trail connects {source} to {target}"),
+                    message: format!(
+                        "No bounded directed {qualifier}trail connects {source} to {target}"
+                    ),
                     node_id: Some(source),
                     path: None,
                 });
@@ -3345,6 +3719,43 @@ impl CodeQueryEngine {
         &self.build_generation_identity
     }
 
+    pub(crate) fn owner_qualified_candidates(
+        &self,
+        normalized: &str,
+        candidate_limit: usize,
+        instrumentation: &mut QueryInstrumentation,
+    ) -> Result<Option<OwnerQualifiedCandidates>, QueryError> {
+        self.check_deadline()?;
+        let qualified_query = normalized.replace("::", ".");
+        let Some((_, leaf)) = qualified_query.rsplit_once('.') else {
+            return Ok(None);
+        };
+        if leaf.is_empty() {
+            return Ok(None);
+        }
+        let (leaf_nodes, truncated) = self
+            .backend
+            .nodes_by_normalized_name(leaf, candidate_limit)?;
+        instrumentation.work.candidates_read = instrumentation
+            .work
+            .candidates_read
+            .saturating_add(u64::try_from(leaf_nodes.len()).unwrap_or(u64::MAX));
+        let has_leaf_candidates = !leaf_nodes.is_empty();
+        let suffix = format!(".{qualified_query}");
+        let nodes = leaf_nodes
+            .into_iter()
+            .filter(|node| {
+                let qualified_name = normalize_symbol(&node.qualified_name).replace("::", ".");
+                qualified_name == qualified_query || qualified_name.ends_with(&suffix)
+            })
+            .collect();
+        Ok(Some(OwnerQualifiedCandidates {
+            nodes,
+            truncated,
+            has_leaf_candidates,
+        }))
+    }
+
     fn resolve_symbol(
         &self,
         query: &str,
@@ -3360,25 +3771,116 @@ impl CodeQueryEngine {
         }
         let normalized = normalize_symbol(query);
         let candidate_limit = usize::try_from(response.limits.max_candidates).unwrap_or(usize::MAX);
-        let (exact_nodes, exact_truncated) = self
+        let (mut exact_nodes, exact_truncated) = self
             .backend
             .nodes_by_normalized_name(&normalized, candidate_limit)?;
         instrumentation.work.candidates_read = instrumentation
             .work
             .candidates_read
             .saturating_add(u64::try_from(exact_nodes.len()).unwrap_or(u64::MAX));
+        // A question may name an owner and member without knowing the module
+        // prefix or the stored `::` separator. Verify that suffix against the
+        // complete bounded leaf-name posting, never against a ranked prefix.
+        // If the posting is truncated, uniqueness cannot be proved.
+        if exact_nodes.is_empty()
+            && !exact_truncated
+            && let Some(qualified_candidates) =
+                self.owner_qualified_candidates(&normalized, candidate_limit, instrumentation)?
+        {
+            let qualified = qualified_candidates.nodes;
+            let leaf_truncated = qualified_candidates.truncated;
+            let leaf_has_exact_candidates = qualified_candidates.has_leaf_candidates;
+            if leaf_truncated {
+                response.truncated = true;
+                response.diagnostics.push(QueryDiagnostic {
+                    code: QueryDiagnosticCode::AmbiguousMatch,
+                    message: format!(
+                        "Owner-qualified symbol {query:?} cannot be resolved within the {}-candidate leaf-name bound",
+                        response.limits.max_candidates
+                    ),
+                    node_id: None,
+                    path: None,
+                });
+                self.publish_exact_ambiguity(response, &qualified, candidate_limit)?;
+                return Ok(None);
+            }
+            match qualified.as_slice() {
+                [node] => return Ok(Some(node.id.clone())),
+                [] if leaf_has_exact_candidates => {
+                    response.diagnostics.push(QueryDiagnostic {
+                        code: QueryDiagnosticCode::NoMatch,
+                        message: format!("NO OWNER-QUALIFIED MATCH for {query:?}"),
+                        node_id: None,
+                        path: None,
+                    });
+                    return Ok(None);
+                }
+                [] => {}
+                _ => {
+                    response.diagnostics.push(QueryDiagnostic {
+                        code: QueryDiagnosticCode::AmbiguousMatch,
+                        message: format!(
+                            "Owner-qualified symbol {query:?} matched {} nodes",
+                            qualified.len()
+                        ),
+                        node_id: None,
+                        path: None,
+                    });
+                    self.publish_exact_ambiguity(response, &qualified, candidate_limit)?;
+                    return Ok(None);
+                }
+            }
+        }
+        let mut proof_truncated = false;
+        if !exact_truncated
+            && exact_nodes.len() > 1
+            && exact_nodes.len() <= crate::export_binding::MAX_EXPORT_PROOF_CANDIDATES
+            && exact_nodes.iter().any(|node| node.kind == NodeKind::Export)
+        {
+            use crate::export_binding::{
+                BindingEdge, BindingNode, ProofRead, redundant_export_bindings,
+            };
+            let candidates = exact_nodes
+                .iter()
+                .map(BindingNode::typed)
+                .collect::<Vec<_>>();
+            let pinned = self.backend.pin_discovery()?;
+            let proof = redundant_export_bindings(&candidates, |node, inbound, limit| {
+                let kinds = if inbound {
+                    &[EdgeKind::Contains]
+                } else {
+                    &[EdgeKind::Exports]
+                };
+                let (edges, truncated, examined) =
+                    pinned.matching_bounded_counted(node, inbound, kinds, true, limit)?;
+                Ok::<_, QueryError>(ProofRead {
+                    edges: edges.iter().map(BindingEdge::typed).collect(),
+                    truncated,
+                    examined,
+                })
+            })?;
+            instrumentation.work.edges_expanded = instrumentation
+                .work
+                .edges_expanded
+                .saturating_add(u64::try_from(proof.examined).unwrap_or(u64::MAX));
+            proof_truncated = proof.truncated;
+            response.truncated |= proof_truncated;
+            exact_nodes.retain(|node| !proof.redundant.contains(&node.id));
+        }
         let exact = exact_nodes
             .iter()
             .map(|node| node.id.clone())
             .collect::<Vec<_>>();
         response.truncated |= exact_truncated;
         match exact.as_slice() {
-            [node] if !exact_truncated => return Ok(Some(node.clone())),
+            [node] if !exact_truncated && !proof_truncated => return Ok(Some(node.clone())),
             [] => {}
             _ => {
                 response.diagnostics.push(QueryDiagnostic {
                     code: QueryDiagnosticCode::AmbiguousMatch,
-                    message: if exact_truncated {
+                    message: if proof_truncated {
+                        format!("Symbol {query:?} remains ambiguous because export evidence exceeded the {}-edge proof bound", crate::export_binding::MAX_EXPORT_PROOF_EDGES)
+                    } else if exact_truncated {
                         format!(
                             "Symbol {query:?} exceeded the {}-candidate resolution bound",
                             response.limits.max_candidates
@@ -3619,8 +4121,17 @@ impl CodeQueryEngine {
         include_heuristic: bool,
         limits: &compass_model::query_contract::CodeQueryLimits,
         budget: &mut TraversalBudget,
-        directed: bool,
+        policy: TrailPolicy,
     ) -> Result<BoundedPathResult, QueryError> {
+        let TrailPolicy {
+            directed,
+            calls_only,
+        } = policy;
+        let kinds = if calls_only {
+            &[EdgeKind::Calls][..]
+        } else {
+            ALL_EDGE_KINDS
+        };
         let max_depth = usize::try_from(limits.max_depth).unwrap_or(usize::MAX);
         if !budget.consume_node() {
             return Ok((None, true));
@@ -3631,34 +4142,45 @@ impl CodeQueryEngine {
             source.to_owned(),
             source.to_owned(),
         ))]);
-        let mut best = HashMap::from([(source.to_owned(), (0_u32, 0_usize, source.to_owned()))]);
+        let mut best = HashMap::from([(
+            source.to_owned(),
+            BTreeMap::from([(0_usize, (0_u32, source.to_owned()))]),
+        )]);
         let mut admitted = HashSet::from([source.to_owned()]);
-        let mut predecessor = HashMap::<String, (String, String)>::new();
+        let mut predecessor = HashMap::<TrailState, (TrailState, String)>::new();
         let mut truncated = false;
+        let mut depth_frontier = BTreeSet::new();
         while let Some(Reverse((cost, depth, path_key, node))) = queue.pop() {
             self.check_deadline()?;
-            if best.get(&node).is_none_or(|current| {
-                current.0 != cost || current.1 != depth || current.2 != path_key
-            }) {
+            let state = (node.clone(), depth);
+            let Some(labels) = best.get(&node) else {
+                continue;
+            };
+            if labels
+                .get(&depth)
+                .is_none_or(|current| current.0 != cost || current.1 != path_key)
+                || labels.range(..depth).any(|(_, current)| current.0 <= cost)
+            {
                 continue;
             }
             if node == target {
                 let mut nodes = vec![target.to_owned()];
                 let mut edges = Vec::new();
-                let mut cursor = target;
-                while cursor != source {
-                    let Some((previous, edge)) = predecessor.get(cursor) else {
+                let mut cursor = state;
+                while cursor.0 != source || cursor.1 != 0 {
+                    let Some((previous, edge)) = predecessor.get(&cursor) else {
                         return Ok((None, truncated));
                     };
                     edges.push(edge.clone());
-                    nodes.push(previous.clone());
-                    cursor = previous;
+                    nodes.push(previous.0.clone());
+                    cursor = previous.clone();
                 }
                 nodes.reverse();
                 edges.reverse();
                 return Ok((Some((nodes, edges)), truncated));
             }
             if depth >= max_depth {
+                depth_frontier.insert(node);
                 continue;
             }
             let mut adjacent = Vec::new();
@@ -3666,7 +4188,7 @@ impl CodeQueryEngine {
                 self.backend.matching_bounded(
                     &node,
                     false,
-                    ALL_EDGE_KINDS,
+                    kinds,
                     include_heuristic,
                     budget.remaining_edges,
                 )?
@@ -3679,6 +4201,11 @@ impl CodeQueryEngine {
                 if !budget.consume_edge() {
                     truncated = true;
                     break;
+                }
+                // The undirected diagnostic still charges every incident
+                // record it examines, including excluded structural edges.
+                if calls_only && edge.kind != EdgeKind::Calls {
+                    continue;
                 }
                 if edge.source == node {
                     adjacent.push((edge.target.clone(), edge));
@@ -3697,20 +4224,89 @@ impl CodeQueryEngine {
                 let next_depth = depth.saturating_add(1);
                 let next_cost = cost.saturating_add(code_relation_weight(edge.kind));
                 let next_key = format!("{path_key}\0{}\0{next}", edge.id);
-                let candidate = (next_cost, next_depth, next_key.clone());
+                let next_state = (next.clone(), next_depth);
+                let candidate = (next_cost, next_key.clone());
+                // A route can dominate another only if it is no deeper and
+                // no costlier. In particular, reject positive-cost cycles.
+                if best.get(&next).is_some_and(|labels| {
+                    labels.range(..=next_depth).any(|(known_depth, current)| {
+                        current.0 < next_cost
+                            || (current.0 == next_cost
+                                && (*known_depth < next_depth || current.1 <= next_key))
+                    })
+                }) {
+                    continue;
+                }
+                if !admitted.contains(&next) {
+                    if !budget.consume_node() {
+                        truncated = true;
+                        continue;
+                    }
+                    admitted.insert(next.clone());
+                }
+                // Every new state comes from an examined edge, so the shared
+                // edge budget also bounds the queue and predecessor storage.
+                best.entry(next.clone())
+                    .or_default()
+                    .insert(next_depth, candidate);
+                predecessor.insert(next_state, (state.clone(), edge.id.clone()));
+                queue.push(Reverse((next_cost, next_depth, next_key, next)));
+            }
+        }
+        // Probe the depth frontier only after the bounded search fails. Doing
+        // this while the queue still has viable states would spend their shared
+        // work budget and could hide a valid, costlier, shorter route.
+        if !truncated {
+            for node in depth_frontier {
+                self.check_deadline()?;
+                // A shallower arrival was fully expanded already. Its outgoing
+                // records therefore cannot hide an unexplored continuation.
                 if best
-                    .get(&next)
-                    .is_some_and(|current| candidate >= current.clone())
+                    .get(&node)
+                    .is_some_and(|labels| labels.keys().any(|depth| *depth < max_depth))
                 {
                     continue;
                 }
-                if admitted.insert(next.clone()) && !budget.consume_node() {
+                let (incident, incomplete) = if directed {
+                    self.backend.matching_bounded(
+                        &node,
+                        false,
+                        kinds,
+                        include_heuristic,
+                        budget.remaining_edges,
+                    )?
+                } else {
+                    self.backend.incident_bounded(
+                        &node,
+                        include_heuristic,
+                        budget.remaining_edges,
+                    )?
+                };
+                if incomplete {
                     truncated = true;
-                    continue;
+                    break;
                 }
-                best.insert(next.clone(), candidate);
-                predecessor.insert(next.clone(), (node.clone(), edge.id.clone()));
-                queue.push(Reverse((next_cost, next_depth, next_key, next)));
+                for edge in incident {
+                    if !budget.consume_edge() {
+                        truncated = true;
+                        break;
+                    }
+                    if calls_only && edge.kind != EdgeKind::Calls {
+                        continue;
+                    }
+                    let next = if edge.source == node {
+                        &edge.target
+                    } else {
+                        &edge.source
+                    };
+                    if !admitted.contains(next) {
+                        truncated = true;
+                        break;
+                    }
+                }
+                if truncated {
+                    break;
+                }
             }
         }
         Ok((None, truncated))
@@ -3901,7 +4497,10 @@ fn path_record(nodes: &[String], edges: &[String], selected: &[EdgeRecord]) -> Q
     query_path_from_records(nodes, edges, selected)
 }
 
-pub(crate) fn normalize_symbol(value: &str) -> String {
+/// Canonical name comparison shared by typed resolution and its projections.
+/// Node IDs are matched exactly before this normalization is applied to names.
+#[must_use]
+pub fn normalize_symbol(value: &str) -> String {
     normalize_query_symbol(value)
 }
 

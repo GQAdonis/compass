@@ -853,3 +853,62 @@ fn unknown_rewrite_like_names_remain_valid_open_ended_producer_rules() {
     assert!(validate_code_graph(&graph).is_ok());
 }
 use std::error::Error;
+
+#[test]
+fn symbol_call_inventories_validate_bounds_files_and_ordering() {
+    use compass_model::code_graph::{CallSiteInventory, NodeDetails, SymbolNodeDetails};
+    let mut graph = document();
+    let details = SymbolNodeDetails {
+        signature: None,
+        modifiers: Vec::new(),
+        overload_discriminator: None,
+        declaring_type: None,
+        signature_digest: None,
+        implementation_digest: None,
+        source_digest: None,
+        call_sites: Some(CallSiteInventory {
+            sites: vec![anchor()],
+            truncated: false,
+        }),
+    };
+    graph.nodes[1].details = Some(NodeDetails::Symbol(details.clone()));
+    assert!(validate_code_graph(&graph).is_ok());
+    let mut duplicate = details.clone();
+    duplicate
+        .call_sites
+        .as_mut()
+        .expect("inventory")
+        .sites
+        .push(anchor());
+    graph.nodes[1].details = Some(NodeDetails::Symbol(duplicate));
+    assert!(validate_code_graph(&graph).is_err());
+    let mut outside = details;
+    outside.call_sites.as_mut().expect("inventory").sites[0].file = "other.py".to_owned();
+    graph.nodes[1].details = Some(NodeDetails::Symbol(outside));
+    assert!(validate_code_graph(&graph).is_err());
+}
+
+#[test]
+fn resource_prose_is_bounded_and_restricted_to_document_or_rationale() {
+    use compass_model::code_graph::{NodeDetails, ResourceKind, ResourceNodeDetails};
+    let mut graph = document();
+    let node = &mut graph.nodes[0];
+    node.kind = NodeKind::Resource;
+    node.details = Some(NodeDetails::Resource(ResourceNodeDetails {
+        resource_kind: ResourceKind::Document,
+        uri: None,
+        media_type: Some("text/markdown".into()),
+        content: Some("source-backed prose".into()),
+    }));
+    graph.links.clear();
+    assert!(validate_code_graph(&graph).is_ok());
+    if let Some(NodeDetails::Resource(details)) = &mut graph.nodes[0].details {
+        details.content = Some("x".repeat(4097));
+    }
+    assert!(validate_code_graph(&graph).is_err());
+    if let Some(NodeDetails::Resource(details)) = &mut graph.nodes[0].details {
+        details.content = Some("small".into());
+        details.resource_kind = ResourceKind::Image;
+    }
+    assert!(validate_code_graph(&graph).is_err());
+}
