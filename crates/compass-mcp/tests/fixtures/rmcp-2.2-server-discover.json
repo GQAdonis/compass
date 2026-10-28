@@ -1,7 +1,7 @@
 {
   "serverInfo": {
     "name": "compass",
-    "version": "0.4.1"
+    "version": "0.4.2"
   },
   "capabilities": {
     "experimental": {},
@@ -79,14 +79,21 @@
     },
     {
       "name": "get_community",
-      "description": "DEPRECATED text result: get nodes in a community; a typed replacement is pending.",
-      "inputSchemaSha256": "4eab3b967d2c2840b66d636298930917f115c591a1da1a38fbb05ab471f41312",
+      "description": "DEPRECATED text result: get a source-scoped bounded community window with omission counts; a typed replacement is pending.",
+      "inputSchemaSha256": "a7cbc7859fa13f7a7960badcc2af84b4f5fcd403278ef7c90903789f1877787d",
       "outputSchemaSha256": null,
       "meta": {
         "compass/deprecated": true,
         "compass/deprecatedSince": "0.4.0",
         "compass/deprecationReason": "legacy text result; use a typed navigation result"
       }
+    },
+    {
+      "name": "get_hotspots",
+      "description": "Rank source symbols by distinct connections and incoming dependents. Inferred and document contacts are optional labelled layers; scope filters symbols but retains their outside contacts.",
+      "inputSchemaSha256": "99ba79ddaab7e0ad8fd25c6a2d8d8b142a9c8f84cb5a697c9da26e0926021451",
+      "outputSchemaSha256": null,
+      "meta": null
     },
     {
       "name": "god_nodes",

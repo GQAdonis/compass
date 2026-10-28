@@ -8,6 +8,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use rmcp::ServiceExt;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -16,6 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 use tower_http::limit::RequestBodyLimitLayer;
 
+use crate::legacy_sse::{self, LegacySseState};
 use crate::{
     AgentGraphMcpConfig, CompassMcp, SUPPORTED_PROTOCOL_VERSIONS, protocol_uses_discovery,
     supports_protocol,
@@ -24,6 +26,10 @@ use crate::{
 /// Revision a request without an `MCP-Protocol-Version` header is taken to speak.
 const LEGACY_DEFAULT_PROTOCOL_VERSION: &str = "2025-03-26";
 
+/// Endpoint a `2024-11-05` client opens to start an HTTP+SSE session.
+const LEGACY_SSE_PATH: &str = "/sse";
+/// Endpoint a `2024-11-05` client posts messages to, as named by the `endpoint` event.
+const LEGACY_MESSAGES_PATH: &str = "/messages";
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STDIO_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -225,6 +231,12 @@ fn build_http_router(
     options: &HttpOptions,
     cancellation: &CancellationToken,
 ) -> Result<Router, String> {
+    if options.path == LEGACY_SSE_PATH || options.path == LEGACY_MESSAGES_PATH {
+        return Err(format!(
+            "MCP HTTP path {} collides with the MCP 2024-11-05 endpoints {LEGACY_SSE_PATH} and {LEGACY_MESSAGES_PATH}",
+            options.path
+        ));
+    }
     let manager = Arc::new(LocalSessionManager::default());
     let factory_graph = match options.agent_graph.clone() {
         Some(config) => {
@@ -276,11 +288,35 @@ fn build_http_router(
         // rmcp transport negotiation owns the response representation.
         convert_stateful_sse_to_json: false,
     };
+    // `2024-11-05` sessions are stateful stream connections of unbounded lifetime, so they
+    // sit outside `bound_http_response`, whose cumulative byte cap would cut a stream off.
+    // `legacy_sse` bounds each message and the session count itself. Like stdio, they carry
+    // no `2026-07-28` cache metadata.
+    let legacy_server = match options.agent_graph.clone() {
+        Some(config) => {
+            CompassMcp::new_with_engine(options.graph_path.clone(), options.engine)
+                .with_agent_graph(config)?
+        }
+        None => CompassMcp::new_with_engine(options.graph_path.clone(), options.engine),
+    };
+    let legacy_state = LegacySseState::new(
+        legacy_server,
+        options.max_sessions,
+        LEGACY_MESSAGES_PATH.to_owned(),
+        cancellation.child_token(),
+    );
+    let legacy = Router::new()
+        .route(LEGACY_SSE_PATH, get(legacy_sse::open_stream))
+        .route(LEGACY_MESSAGES_PATH, post(legacy_sse::post_message))
+        .with_state(legacy_state)
+        .layer(RequestBodyLimitLayer::new(MAX_HTTP_REQUEST_BYTES))
+        .layer(middleware::from_fn_with_state(gate.clone(), legacy_gate));
     Ok(Router::new()
         .route_service(&options.path, service)
         .layer(RequestBodyLimitLayer::new(MAX_HTTP_REQUEST_BYTES))
         .layer(middleware::from_fn(bound_http_response))
-        .layer(middleware::from_fn_with_state(gate, http_gate)))
+        .layer(middleware::from_fn_with_state(gate, http_gate))
+        .merge(legacy))
 }
 
 async fn bound_http_response(request: Request, next: Next) -> Response {
@@ -311,20 +347,8 @@ fn enforce_response_limit(response: Response, limit: usize) -> Response {
 
 async fn http_gate(State(gate): State<HttpGate>, mut request: Request, next: Next) -> Response {
     let mut session_creation_guard = None;
-    if let Some(expected) = &gate.api_key {
-        let provided = request
-            .headers()
-            .get("x-api-key")
-            .map(HeaderValue::as_bytes)
-            .or_else(|| bearer_token(request.headers().get(header::AUTHORIZATION)));
-        if !provided.is_some_and(|value| constant_time_eq(value, expected)) {
-            return (
-                StatusCode::UNAUTHORIZED,
-                [(header::CONTENT_TYPE, "application/json")],
-                "{\"error\": \"unauthorized\"}",
-            )
-                .into_response();
-        }
+    if let Some(response) = api_key_rejection(&gate, &request) {
+        return response;
     }
     if let Some(response) = host_rejection(&request, &gate.allowed_hosts) {
         return response;
@@ -408,48 +432,95 @@ async fn http_gate(State(gate): State<HttpGate>, mut request: Request, next: Nex
         }
     }
     let method = request.method().clone();
-    if method == Method::POST && gate.write_api_key.is_some() {
-        let provided = request
-            .headers()
-            .get("x-compass-write-key")
-            .map(|value| value.as_bytes().to_vec());
-        let (parts, body) = request.into_parts();
-        let bytes = match axum::body::to_bytes(body, MAX_HTTP_REQUEST_BYTES).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    [(header::CONTENT_TYPE, "application/json")],
-                    "{\"error\": \"request_too_large\"}",
-                )
-                    .into_response();
-            }
-        };
-        let is_write = serde_json::from_slice::<serde_json::Value>(&bytes)
-            .ok()
-            .is_some_and(|value| contains_agent_graph_write(&value));
-        if is_write
-            && !provided.as_deref().is_some_and(|value| {
-                gate.write_api_key
-                    .as_ref()
-                    .is_some_and(|expected| constant_time_eq(value, expected))
-            })
-        {
-            return (
-                StatusCode::FORBIDDEN,
-                [(header::CONTENT_TYPE, "application/json")],
-                "{\"error\": \"write_capability_required\"}",
-            )
-                .into_response();
-        }
-        request = Request::from_parts(parts, Body::from(bytes));
-    }
+    request = match enforce_write_capability(&gate, request).await {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
     let response = next.run(request).await;
     drop(session_creation_guard);
     if gate.convert_stateful_sse_to_json && method == Method::POST {
         return sse_response_to_json(response).await;
     }
     response
+}
+
+/// Reject a request that lacks the configured API key.
+fn api_key_rejection(gate: &HttpGate, request: &Request) -> Option<Response> {
+    let expected = gate.api_key.as_ref()?;
+    let provided = request
+        .headers()
+        .get("x-api-key")
+        .map(HeaderValue::as_bytes)
+        .or_else(|| bearer_token(request.headers().get(header::AUTHORIZATION)));
+    if provided.is_some_and(|value| constant_time_eq(value, expected)) {
+        return None;
+    }
+    Some(
+        (
+            StatusCode::UNAUTHORIZED,
+            [(header::CONTENT_TYPE, "application/json")],
+            "{\"error\": \"unauthorized\"}",
+        )
+            .into_response(),
+    )
+}
+
+/// Require the independent write capability on POSTs that mutate the Agent Graph.
+///
+/// The body is buffered to inspect it and handed back intact for dispatch.
+async fn enforce_write_capability(gate: &HttpGate, request: Request) -> Result<Request, Response> {
+    if request.method() != Method::POST || gate.write_api_key.is_none() {
+        return Ok(request);
+    }
+    let provided = request
+        .headers()
+        .get("x-compass-write-key")
+        .map(|value| value.as_bytes().to_vec());
+    let (parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, MAX_HTTP_REQUEST_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                [(header::CONTENT_TYPE, "application/json")],
+                "{\"error\": \"request_too_large\"}",
+            )
+                .into_response());
+        }
+    };
+    let is_write = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .is_some_and(|value| contains_agent_graph_write(&value));
+    let authorized = provided.as_deref().is_some_and(|value| {
+        gate.write_api_key
+            .as_ref()
+            .is_some_and(|expected| constant_time_eq(value, expected))
+    });
+    if is_write && !authorized {
+        return Err((
+            StatusCode::FORBIDDEN,
+            [(header::CONTENT_TYPE, "application/json")],
+            "{\"error\": \"write_capability_required\"}",
+        )
+            .into_response());
+    }
+    Ok(Request::from_parts(parts, Body::from(bytes)))
+}
+
+/// Gate for the `2024-11-05` endpoints: the same authentication, host, and
+/// write-capability rules as Streamable HTTP, without its protocol-header and
+/// session-count logic, which describe a different transport.
+async fn legacy_gate(State(gate): State<HttpGate>, request: Request, next: Next) -> Response {
+    if let Some(response) = api_key_rejection(&gate, &request) {
+        return response;
+    }
+    if let Some(response) = host_rejection(&request, &gate.allowed_hosts) {
+        return response;
+    }
+    match enforce_write_capability(&gate, request).await {
+        Ok(request) => next.run(request).await,
+        Err(response) => response,
+    }
 }
 
 fn normalize_header(request: &mut Request, name: &'static str) {
@@ -898,7 +969,7 @@ mod tests {
         let payload: Value = sse_data_json(response_body(&listed))?;
         assert_eq!(
             payload["result"]["tools"].as_array().map(Vec::len),
-            Some(18)
+            Some(19)
         );
 
         cancellation.cancel();

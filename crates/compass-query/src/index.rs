@@ -273,10 +273,10 @@ pub fn open_with_engine(
     // a store reference is present: a corrupt or mismatched sidecar must fail
     // closed instead of silently querying a different realization.
     if selection == EngineSelection::Default && has_published_store(graph_path) {
-        return open_from_local_store(graph_path, program_path);
+        return open_from_local_store(graph_path, program_path, cache_root);
     }
     if selection == EngineSelection::Store {
-        return open_from_local_store(graph_path, program_path);
+        return open_from_local_store(graph_path, program_path, cache_root);
     }
     let graph_engine = open_graph_engine(graph_path, selection)?;
     open_from_graph_engine(graph_path, program_path, cache_root, graph_engine)
@@ -368,6 +368,7 @@ fn open_from_graph_engine(
     let graph = graph_engine.graph().clone();
     let graph_identity = graph_engine.graph_identity().to_owned();
     let build_generation_identity = graph.graph.build.generation_id.clone();
+    let source_commit = graph.graph.build.source_commit.clone();
     let engine_kind = graph_engine.kind();
     let (program, program_digest) = load_program(program_path)?;
     let key = index_key(
@@ -403,6 +404,8 @@ fn open_from_graph_engine(
                 diagnostic.message
             )
         });
+    let response_cache =
+        crate::response_cache::ResponseCache::open(cache_root, &graph_identity, program.as_ref());
     Ok(CodeQueryEngine {
         backend: CodeGraphBackend::Materialized {
             graph: Box::new(graph),
@@ -417,24 +420,30 @@ fn open_from_graph_engine(
         engine_kind,
         graph_identity,
         build_generation_identity,
+        source_commit,
         search_query_cache: std::sync::Mutex::new(Default::default()),
         fuzzy_lookup_cache: std::sync::Mutex::new(Default::default()),
         deadline: None,
         semantic_search: false,
         semantic_index: std::sync::Mutex::new(None),
+        response_cache,
     })
 }
 
 fn open_from_local_store(
     graph_path: &Path,
     program_path: Option<&Path>,
+    cache_root: &Path,
 ) -> Result<CodeQueryEngine, QueryError> {
     let snapshot = open_local_store_snapshot(graph_path)?;
     let graph_identity = snapshot.graph_identity.clone();
     let build_generation_identity = snapshot.build_generation_identity.clone();
+    let source_commit = snapshot.source_commit.clone();
     let partial_graph_message = snapshot.partial_graph_message.clone();
     let (program, _) = load_program(program_path)?;
     let index_path = snapshot.store_path.clone();
+    let response_cache =
+        crate::response_cache::ResponseCache::open(cache_root, &graph_identity, program.as_ref());
     Ok(CodeQueryEngine {
         backend: CodeGraphBackend::Store(Box::new(snapshot)),
         program,
@@ -445,11 +454,13 @@ fn open_from_local_store(
         engine_kind: QueryEngineKind::Store,
         graph_identity,
         build_generation_identity,
+        source_commit,
         search_query_cache: std::sync::Mutex::new(Default::default()),
         fuzzy_lookup_cache: std::sync::Mutex::new(Default::default()),
         deadline: None,
         semantic_search: false,
         semantic_index: std::sync::Mutex::new(None),
+        response_cache,
     })
 }
 
@@ -459,7 +470,9 @@ fn load_program(
     let Some(path) = path else {
         return Ok((None, None));
     };
-    let bytes = fs::read(path).map_err(|error| io_error("read_program", error))?;
+    let bytes = compass_files::read_bytes_bounded(path, 2 * 1024 * 1024 * 1024).map_err(|error| {
+        QueryError::new(QueryErrorKind::Internal, "read_program", format!("Program IR unavailable at {}: {error}; run compass update --program, or select an existing artifact with --program PATH", path.display()))
+    })?;
     let program = serde_json::from_slice::<ProgramBundle>(&bytes).map_err(|error| {
         QueryError::new(
             QueryErrorKind::CorruptArtifact,

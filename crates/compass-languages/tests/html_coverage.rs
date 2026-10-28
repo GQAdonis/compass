@@ -74,15 +74,30 @@ fn html_emits_semantic_structure_metadata_and_link_provenance() -> Result<(), Bo
         })
         .map(|node| node.id.clone())
         .expect("paragraph owner");
-    assert!(
-        extraction
-            .edges
-            .iter()
-            .any(|edge| edge.attributes.get("link_kind")
-                == Some(&Value::String("anchor".to_owned()))
-                && edge.source == paragraph_id
-                && edge.attributes.get("fragment") == Some(&Value::String("intro".to_owned())))
-    );
+    // A link edge originates at the link occurrence itself, which its paragraph contains.
+    let link_ids = extraction
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.attributes.get("document_kind") == Some(&Value::String("link".to_owned()))
+        })
+        .map(|node| node.id.clone())
+        .collect::<BTreeSet<_>>();
+    let anchor_source = extraction
+        .edges
+        .iter()
+        .find(|edge| {
+            edge.attributes.get("link_kind") == Some(&Value::String("anchor".to_owned()))
+                && link_ids.contains(&edge.source)
+                && edge.attributes.get("fragment") == Some(&Value::String("intro".to_owned()))
+        })
+        .map(|edge| edge.source.clone())
+        .expect("anchor link edge from a link occurrence");
+    assert!(extraction.edges.iter().any(|edge| {
+        edge.source == paragraph_id
+            && edge.target == anchor_source
+            && edge.attributes.get("relation") == Some(&Value::String("contains".to_owned()))
+    }));
     assert!(
         extraction
             .extensions

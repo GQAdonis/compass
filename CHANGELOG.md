@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Support every published MCP revision, from 2024-11-05 through 2026-07-28, on
+  stdio and Streamable HTTP. `initialize` negotiates 2024-11-05, 2025-03-26,
+  2025-06-18, and 2025-11-25; 2026-07-28 keeps `server/discover`. The original
+  2024-11-05 HTTP+SSE transport is also served: `GET /sse` opens a session and
+  announces `/messages?sessionId=<id>`, `POST /messages` is acknowledged with
+  `202`, and replies arrive as SSE `message` events. These endpoints reuse the
+  API-key, host, and write-capability checks, bound each message to 16 MiB,
+  queue at most 64 messages per session, and count against `--max-sessions`
+  separately from Streamable HTTP sessions. A configured MCP path may not be
+  `/sse` or `/messages`.
+
 - Restore MCP initialization for 2025-11-25, 2025-06-18, and 2025-03-26 clients,
   including The Boss. Stdio echoes the negotiated revision and Streamable HTTP
   supports legacy sessions with SSE responses. MCP 2026-07-28 retains its
@@ -125,11 +136,11 @@
 
 - Make stdio and Streamable HTTP require the MCP 2026-07-28 discovery and
   per-request metadata contract, with HTTP remaining stateless and without
-  `Mcp-Session-Id`. Older protocol revisions are rejected on both transports.
-  The compatibility
+  `Mcp-Session-Id`. The compatibility
   spelling `--stateless` remains accepted. `--session-timeout` is accepted with
-  a warning and ignored through 0.4.x, then removed in 0.5.0; no legacy
-  MCP-2025 transport mode ships.
+  a warning and ignored through 0.4.x, then removed in 0.5.0. Older revisions
+  remain supported through `initialize`; see the entry on every published MCP
+  revision above.
 
 - Upgrade the native MCP SDK from rmcp 2.2.0 to exactly 3.1.4 while preserving
   stdio operation, server identity, tool names and input schemas, and resource
@@ -159,6 +170,34 @@
   snapshots. Production validation and reference generation now verify chunks
   without retaining the canonical payload in one allocation, while the public
   full-read API and store formats remain compatible.
+
+## 0.4.2 - 2026-10-02
+
+- Add source-scoped architecture and community views, compact hotspot rankings,
+  and optional labelled inferred/document connection layers.
+- Warn about old graph revisions and working-tree changes under the recorded
+  source root, including cached answers. Keep machine stdout intact and expose
+  versioned freshness metadata in MCP envelopes.
+- Return recovery commands for missing graph/Program artifacts and function
+  selectors, and reject unknown Program commands before loading artifacts.
+
+- Default typed query and MCP text to compact, source-located answers. Keep
+  uncertainty visible and expose full paged audit detail with `--verbose` or
+  `--evidence`; raw machine contracts are unchanged.
+- Enforce UTF-8 output budgets with exact continuations across finite commands.
+  Add immutable saved-output reading via `compass output`; reject partial
+  machine output and budgets on unbounded streams.
+- Cache complete native query responses by verified graph, Program IR, request
+  limits, profiles and semantic mode, with bounded disposable storage and
+  corruption fallback. Reuse one pinned engine across CLI page widening.
+
+- Fix six verified graph edge cases: unchanged communities are reclustered
+  after topology splits; hierarchy reconciliation keeps IDs unique; Markdown
+  and R identities preserve distinct rows, names and lexical scopes; empty
+  shell files publish without a zero-range entrypoint; and HTML table/link
+  occurrences retain their distinct identities and edge sources. Invalidate
+  old extraction and graph-publication caches while keeping known hierarchy
+  signature-v1 artifacts readable.
 
 ## 0.4.1 - 2026-10-01
 

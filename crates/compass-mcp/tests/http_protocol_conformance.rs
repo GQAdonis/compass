@@ -7,6 +7,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+/// Every revision opened over `initialize`; each holds one session until the test ends.
+const INITIALIZE_REVISIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
 struct ServerTask(tokio::task::JoinHandle<Result<(), String>>);
 
 impl Drop for ServerTask {
@@ -25,7 +28,7 @@ async fn legacy_http_negotiates_versions_and_rejects_malformed_headers()
     options.port = address.port();
     options.api_key = Some("protocol-test-key".to_owned());
     options.json_response = true;
-    options.max_sessions = 3;
+    options.max_sessions = INITIALIZE_REVISIONS.len();
     drop(reservation);
     let server = ServerTask(tokio::spawn(serve_http(options)));
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -41,14 +44,17 @@ async fn legacy_http_negotiates_versions_and_rejects_malformed_headers()
     })
     .await??;
 
-    for version in ["2025-11-25", "2025-06-18", "2025-03-26"] {
+    for version in INITIALIZE_REVISIONS {
         let initialize = json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
             "params": {"protocolVersion": version, "capabilities": {},
                 "clientInfo": {"name": "http-conformance", "version": "1"}}
         });
         let initialized = post(address, b"", &initialize).await?;
-        assert!(initialized.starts_with("HTTP/1.1 200 OK"));
+        assert!(
+            initialized.starts_with("HTTP/1.1 200 OK"),
+            "initialize for {version} was refused: {initialized}"
+        );
         assert!(
             initialized
                 .to_ascii_lowercase()
@@ -79,7 +85,7 @@ async fn legacy_http_negotiates_versions_and_rejects_malformed_headers()
             payload(&listed)?["result"]["tools"]
                 .as_array()
                 .map(Vec::len),
-            Some(18)
+            Some(19)
         );
     }
 
@@ -101,7 +107,10 @@ async fn legacy_http_negotiates_versions_and_rejects_malformed_headers()
     let at_capacity = post(address, b"", &initialize).await?;
     assert!(at_capacity.starts_with("HTTP/1.1 429 Too Many Requests"));
     assert_eq!(payload(&at_capacity)?["error"]["code"], -32024);
-    assert_eq!(payload(&at_capacity)?["error"]["data"]["max_sessions"], 3);
+    assert_eq!(
+        payload(&at_capacity)?["error"]["data"]["max_sessions"],
+        INITIALIZE_REVISIONS.len()
+    );
     Ok(())
 }
 

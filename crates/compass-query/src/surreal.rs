@@ -312,6 +312,10 @@ impl SurrealQueryEngine {
                 semantic_search: false,
                 semantic_index: std::sync::Mutex::new(None),
                 deadline,
+                // A Surreal reference pins a generation, not a source commit, and the
+                // engine has no cache root, so responses are never cached on disk.
+                source_commit: None,
+                response_cache: crate::response_cache::ResponseCache::disabled(),
             };
             operation(&engine)
         })

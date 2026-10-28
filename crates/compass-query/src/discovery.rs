@@ -380,7 +380,12 @@ impl CodeQueryEngine {
         &self,
         request: DiscoveryQueryRequest,
     ) -> Result<DiscoveryQueryResponse, QueryError> {
-        self.discover_with_cancellation(request, None)
+        self.cached_response(
+            "discovery",
+            &request,
+            || self.discover_with_cancellation(request.clone(), None),
+            |response| !response.truncated,
+        )
     }
 
     /// Execute discovery while observing an optional caller-owned cancellation flag.
@@ -2941,6 +2946,7 @@ mod tests {
                 .unwrap_or_else(|_| std::process::abort());
         }
         CodeQueryEngine {
+            source_commit: None,
             backend: CodeGraphBackend::Materialized {
                 graph: Box::new(graph),
                 adjacency: Box::new(adjacency),
@@ -2959,6 +2965,7 @@ mod tests {
             deadline: None,
             semantic_search: false,
             semantic_index: std::sync::Mutex::new(None),
+            response_cache: crate::response_cache::ResponseCache::disabled(),
         }
     }
 

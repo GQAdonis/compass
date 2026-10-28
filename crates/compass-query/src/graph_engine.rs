@@ -185,7 +185,7 @@ impl JsonGraphEngine {
                 QueryError::new(
                     QueryErrorKind::CorruptArtifact,
                     "graph_load_failed",
-                    error.to_string(),
+                    format!("{error}; run compass ensure to publish a graph, or select an existing graph with --graph PATH"),
                 )
             })?;
         validate_graph_schema(&graph)?;
@@ -222,6 +222,7 @@ pub(crate) struct LocalStoreSnapshot {
     pub(crate) store_path: PathBuf,
     pub(crate) graph_identity: String,
     pub(crate) build_generation_identity: String,
+    pub(crate) source_commit: Option<String>,
     pub(crate) partial_graph_message: Option<String>,
 }
 
@@ -419,7 +420,9 @@ pub(crate) fn open_local_store_snapshot(
         )
     })?;
     validate_builder(&metadata.graph.build.builder_version, Some(graph_path))?;
-    let build_generation_identity = metadata.graph.build.generation_id;
+    let build = metadata.graph.build;
+    let source_commit = build.source_commit;
+    let build_generation_identity = build.generation_id;
     let partial_graph_message = reader
         .graph_diagnostic_by_code("publication_omission_summary")
         .map_err(|error| {
@@ -442,6 +445,7 @@ pub(crate) fn open_local_store_snapshot(
         store_path,
         graph_identity,
         build_generation_identity,
+        source_commit,
         partial_graph_message,
     })
 }
@@ -517,7 +521,7 @@ pub(crate) fn read_store_ref(graph_path: &Path) -> Result<StoreRef, QueryError> 
         return Err(QueryError::new(
             QueryErrorKind::CorruptArtifact,
             "store_ref_missing",
-            "store.ref is required for an immutable graph snapshot",
+            "store.ref is required for an immutable graph snapshot; run compass update --store sqlite to publish store data, or use --engine json --graph PATH for an existing JSON graph",
         ));
     }
     let size = fs::metadata(&reference_path)

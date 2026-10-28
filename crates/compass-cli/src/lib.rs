@@ -8,6 +8,7 @@ mod code_query_commands;
 mod dedup_commands;
 mod distribution;
 mod document_commands;
+mod freshness;
 mod help;
 mod history_batch;
 mod history_build;
@@ -20,6 +21,8 @@ mod install_commands;
 mod integration_commands;
 mod label_commands;
 mod models_commands;
+mod output_budget;
+mod overview_commands;
 mod program_commands;
 mod provider_commands;
 mod prs_commands;
@@ -83,9 +86,10 @@ use compass_output::{
     graph_artifact_identity, graph_community_view_model_document, graph_search_index,
     graph_view_model_bundle_document_with_hierarchy, graph_view_model_document, node_filenames,
     project_architecture, project_architecture_or_summary, render_agent_query_continuation_header,
-    render_agent_query_header_lines, render_agent_query_text, render_orientation_json,
-    validate_orientation_graph_identity, write_callflow_html, write_canvas, write_cypher,
-    write_graphml, write_svg, write_tree_html, write_workbench_html_with_source_navigation,
+    render_agent_query_header_lines, render_agent_query_text, render_compact_query_header_lines,
+    render_orientation_json, validate_orientation_graph_identity, write_callflow_html,
+    write_canvas, write_cypher, write_graphml, write_svg, write_tree_html,
+    write_workbench_html_with_source_navigation,
 };
 use compass_prs::{ProcessRunner, SystemRunner};
 use compass_query::{
@@ -431,6 +435,58 @@ fn write_output<W: Write + ?Sized>(
 
 #[must_use]
 pub fn run(frontend: Frontend, arguments: impl IntoIterator<Item = OsString>) -> Outcome {
+    let freshness = freshness::Scope::begin();
+    let mut args = arguments
+        .into_iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let controls = match output_budget::take(&mut args) {
+        Ok(controls) => controls,
+        Err(error) => return Outcome::failure(format!("error: {error}")),
+    };
+    if args.first().is_some_and(|command| command == "output") {
+        return output_budget::command(&args[1..], controls.budget);
+    }
+    if let Some(budget) = controls.budget {
+        let command = args.first().map(String::as_str).unwrap_or_default();
+        let native = matches!(
+            command,
+            "ask" | "search" | "callers" | "callees" | "impact" | "explore" | "node"
+        ) || (command == "query"
+            && !args.iter().any(|arg| {
+                matches!(
+                    arg.split('=').next().unwrap_or_default(),
+                    "--traverse" | "--page" | "--cql" | "--repl" | "--stdin" | "--file"
+                )
+            }));
+        if !controls.machine
+            && (command == "explain"
+                || (command == "query"
+                    && !native
+                    && !args.iter().any(|arg| {
+                        matches!(
+                            arg.split('=').next().unwrap_or_default(),
+                            "--cql" | "--repl" | "--stdin" | "--file"
+                        )
+                    })))
+        {
+            args.extend(["--budget".to_owned(), budget.to_string()]);
+        }
+        let machine = controls.machine;
+        if native
+            && !machine
+            && !args
+                .iter()
+                .any(|arg| arg == "--text-budget" || arg.starts_with("--text-budget="))
+        {
+            args.extend(["--text-budget".to_owned(), budget.to_string()]);
+        }
+    }
+    let outcome = run_unbudgeted(frontend, args.into_iter().map(OsString::from));
+    output_budget::finish(freshness.finish(outcome), &controls)
+}
+
+fn run_unbudgeted(frontend: Frontend, arguments: impl IntoIterator<Item = OsString>) -> Outcome {
     let mut args = arguments
         .into_iter()
         .map(|argument| argument.to_string_lossy().into_owned())
@@ -466,6 +522,7 @@ pub fn run(frontend: Frontend, arguments: impl IntoIterator<Item = OsString>) ->
     };
     let outcome = match command.as_str() {
         "agent" => agent_commands::command(frontend, &args),
+        "output" => output_budget::command(&args, None),
         "history" => history_commands::command(frontend, &args),
         "agent-graph" => agent_graph_commands::command(&args),
         "call-graph" => call_graph_commands::command(frontend, &args),
@@ -487,6 +544,8 @@ pub fn run(frontend: Frontend, arguments: impl IntoIterator<Item = OsString>) ->
         "path" => command_path(frontend, &args),
         "explain" => command_explain(frontend, &args),
         "architecture" => command_architecture(frontend, &args),
+        "community" => overview_commands::command("community", &args),
+        "hotspots" => overview_commands::command("hotspots", &args),
         "affected" => command_affected(&args),
         "export" => command_export(frontend, &args),
         "benchmark" => command_benchmark(&args),
@@ -4312,7 +4371,7 @@ fn command_export(frontend: Frontend, args: &[String]) -> Outcome {
     {
         return Outcome::failure("error: --node-limit must be a positive integer".to_owned());
     }
-    let mut inputs = match ExportInputs::load(&graph_path) {
+    let mut inputs = match load_export_inputs(&graph_path) {
         Ok(inputs) => inputs,
         Err(GraphError::NotFound(_)) => {
             return Outcome::failure(format!(
@@ -6026,7 +6085,7 @@ pub(crate) fn command_natural_query(frontend: Frontend, args: &[String]) -> Outc
                 discovery_requested = true;
                 index += 1;
             }
-            "--evidence" => {
+            "--evidence" | "--verbose" => {
                 if !seen_discovery_options.insert("--evidence".to_owned()) {
                     return Outcome::failure("error: --evidence must not be repeated".to_owned());
                 }
@@ -6365,7 +6424,9 @@ fn command_discovery_query(
             Ok(view) => view,
             Err(error) => return Outcome::failure(format!("error: {error}")),
         };
-        let header = if cursor.is_some() {
+        let header = if !include_evidence {
+            render_compact_query_header_lines(&view)
+        } else if cursor.is_some() {
             render_agent_query_continuation_header(&view)
         } else {
             render_agent_query_header_lines(&view)
@@ -6418,6 +6479,7 @@ fn discovery_query(
                 .join("cache");
             let engine =
                 open_code_query(&graph, None, &cache).map_err(|error| error.to_string())?;
+            freshness::record(engine.graph_path(), engine.source_commit());
             let graph_identity = engine.build_generation_identity().to_owned();
             let graph_digest = engine.graph_identity().to_owned();
             let engine = engine
@@ -6452,6 +6514,7 @@ fn discovery_query(
                 &cache,
             )
             .map_err(|error| error.to_string())?;
+            freshness::record(engine.graph_path(), engine.source_commit());
             let graph_identity = engine.build_generation_identity().to_owned();
             let graph_digest = engine.graph_identity().to_owned();
             let engine = engine
@@ -6541,7 +6604,7 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
         .iter()
         .any(|argument| matches!(argument.as_str(), "-h" | "--help"))
     {
-        return Outcome::success("Usage: compass architecture [--graph PATH] [--labels PATH] [--format text|json|agent-json]".to_owned());
+        return Outcome::success("Usage: compass architecture [--graph PATH] [--labels PATH] [--scope PATH|module:NAME] [--format text|json|agent-json]".to_owned());
     }
     let (format, args) = match parse_shared_output_format(args, "architecture") {
         Ok(parsed) => parsed,
@@ -6549,6 +6612,7 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
     };
     let mut graph_path = default_graph_path();
     let mut labels_path = None;
+    let mut scopes = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -6561,6 +6625,19 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
             }
             value if value.starts_with("--graph=") => {
                 graph_path = PathBuf::from(&value[8..]);
+                index += 1;
+            }
+            "--scope" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Outcome::failure(
+                        "error: --scope requires a relative path or module:NAME".to_owned(),
+                    );
+                };
+                scopes.push(value.clone());
+                index += 2;
+            }
+            value if value.starts_with("--scope=") => {
+                scopes.push(value[8..].to_owned());
                 index += 1;
             }
             "--labels" => {
@@ -6585,11 +6662,15 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
             }
         }
     }
+    let scopes = match compass_query::OverviewScope::new(scopes) {
+        Ok(scope) => scope.filters,
+        Err(error) => return Outcome::failure_with_code(format!("error: {error}"), 2),
+    };
     let graph_path = match compass_files::BuildGuard::resolve_requested_artifact(&graph_path) {
         Ok(path) => path,
         Err(error) => return Outcome::failure(format!("error: could not resolve graph: {error}")),
     };
-    let mut inputs = match ExportInputs::load(&graph_path) {
+    let mut inputs = match load_export_inputs(&graph_path) {
         Ok(inputs) => inputs,
         Err(GraphError::NotFound(_)) => {
             return Outcome::failure(format!(
@@ -6605,6 +6686,14 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
             Err(error) => return Outcome::failure(error),
         }
     }
+    let selection = if scopes.is_empty() {
+        None
+    } else {
+        match overview_commands::apply_scope(&mut inputs, scopes) {
+            Ok(selection) => Some(selection),
+            Err(error) => return Outcome::failure(format!("error: {error}")),
+        }
+    };
     let title = export_project_title(&inputs, &graph_path);
     let overlay = match load_architecture_overlay(None, &graph_path) {
         Ok(overlay) => overlay,
@@ -6630,11 +6719,15 @@ fn command_architecture(_frontend: Frontend, args: &[String]) -> Outcome {
             ));
         }
     };
-    match projection {
+    let output = match projection {
         ArchitectureProjectionOutput::Detailed(model) => render_architecture_output(format, &model),
         ArchitectureProjectionOutput::Summary(summary) => {
             render_architecture_summary_output(format, &summary)
         }
+    };
+    match selection {
+        Some(selection) => overview_commands::scoped_output(output, &selection, format),
+        None => output,
     }
 }
 
@@ -7314,6 +7407,7 @@ fn command_affected_typed(
             Ok(engine) => engine,
             Err(error) => return Some(Outcome::failure(format!("error: {error}"))),
         };
+    freshness::record(engine.graph_path(), engine.source_commit());
     let relation_kinds = relations
         .iter()
         .filter_map(|relation| affected_relation_kind(relation))
@@ -7499,7 +7593,11 @@ pub(crate) fn load_selection_full(
                 compass_files::BuildGuard::resolve_requested_artifact(path).map_err(|error| {
                     Outcome::failure(format!("error: could not resolve graph: {error}"))
                 })?;
-            LoadedGraph::load_full_directed(&path).map_err(graph_load_outcome)
+            LoadedGraph::load_full_directed(&path)
+                .inspect(|loaded| {
+                    freshness::record(&path, loaded.graph.source_commit());
+                })
+                .map_err(graph_load_outcome)
         }
         GraphSelection::Commit(revision) => {
             history_commands::load_graph_at(frontend, revision, true)
@@ -7519,6 +7617,7 @@ pub(crate) fn load_indexed_selection(
                     Outcome::failure(format!("error: could not resolve graph: {error}"))
                 })?;
             let graph = compass_model::Graph::load_directed(&path).map_err(graph_load_outcome)?;
+            freshness::record(&path, graph.source_commit());
             Ok(LoadedGraph {
                 graph,
                 overlay: HashMap::new(),
@@ -7540,7 +7639,7 @@ fn touch_selected_query_stamp(selection: &GraphSelection) {
 fn query_help(frontend: Frontend) -> String {
     let prefix = frontend_name(frontend);
     let help = format!(
-        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--evidence] [--format text|agent-json|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --evidence                        Include full provenance and typed detail in text\n  --format <text|agent-json|json>   Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 800]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Approximate tokens per page [default: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text-only pagination/evidence controls. Legacy --traverse, --budget, and --page cannot be mixed with discovery controls."
+        "Usage: {prefix} query \"<question>\" [--direction auto|incoming|outgoing|both] [--scope KIND:VALUE] [--context VALUE] [--dfs] [--evidence] [--format text|agent-json|json] [--graph PATH|--at REV]\n\nNatural discovery options (default for a typed graph):\n  --direction <VALUE>               Direction: auto, incoming, outgoing, or both [default: auto]\n  --scope <KIND:VALUE>              Repeatable OR scope; KIND is community, source, package, or node\n  --context <VALUE>                 Repeatable strict relationship-context filter\n  --dfs                             Use depth-first expansion [default: breadth-first]\n  --include-heuristic               Include heuristic evidence [default: excluded]\n  --evidence                        Include full provenance and typed detail in text\n  --format <text|agent-json|json>   Discovery output [default: text]\n  --text-budget <N>                 Approximate tokens in one text page [default: 800]\n  --cursor <TOKEN>                  Continue the same immutable semantic result (text only)\n  --max-depth <N>                   Traversal depth [default: 2; hard maximum: 8]\n  --max-seeds <N>                   Ranked seed count [default: 3; hard maximum: 3]\n  --max-candidates <N>              Ranked candidate count [default/hard maximum: 256]\n  --max-nodes <N>                   Returned node count [default/hard maximum: 500]\n  --max-edges <N>                   Returned edge count [default/hard maximum: 1000]\n  --max-expanded-relationships <N>  Examined relationships [default/hard maximum: 10000]\n  --max-response-bytes <N>          Serialized response bytes [default/hard maximum: 8388608]\n  --timeout-ms <N>                  Discovery deadline in milliseconds [default/hard maximum: 30000]\n\nLegacy traversal options:\n  --traverse                        Force legacy relevance traversal\n  --budget <N>                      Bound completed output [default text page: 2000]\n  --page <N>                        Result page, starting at 1 [default: 1]\n\nGraph selection:\n  --graph <PATH>                    Read a graph JSON file\n  --at <REV>                        Resolve REV once to an immutable typed realization; conflicts with --graph\n\nCompassQL options:\n  --cql                             Use CompassQL mode\n  --timeout-ms <N>                  CompassQL execution timeout\n  --max-expanded-relationships <N>  CompassQL relationship expansion limit\n  Run `{prefix} help query` for all CompassQL controls and examples.\n\nDiscovery limits must be positive; values above a hard maximum are rejected rather than clamped. JSON rejects text-only pagination/evidence controls. Legacy --traverse and --page cannot be mixed with discovery controls. --budget applies to all finite commands."
     );
     let help = help
         .replace(
@@ -7583,24 +7682,36 @@ fn load(path: &Path, force_directed: bool) -> Result<LoadedGraph, Outcome> {
     } else {
         LoadedGraph::load(&path)
     };
-    result.map_err(graph_load_outcome)
+    result
+        .inspect(|loaded| {
+            freshness::record(&path, loaded.graph.source_commit());
+        })
+        .map_err(graph_load_outcome)
 }
 
 fn load_affected(path: &Path) -> Result<LoadedGraph, Outcome> {
     let path = compass_files::BuildGuard::resolve_requested_artifact(path)
         .map_err(|error| Outcome::failure(format!("error: could not resolve graph: {error}")))?;
-    LoadedGraph::load_for_affected(&path).map_err(graph_load_outcome)
+    LoadedGraph::load_for_affected(&path)
+        .inspect(|loaded| {
+            freshness::record(&path, loaded.graph.source_commit());
+        })
+        .map_err(graph_load_outcome)
 }
 
 fn graph_load_outcome(error: GraphError) -> Outcome {
     match error {
-        GraphError::NotFound(path) => {
-            Outcome::failure(format!("error: graph file not found: {}", path.display()))
-        }
-        GraphError::InvalidExtension(_) => {
-            Outcome::failure("error: graph file must be a .json file".to_owned())
-        }
-        other => Outcome::failure(format!("error: could not load graph: {other}")),
+        GraphError::NotFound(path) => Outcome::failure(format!(
+            "error: graph file not found: {}. Run compass ensure to publish a graph, or select an existing graph with --graph PATH.",
+            path.display()
+        )),
+        GraphError::InvalidExtension(_) => Outcome::failure(
+            "error: graph file must be a .json file; select an existing graph with --graph PATH"
+                .to_owned(),
+        ),
+        other => Outcome::failure(format!(
+            "error: could not load graph: {other}. Run compass ensure to publish a fresh graph, or select a supported existing graph with --graph PATH."
+        )),
     }
 }
 
@@ -8292,4 +8403,10 @@ mod mcp_option_tests {
         assert_eq!(model.as_deref(), Some("gpt-test"));
         assert!(extract_help().contains("COMPASS_BACKEND/COMPASS_MODEL"));
     }
+}
+
+fn load_export_inputs(path: &Path) -> Result<ExportInputs, GraphError> {
+    let inputs = ExportInputs::load(path)?;
+    freshness::record(path, graph_source_commit(&inputs.document));
+    Ok(inputs)
 }

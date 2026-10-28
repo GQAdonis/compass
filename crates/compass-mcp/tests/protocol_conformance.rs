@@ -73,6 +73,7 @@ async fn stdio_conformance_discovers_lists_invokes_reads_and_closes() -> Result<
             "query_graph",
             "get_neighbors",
             "get_community",
+            "get_hotspots",
             "god_nodes",
             "graph_stats",
             "shortest_path",
@@ -139,6 +140,7 @@ async fn stdio_accepts_initialize_for_every_pre_discovery_revision() -> Result<(
         ProtocolVersion::V_2025_11_25,
         ProtocolVersion::V_2025_06_18,
         ProtocolVersion::V_2025_03_26,
+        ProtocolVersion::V_2024_11_05,
     ] {
         let (server_transport, client_transport) = tokio::io::duplex(16 * 1024);
         let server_task = tokio::spawn(async move {

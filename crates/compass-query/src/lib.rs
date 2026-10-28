@@ -17,10 +17,12 @@ mod index;
 mod intent;
 mod natural_answers;
 mod neighbors;
+mod overview;
 mod program_join;
 mod ranking;
 mod recall;
 mod relevance;
+mod response_cache;
 mod score;
 mod semantic_search;
 mod source;
@@ -94,6 +96,10 @@ pub use intent::{
 pub use neighbors::{
     MAX_NEIGHBOR_ADJACENCY_ENTRIES, MAX_NEIGHBOR_RECORDS, MAX_NEIGHBOR_RESPONSE_BYTES,
     NeighborDirection, NeighborError, NeighborGroup, NeighborReport, direct_neighbors,
+};
+pub use overview::{
+    ConnectionLayer, ConnectionLayers, Hotspot, HotspotReport, MAX_HOTSPOTS, MAX_OVERVIEW_EDGES,
+    MAX_OVERVIEW_NODES, OverviewError, OverviewScope, ScopeSelection, hotspots, scoped_document,
 };
 pub use program_join::join_program_evidence;
 pub use ranking::QUERY_RANKER_PROFILE_V1;

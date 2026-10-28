@@ -20,10 +20,12 @@ The supported identity is:
 There is no alternate legacy frontend or alias. Legacy names and stores are
 not read as fallback inputs.
 
-Both stdio and Streamable HTTP use only MCP 2026-07-28 and reject older
-revisions. HTTP is stateless and has no MCP-2025 session fallback. See the root
-compatibility and migration documents for the `--session-timeout` 0.4.x
-deprecation and 0.5.0 removal schedule.
+Compass supports every published MCP revision: 2026-07-28, 2025-11-25,
+2025-06-18, 2025-03-26, and 2024-11-05. Stdio and Streamable HTTP accept the
+older revisions through `initialize`; 2026-07-28 uses `server/discover`. HTTP
+also serves the original 2024-11-05 HTTP+SSE transport at `/sse` and
+`/messages`. See the root compatibility and migration documents for the
+`--session-timeout` 0.4.x deprecation and 0.5.0 removal schedule.
 
 The typed navigation tools return `compass.mcp.tool-result/1` structured
 content and advertise no raw output schema. Their `compass.query/1` response is

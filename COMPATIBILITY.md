@@ -79,8 +79,8 @@ results for the known nested-anchor limitation in that stable release.
 
 Graph query, impact and traversal caches now bind to the SHA-256 of the bounded
 JSON bytes read, including when file size and modification time are unchanged.
-Their disposable header versions advance to `TRAILG02`, `TRAILA03` and
-`TRAILT07`. Typed content caches use `.content-v2.cache` and `CGRPHV02`; their
+Their disposable header versions advance to `TRAILG02`, `TRAILA04` and
+`TRAILT08`. Typed content caches use `.content-v2.cache` and `CGRPHV02`; their
 cache key, schema admission and decoded document come from one byte snapshot.
 Older cache formats are ignored and rebuilt from the graph.
 
@@ -98,6 +98,42 @@ Graph schemas, source identities, query-result schemas, historical realizations
 and AST cache semantics are unchanged. Content reads use the configured graph
 byte cap; this correctness correction makes no latency or memory improvement
 claim.
+
+## Extractor identity and community reconciliation corrections
+
+The AST extraction cache identity advances from 15 to 16, and graph publication
+semantics advance from compass.graph.publication/1 to /2. Existing current
+builds invalidate their cached extraction/publication state and rebuild
+coherently. The compass.graph/1 schema and universal evidence schema do not
+change; published historical realizations remain immutable.
+
+An empty Bash script publishes its file inventory without a synthetic
+zero-range entrypoint. R function identities now include lexical owners for
+nested functions, and exact case and punctuation remain part of the function
+name. Top-level R qualified names keep their existing spelling. Markdown table
+row identities append a digest of the full, exact identity key to the readable
+qualified-name prefix; row and cell IDs remain stable across line shifts and
+non-identity edits. Existing Markdown table-row and cell IDs change once on
+rebuild.
+
+HTML table and row nodes use source-occurrence identity, so equal visible text
+does not merge different elements. Local HTML references originate at their
+<a> or <link> node and point to the uniquely resolved target. A link to its
+own fragment remains part of the link count but does not publish a self-loop.
+Existing HTML table and row IDs change once on rebuild.
+
+Incremental community clustering rechecks whether each prior community remains
+connected in the current topology, even when its source files are unchanged.
+Disconnected prior communities join the bounded affected region and are
+reclustered; the existing affected-region limit can still select the full
+detector fallback.
+
+Hierarchy reconciliation uses hierarchy-signature/v2. If a fresh group ID
+collides with an inherited ID, it receives the first available deterministic
+digest ID within a bounded retry count, and reconciliation events name the
+final IDs. Known hierarchy-signature/v1 artifacts remain readable. The
+hierarchy schema stays at /1, and existing historical sidecars are not
+rewritten.
 
 ## Go struct field declarations
 
@@ -634,7 +670,7 @@ typed responses report truncation and an ambiguity diagnostic. Graph schemas,
 stored identities, and extraction are unchanged. Existing graphs can receive
 this lookup correction without re-extraction.
 
-Traversal cache format `TRAILT07` retains deferred relationship flags and the
+Traversal cache format `TRAILT08` retains deferred relationship flags and the
 weakest confidence across all evidence (introduced in `TRAILT06`), including
 explicit compatibility confidence. Missing or unknown confidence values in an
 evidence item cannot establish an exact fact. Older disposable traversal
@@ -1070,14 +1106,22 @@ plugin packages are a separate contract.
 
 ## MCP transport compatibility
 
-Both stdio and Streamable HTTP support MCP 2026-07-28, 2025-11-25,
-2025-06-18, and 2025-03-26. Clients using the three 2025 revisions begin with
-`initialize`; Compass returns the negotiated revision. Legacy HTTP clients
+Both stdio and Streamable HTTP support every published MCP revision:
+2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26, and 2024-11-05. Clients using
+any revision before 2026-07-28 begin with `initialize`; Compass returns the
+negotiated revision. Legacy HTTP clients
 receive an `Mcp-Session-Id` and use it on subsequent requests. Initialization
 does not require a protocol-version header; the version is carried in its body.
 Other initialize revisions negotiate a supported legacy fallback through rmcp;
 the explicit 2026-07-28 refusal described below remains in effect.
 Legacy-session responses use SSE even when `--json-response` is enabled.
+The 2024-11-05 HTTP+SSE transport is served at `GET /sse`, which opens a
+session and sends an `endpoint` event naming `/messages?sessionId=<id>`, and
+`POST /messages`, which returns `202 Accepted` while the JSON-RPC reply arrives
+as an SSE `message` event. Its sessions run the stdio handler, accept one
+JSON-RPC object per request (that revision has no batching), and are bounded
+separately by `--max-sessions`. A dropped client is noticed within one
+five-second keep-alive interval.
 The rmcp 3.4.0 session manager closes inactive sessions after five minutes and
 allows 60 seconds for initialization. These SDK defaults are independent of
 the deprecated `--session-timeout` option.
@@ -1822,3 +1866,42 @@ independently of the bounded path ledger.
 The resolver also preserves qualified external Rust receivers established by
 source factory return contracts, subject to the existing inference policy. An
 absent method on a source-local return type remains unresolved.
+
+## Compact query text and completed-output budgets
+
+Human-readable typed query defaults now omit audit fields and redundant ledgers.
+Use `--verbose` or `--evidence` for full paged status and record provenance.
+No-match/candidate pages are capped at 199 approximate tokens. Text is a display
+surface; raw `compass.query/1`, discovery, Agent View and MCP structured content
+retain their schemas and semantic records. MCP text uses the same compact
+presentation. Keep evidence mode unchanged when continuing a cursor; incompatible
+prefixes fail explicitly.
+
+`--budget N` is a completed-output ceiling of `4*N` UTF-8 bytes across streams,
+including newline/continuation. Supported range is 32–65536. It no longer selects
+legacy query traversal; `--traverse` or `--page` does. Native query pagers keep
+whole entries or report the budget required for one entry. Other completed
+answers use content-addressed `compass.saved-output/1` records and the additive
+`compass output ID --offset BYTE --budget N` command. This reader does not repeat
+command side effects. Oversized machine output fails rather than publish partial
+JSON/JSONL; streaming commands/events reject finite budgets before starting.
+
+Saved answers are disposable, work-directory-local and independently bounded.
+Response cache v1 is also disposable: checksum-checked typed complete records
+are bound to graph/Program IR, executable version, planner/ranker profiles,
+complete request and semantic mode. A changed response-cache meaning requires a
+new cache filename/version; missing/corrupt caches do not change native results.
+Neither cache rewrites published graphs or historical realizations.
+
+## Scoped usability and freshness
+
+Unscoped architecture output and existing MCP community membership defaults are
+unchanged. Opt-in scoped architecture output uses the new
+`compass.architecture.scoped-view/1` wrapper. New community/hotspot commands and
+`get_hotspots` have explicit schemas described in `docs/reference/outputs.md`.
+MCP consumers with closed outer envelopes must admit optional `freshness`.
+CLI machine stdout remains unchanged; warnings use stderr and are budgeted.
+Graph, Program IR and immutable historical schemas are unchanged. Disposable
+impact/traversal cache headers `TRAILA04` and `TRAILT08` retain the pinned build
+commit; older caches are ignored and rebuilt. Missing Program IR exits with code 3 and recovery
+commands; unknown Program subcommands exit with code 2 before artifact access.

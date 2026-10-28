@@ -9,7 +9,7 @@ use compass_model::query_contract::{
 use compass_output::{
     AgentOperandRole, AgentQueryContext, AgentTextPageOptions, DEFAULT_AGENT_TEXT_PAGE_TOKENS,
     build_code_query_brief, build_code_query_view, decode_agent_text_page_cursor,
-    render_code_query_text_page,
+    render_code_query_evidence_page, render_compact_code_query_text_page,
 };
 use compass_query::{
     EngineSelection, ExactSearchFilter, NaturalQueryIntent, NaturalQueryRequest, QueryError,
@@ -38,13 +38,13 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
         && query_args.iter().any(|arg| {
             matches!(
                 arg.as_str(),
-                "--cursor" | "--text-budget" | "--evidence" | "--result-envelope"
+                "--cursor" | "--text-budget" | "--evidence" | "--verbose" | "--result-envelope"
             ) || arg.starts_with("--cursor=")
                 || arg.starts_with("--text-budget=")
         })
     {
         return Outcome::failure(
-            "error: --cursor, --text-budget, --evidence, and --result-envelope are text-only and require --format text".to_owned(),
+            "error: --cursor, --text-budget, --verbose, --evidence, and --result-envelope are text-only and require --format text".to_owned(),
         );
     }
     let text_budget = match number(&query_args, "--text-budget", DEFAULT_AGENT_TEXT_PAGE_TOKENS) {
@@ -72,7 +72,7 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
     let result = if format == SharedOutputFormat::Text {
         execute_paged(operation, &query_args, deadline)
     } else {
-        execute(operation, &query_args, 1, deadline)
+        execute(operation, &query_args, 1, deadline, &mut None)
     };
     match result {
         Ok(execution) => {
@@ -94,7 +94,15 @@ pub(crate) fn command(operation: &str, args: &[String]) -> Outcome {
                     Err(error) => Outcome::failure(format!("error: {error}")),
                 }
             } else if format == SharedOutputFormat::Text {
-                match render_code_query_text_page(
+                let renderer = if query_args
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "--evidence" | "--verbose"))
+                {
+                    render_code_query_evidence_page
+                } else {
+                    render_compact_code_query_text_page
+                };
+                match renderer(
                     &execution.response,
                     execution.context,
                     AgentTextPageOptions {
@@ -138,8 +146,9 @@ fn execute_paged(
     deadline: Instant,
 ) -> Result<QueryExecution, String> {
     let mut scale = 1_u32;
+    let mut engine = None;
     loop {
-        let execution = execute(operation, args, scale, deadline)?;
+        let execution = execute(operation, args, scale, deadline, &mut engine)?;
         if !execution.response.truncated
             || scale >= MAX_PAGE_WIDENING_SCALE
             || args.iter().any(|arg| arg == "--exact")
@@ -155,6 +164,7 @@ fn execute(
     args: &[String],
     page_scale: u32,
     deadline: Instant,
+    reused_engine: &mut Option<compass_query::CodeQueryEngine>,
 ) -> Result<QueryExecution, String> {
     let calls_only = args.iter().any(|arg| arg == "--calls-only");
     if args.iter().any(|arg| arg.starts_with("--calls-only=")) {
@@ -243,7 +253,7 @@ fn execute(
         .map(resolve_snapshot_artifact)
         .transpose()?;
     let limits = limits(args, page_scale)?;
-    if revision.is_none() {
+    if revision.is_none() && reused_engine.is_none() {
         let graph = if graph_option.is_some() {
             resolve_snapshot_artifact(requested_graph.clone())?
         } else {
@@ -268,7 +278,9 @@ fn execute(
             return execute_surreal(operation, args, &positional, &graph, limits, deadline);
         }
     }
-    let engine = if let Some(revision) = revision {
+    let engine = if let Some(engine) = reused_engine.take() {
+        engine
+    } else if let Some(revision) = revision {
         let (realization, document) = super::history_commands::load_typed_graph_at(revision)?;
         let current = std::env::current_dir().map_err(|error| error.to_string())?;
         let history_cache = current
@@ -296,8 +308,7 @@ fn execute(
             compass_files::BuildGuard::resolve_artifact(&output, "graph.json")
                 .map_err(|error| error.to_string())?
         };
-        open_with_engine(&graph, program.as_deref(), &cache, engine)
-            .map_err(|error| error.to_string())?
+        open_with_engine(&graph, program.as_deref(), &cache, engine).map_err(query_error)?
     }
     .with_deadline(deadline)
     .with_semantic_search(args.iter().any(|arg| arg == "--semantic-search"));
@@ -433,6 +444,7 @@ fn execute(
         }
         _ => unreachable!(),
     };
+    super::freshness::record(engine.graph_path(), engine.source_commit());
     let mut context = AgentQueryContext::new(
         response.operation.into(),
         engine.graph_identity().to_owned(),
@@ -444,6 +456,7 @@ fn execute(
     for (role, value) in operands {
         context = context.with_operand(role, value);
     }
+    *reused_engine = Some(engine);
     Ok(QueryExecution { response, context })
 }
 
@@ -676,6 +689,10 @@ fn timeout(args: &[String]) -> Result<Duration, String> {
 fn query_error(error: QueryError) -> String {
     if error.kind() == QueryErrorKind::Timeout {
         format!("{error}; raise --timeout-ms or lower --max-nodes/--max-edges")
+    } else if error.kind() == QueryErrorKind::UnsupportedSchema {
+        format!(
+            "{error}; run compass update to build artifacts with this version, or use --graph PATH for a supported graph"
+        )
     } else {
         error.to_string()
     }
